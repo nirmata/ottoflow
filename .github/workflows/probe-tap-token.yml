@@ -1,0 +1,19 @@
+name: probe-tap-token
+on: workflow_dispatch
+permissions: {}
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report TAP_GITHUB_TOKEN scopes and tap access (never prints the token)
+        env:
+          T: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$T" ]; then echo "RESULT: secret is EMPTY/not visible to this repo"; exit 0; fi
+          echo "── token type/scopes ──"
+          H=$(curl -sI -H "Authorization: token $T" https://api.github.com/rate_limit | tr -d '\r' | grep -i '^x-oauth-scopes:' || true)
+          if [ -n "$H" ]; then echo "classic PAT — $H"; else echo "no X-OAuth-Scopes header → fine-grained PAT (or app token)"; fi
+          echo "── who is it ──"
+          curl -s -H "Authorization: token $T" https://api.github.com/user | jq -r '"login: \(.login // "n/a") type: \(.type // "n/a")"'
+          echo "── homebrew-tap access ──"
+          curl -s -H "Authorization: token $T" https://api.github.com/repos/nirmata/homebrew-tap | jq -r 'if .permissions then "visible=yes push=\(.permissions.push) admin=\(.permissions.admin)" else "visible=NO (\(.message // "unknown"))" end'
