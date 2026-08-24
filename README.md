@@ -42,14 +42,23 @@ want free-form agents, use one of those instead.
 ## ✨ Key Features
 
 - ✅ **Declarative and Deterministic, Kubernetes-native workflows** — define workflows capable of LLM calls, MCP, A2A, CEL, and more as Kubernetes CRDs in YAML.
+
 - ✅ **Fast DAG execution** — explicit dependency resolution with parallel step batches for scalable fleet-wide execution.
+
 - ✅ **Multi-provider LLM support** — use OpenAI, Anthropic, AWS Bedrock, Azure AI, other providers, or local models with vLLM.
+
 - ✅ **Kubernetes and CNCF integrations** — query resources, scrape Prometheus (PromQL), integrate with Kagent using A2A, create OpenReports.io resources, monitor with OpenTelemetry, react to events, and schedule via cron.
+
 - ✅ **Compiled CEL expressions** — fast and sandboxed execution with full Kubernetes and [Kyverno SDK CEL](https://github.com/kyverno/sdk) library support, with per-workflow cost limits.
+
 - ✅ **Multiple step types** — Expressions, ResourceQuery, AgentRef, MCPToolCall, Mutate, ForEach, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
+
 - ✅ **Context optimization** — agent steps receive agregated computed summaries, never raw data dumps. Also replace expensive MCP flows with direct calls to prevent context bloat.
+
 - ✅ **Retry & conditional execution** — configurable automatic retry policies, failure handling, and `matchConditions` gating per step.
+
 - ✅ **CLI with local mode** — execute workflows in-process against your kubecontext for rapid testing, no controller or CRDs required.
+
 - ✅ **Extensive AI-ready samples** — ready-to-run workflows under [`samples/`](samples/) covering cost, security, and compliance. Easy to generate and test with AI coding assistants.
 
 ## ⚡ Quick Start - Your first AI workflow in under ~60 seconds
