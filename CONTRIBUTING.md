@@ -27,7 +27,7 @@ converts to Apache-2.0 on its Change Date. See the
 
 If you contribute on behalf of an employer, make sure you have their permission
 — or ask us about a Corporate CLA at
-[licensing@nirmata.com](mailto:licensing@nirmata.com).
+[hello@nirmata.com](mailto:hello@nirmata.com).
 
 ## Sign off your commits (DCO)
 

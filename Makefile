@@ -20,6 +20,11 @@ HELM_VALUES_FILE ?= ""
 HELM_OUTPUT_DIR ?= config/generated
 HELM_OUTPUT_FILE ?= $(HELM_OUTPUT_DIR)/install.yaml
 
+# Every go invocation below builds this module alone. A go.work above the repo
+# root pulls its own replace directives into the build, so a checkout resolves
+# differently depending on where it sits in the caller's filesystem.
+export GOWORK := off
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq ($(shell go env GOBIN),)
 GOBIN=$(shell go env GOPATH)/bin
@@ -66,7 +71,7 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration and CustomResourceDefinition objects.
-	GOWORK=off $(CONTROLLER_GEN) crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 	@$(MAKE) sync-crds
 
 .PHONY: sync-crds
@@ -82,12 +87,12 @@ sync-crds: ## Sync CRDs from config/crd/bases to charts/ottoflow/crds (source of
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	GOWORK=off $(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 
-##@ Code generation (API docs)
+##@ Code generation (docs)
 
 .PHONY: codegen-api-docs
-codegen-api-docs: $(CRD_REF_DOCS) ## Generate CRD API reference docs (Markdown) from Go API types (elastic/crd-ref-docs).
+codegen-api-docs: crd-ref-docs ## Generate CRD API reference docs (Markdown) from Go API types (elastic/crd-ref-docs).
 	@echo "Generating CRD API reference docs..."
 	@mkdir -p docs/user/reference/api
 	$(CRD_REF_DOCS) \
@@ -96,6 +101,39 @@ codegen-api-docs: $(CRD_REF_DOCS) ## Generate CRD API reference docs (Markdown) 
 		--renderer=markdown \
 		--output-path=docs/user/reference/api/api-docs.md
 	@echo "Generated docs/user/reference/api/api-docs.md"
+
+.PHONY: codegen-cli-docs
+codegen-cli-docs: ## Generate CLI reference docs (Markdown) from the Cobra command tree into docs/cli/.
+	@echo "Generating CLI reference docs..."
+	@rm -rf docs/cli
+	go test -tags gendocs -count=1 ./cli/cmd/... -run '^TestGenerateCliDocs$$' -v
+	@echo "Generated docs/cli/*.md"
+
+.PHONY: codegen-docs
+codegen-docs: codegen-api-docs codegen-cli-docs ## Generate all reference docs (CRD API docs + CLI docs).
+
+##@ Verification
+
+# Paths written by manifests/generate/codegen-api-docs/codegen-cli-docs. Checked with
+# `git status --porcelain`, not `git diff`, because docs/cli/ (and any newly-added CRD file)
+# starts out untracked -- a plain `git diff` only catches modified tracked files and would
+# silently pass even though the freshly generated file was never committed.
+CODEGEN_PATHS := config/crd/bases charts/ottoflow/crds api/v1alpha1/zz_generated.deepcopy.go docs/user/reference/api docs/cli
+
+.PHONY: verify-codegen
+verify-codegen: manifests generate codegen-docs ## Fail if generated CRDs, deepcopy code, or docs are stale or uncommitted.
+	@echo "Checking for uncommitted changes from code generation..."
+	@CHANGES="$$(git status --porcelain -- $(CODEGEN_PATHS))"; \
+	if [ -n "$$CHANGES" ]; then \
+		echo ""; \
+		echo "Generated files are out of date or not committed. Run 'make manifests generate codegen-docs'" >&2; \
+		echo "and commit the result. Changed/untracked paths:" >&2; \
+		echo "$$CHANGES" >&2; \
+		exit 1; \
+	fi
+	@echo "Generated files are up to date."
+
+##@ Development (misc)
 
 .PHONY: licenses
 licenses: ## Regenerate THIRD_PARTY_LICENSES.md
@@ -165,7 +203,7 @@ CLI_MAIN_PACKAGE=./cli/main.go
 CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 CLI_BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
 CLI_GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-CLI_LDFLAGS=-ldflags "-X github.com/nirmata/ottoflow/cli/cmd.version=$(CLI_VERSION) -X main.buildTime=$(CLI_BUILD_TIME) -X main.gitCommit=$(CLI_GIT_COMMIT)"
+CLI_LDFLAGS=-ldflags "-X github.com/nirmata/ottoflow/cli/cmd.version=$(CLI_VERSION) -X github.com/nirmata/ottoflow/cli/cmd.buildTime=$(CLI_BUILD_TIME) -X github.com/nirmata/ottoflow/cli/cmd.gitCommit=$(CLI_GIT_COMMIT)"
 
 .PHONY: build-cli
 build-cli: manifests generate fmt vet ## Build CLI binary.
@@ -432,8 +470,7 @@ CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
-# Try to use system ko first, fall back to local installation
-KO ?= $(shell which ko 2>/dev/null || echo $(LOCALBIN)/ko-$(KO_VERSION))
+KO ?= $(LOCALBIN)/ko-$(KO_VERSION)
 # Try to use system helm first, fall back to local installation
 HELM ?= $(shell which helm 2>/dev/null || echo $(LOCALBIN)/helm-$(HELM_VERSION))
 
@@ -443,7 +480,7 @@ CONTROLLER_TOOLS_VERSION ?= v0.20.0
 ENVTEST_VERSION ?= release-0.17
 GOLANGCI_LINT_VERSION ?= v2.11.4
 CRD_REF_DOCS_VERSION ?= v0.3.0
-KO_VERSION ?= latest
+KO_VERSION ?= v0.17.1
 HELM_VERSION ?= v3.13.0
 
 .PHONY: kustomize
@@ -464,15 +501,12 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
-	test -s $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION) || { curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION) && mv $(LOCALBIN)/golangci-lint $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION) ; }
+	test -s $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION) || { curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/$(GOLANGCI_LINT_VERSION)/install.sh | sh -s -- -b $(LOCALBIN) $(GOLANGCI_LINT_VERSION) && mv $(LOCALBIN)/golangci-lint $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION) ; }
 
 .PHONY: ko
 ko: $(KO) ## Download ko locally if necessary.
 $(KO): $(LOCALBIN)
-	@if [ "$(shell which ko 2>/dev/null)" = "" ]; then \
-		echo "Installing ko..."; \
-		GOBIN=$(LOCALBIN) go install github.com/google/ko@$(KO_VERSION) && mv $(LOCALBIN)/ko $(LOCALBIN)/ko-$(KO_VERSION); \
-	fi
+	test -s $(LOCALBIN)/ko-$(KO_VERSION) || { GOBIN=$(LOCALBIN) go install github.com/google/ko@$(KO_VERSION) && mv $(LOCALBIN)/ko $(LOCALBIN)/ko-$(KO_VERSION) ; }
 
 .PHONY: crd-ref-docs
 crd-ref-docs: $(CRD_REF_DOCS) ## Download elastic/crd-ref-docs locally if necessary.

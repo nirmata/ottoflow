@@ -68,6 +68,6 @@ metadata:
 spec:
   prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
   modelProvider: google  # "gemini" is an accepted alias for the same provider
-  modelName: gemini-2.0-flash
+  modelName: gemini-2.5-flash
   outputExtraction:
     type: text

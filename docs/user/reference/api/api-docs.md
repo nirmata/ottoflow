@@ -197,7 +197,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `local` _boolean_ | Local, when true, uses the in-cluster configuration (the cluster where the controller runs).<br />Use this to explicitly target the Hub cluster when ClusterRef is set. |  | Optional: \{\} <br /> |
+| `local` _boolean_ | Local, when true, uses the in-cluster configuration (the cluster where the controller runs).<br />Use this to explicitly target the local (controller) cluster when ClusterRef is set. |  | Optional: \{\} <br /> |
 | `kubeConfigSecretRef` _[KubeConfigSecretRef](#kubeconfigsecretref)_ | KubeConfigSecretRef references a Secret containing a kubeconfig file. The workflow<br />runs against the cluster defined in that kubeconfig. Secret data key defaults to<br />"config", "kubeconfig", or "value" if Key is empty. Namespace defaults to the<br />WorkflowRun namespace if empty. |  | Optional: \{\} <br /> |
 | `kubeConfigFilePath` _string_ | KubeConfigFilePath points to a kubeconfig file mounted into the runner pod.<br />This is intended for Secret, projected, or CSI volume mounts. |  | Optional: \{\} <br /> |
 
@@ -858,12 +858,13 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `url` _string_ | URL is the A2A agent card base URL (must be HTTPS, e.g. "https://kagent.example.com") |  | Required: \{\} <br /> |
+| `url` _string_ | URL is the A2A agent card base URL (normally HTTPS, e.g. "https://kagent.example.com").<br />http:// is permitted only when allowInsecureHTTP is set, and only to cluster-local hosts. |  | Required: \{\} <br /> |
 | `protocol` _string_ | Protocol is the agent communication protocol. Currently only "a2a" is supported. | a2a | Enum: [a2a] <br />Optional: \{\} <br /> |
 | `prompt` _string_ | Prompt is a CEL expression evaluated in the workflow context; the result is sent as the task message.<br />Can reference inputs, variables, and previous step outputs (e.g. '"Analyze: " + steps.prev.report'). |  | Required: \{\} <br /> |
 | `auth` _[ExternalAgentAuth](#externalagentauth)_ | Auth defines authentication for the external agent call |  | Optional: \{\} <br /> |
 | `caSecretRef` _[NamespacedSecretRef](#namespacedsecretref)_ | CASecretRef references a Secret containing a CA bundle (key: ca.crt) for TLS verification.<br />When omitted, the system CA pool is used. |  | Optional: \{\} <br /> |
 | `timeout` _string_ | Timeout is the maximum duration to wait for task completion (e.g. "5m", "30s"). Default: 5m. |  | Optional: \{\} <br /> |
+| `allowInsecureHTTP` _boolean_ | AllowInsecureHTTP permits http:// URLs, but ONLY to cluster-local hosts<br />(a host ending in .svc or .svc.cluster.local, or exactly localhost / 127.0.0.1 / ::1).<br />http:// to any other host is rejected even when true. https:// ignores this flag.<br />Must NOT be combined with auth.secretRef (a bearer token would be sent in cleartext).<br />Must also NOT be combined with caSecretRef (a CA bundle has no effect over plaintext http). |  | Optional: \{\} <br /> |
 
 
 #### StepForEach
@@ -1357,7 +1358,7 @@ _Appears in:_
 | `callbackRef` _string_ | CallbackRef is a reference identifier for the callback (used for logging and documentation).<br />This is a semantic label, not a cryptographic identifier. |  | Optional: \{\} <br /> |
 | `outputSchema` _[JSON](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#json-v1-apiextensions-k8s-io)_ | OutputSchema defines the expected structure of the callback payload.<br />The callback payload must conform to this schema before the step resumes.<br />Schema is a JSON schema object (properties, type, etc.). |  | Optional: \{\} <br /> |
 | `message` _string_ | Message is a human-readable message displayed to users awaiting callback.<br />Can include instructions for calling the callback endpoint. |  | Optional: \{\} <br /> |
-| `failurePolicy` _string_ | FailurePolicy determines workflow behavior when the callback timeout is exceeded.<br />Continue: Proceed to next step (step transitions to Skipped, not Failed)<br />Fail: Workflow fails (default) | Fail | Enum: [Continue Fail] <br />Optional: \{\} <br /> |
+| `failurePolicy` _string_ | FailurePolicy determines workflow behavior when the callback timeout is exceeded.<br />Continue: proceed to the next step; the gate resumes with empty outputs (not Failed).<br />Fail: Workflow fails (default) | Fail | Enum: [Continue Fail] <br />Optional: \{\} <br /> |
 
 
 #### WebhookRateLimit
@@ -1623,6 +1624,8 @@ _Appears in:_
 | `trigger` _[TriggerInfo](#triggerinfo)_ | Trigger contains information about what triggered this WorkflowRun |  | Optional: \{\} <br /> |
 | `execution` _[WorkflowRunExecutionStatus](#workflowrunexecutionstatus)_ | Execution contains status for the runner Job that executes this WorkflowRun. |  | Optional: \{\} <br /> |
 | `pendingCallback` _[CallbackState](#callbackstate)_ | PendingCallback holds the state of an in-progress waitForCallback step.<br />Nil when no callback is pending. |  | Optional: \{\} <br /> |
+| `auditSnapshotConfigMap` _string_ | AuditSnapshotConfigMap is the name of the ConfigMap (in this WorkflowRun's<br />namespace) holding a snapshot of the final execution context — the variables<br />and expression outputs the run had computed at its terminal phase (Succeeded<br />or Failed). Unlike the opt-in per-step checkpoint (see<br />WorkflowRunExecutionSpec.Checkpointing), this snapshot is always written once<br />at completion, regardless of whether checkpointing is enabled, so that what a<br />run actually saw/computed can be inspected after the fact. The ConfigMap is<br />owned by this WorkflowRun and is garbage-collected together with it (see<br />Workflow.spec.retentionMinutes/maxAllowed); it is not deleted separately. |  | Optional: \{\} <br /> |
+| `auditSnapshotError` _string_ | AuditSnapshotError is set when writing AuditSnapshotConfigMap failed at<br />terminal phase (e.g. the snapshot could not be persisted within the retry<br />window, or a validation error was hit). Empty when the write succeeded or<br />hasn't been attempted yet. Surfaced here (and as a Warning event) so the<br />absence of AuditSnapshotConfigMap is distinguishable from "nothing went<br />wrong" rather than silently looking identical to pre-audit-snapshot behavior. |  | Optional: \{\} <br /> |
 
 
 #### WorkflowSpec

@@ -21,8 +21,12 @@ var (
 	kubeconfig string
 )
 
-// version is set at build time via ldflags (git describe --tags)
-var version = "dev"
+// version, gitCommit, and buildTime are set at build time via ldflags.
+var (
+	version   = "dev"
+	gitCommit = "unknown"
+	buildTime = "unknown"
+)
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{

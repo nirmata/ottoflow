@@ -10,7 +10,7 @@ product, as a hosted service, or embedded inside someone else's platform.
 
 > This FAQ is interpretive guidance. Where it and [LICENSE.md](LICENSE.md)
 > disagree, the license controls. Questions:
-> [licensing@nirmata.com](mailto:licensing@nirmata.com).
+> [hello@nirmata.com](mailto:hello@nirmata.com).
 
 ---
 
@@ -48,7 +48,7 @@ per-version schedule. This is irrevocable.
 **Can I offer OttoFlow as a hosted or managed service?**
 No, not on a paid basis. Operating OttoFlow on behalf of a third party as a
 paid service is a competitive offering. Contact
-[licensing@nirmata.com](mailto:licensing@nirmata.com) for a commercial license.
+[hello@nirmata.com](mailto:hello@nirmata.com) for a commercial license.
 
 **Can I embed OttoFlow in my product?**
 Not if the product is a paid competitive offering. "Embedded" covers shipping
@@ -110,4 +110,4 @@ license. Each version becomes open source (Apache-2.0) on its Change Date.
 
 If your intended use falls outside the Additional Use Grant — OEM, embedding,
 resale, hosted/managed offerings, or paid support — contact
-[licensing@nirmata.com](mailto:licensing@nirmata.com).
+[hello@nirmata.com](mailto:hello@nirmata.com).

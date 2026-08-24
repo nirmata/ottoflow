@@ -1,7 +1,7 @@
 # Hero example: Collect -> Analyze -> Publish.
 # Collect (resourceQuery, no LLM) gathers real per-pod failure signals -- restart counts,
 # what a container is currently waiting on, what it last terminated with -- entirely in CEL.
-# Analyze (agentRef) sends ONLY that computed summary to a local LLM and asks it to
+# Analyze (agentRef) sends ONLY that computed summary to an LLM and asks it to
 # prioritize, not narrate. Publish is gated by matchConditions on what Collect found.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Agent
@@ -15,10 +15,29 @@ spec:
     pod specs or logs. Several pods may be unhealthy for different reasons. Pick the SINGLE
     highest-priority pod to fix first, say why in one sentence, and give ONE concrete next
     action.
-  modelProvider: local
-  # "local" targets a llama.cpp-compatible server (llama.cpp, ollama, vLLM, LM Studio).
-  # The server address comes from the LLAMACPP_HOST env var, not spec.config:
-  #   LLAMACPP_HOST=http://127.0.0.1:11434/ ottoflow run pod-triage --model <your-model>
+  modelProvider: gemini
+  # This Agent's own modelProvider/modelName are just the default -- override them per run
+  # with --provider/--model (local execution only), no editing this file required:
+  #
+  #   # Gemini (default) -- GEMINI_API_KEY must be set; --model optional (defaults to a
+  #   # current Gemini model). Get a key at https://aistudio.google.com/api-keys.
+  #   GEMINI_API_KEY=AIza... \
+  #     ottoflow run pod-triage --workflow-dir samples -n ottoflow
+  #
+  #   # OpenAI -- OPENAI_API_KEY must be set; --model optional (defaults to gpt-4o).
+  #   OPENAI_API_KEY=sk-... \
+  #     ottoflow run pod-triage --workflow-dir samples -n ottoflow --provider openai
+  #
+  #   # Anthropic -- ANTHROPIC_API_KEY must be set; --model optional (defaults to a
+  #   # current Claude model).
+  #   ANTHROPIC_API_KEY=sk-ant-... \
+  #     ottoflow run pod-triage --workflow-dir samples -n ottoflow --provider anthropic
+  #
+  #   # Local -- a llama.cpp-compatible server (llama.cpp, ollama, vLLM, LM Studio).
+  #   # The server address comes from the LLAMACPP_HOST env var, not spec.config.
+  #   # --model is required here; there is no default local model.
+  #   LLAMACPP_HOST=http://127.0.0.1:11434/ \
+  #     ottoflow run pod-triage --workflow-dir samples -n ottoflow --provider local --model gemma3:4b
   outputExtraction:
     type: text
 ---

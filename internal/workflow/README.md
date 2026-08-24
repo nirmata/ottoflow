@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="../../images/ottoflow.png" alt="OttoFlow Logo" width="300">
+  <img src="../../images/brand/ottoflow-horizontal-light.png" alt="OttoFlow Logo" width="300">
 </div>
 
 # Workflow Package

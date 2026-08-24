@@ -96,8 +96,8 @@ PURPOSE.
 
 If you are contributing on behalf of a company and need a countersigned
 Corporate CLA covering your employees, contact
-[licensing@nirmata.com](mailto:licensing@nirmata.com).
+[hello@nirmata.com](mailto:hello@nirmata.com).
 
 ## Questions
 
-[licensing@nirmata.com](mailto:licensing@nirmata.com)
+[hello@nirmata.com](mailto:hello@nirmata.com)

@@ -67,7 +67,7 @@ Change Date:          Four years from the date the Licensed Work is published.
 Change License:       Apache License, Version 2.0
 
 For information about alternative licensing arrangements for the Licensed Work,
-please contact licensing@nirmata.com.
+please contact hello@nirmata.com.
 
 Notice
 

@@ -310,6 +310,9 @@ In local mode:
 - Agent steps use a local `agentExecutor` (requires LLM credentials)
 - MCP servers still connect via stdio/http
 - `resourceMetrics()` works: a metrics client is wired from your kubeconfig
+- Cannot fetch Pod logs — `resourceQuery` reads live objects only, with no `kubectl logs`
+  equivalent, so workflows that need log data (e.g. `workload-troubleshooter.yaml`) require the
+  in-cluster controller
 
 The `localExecutionMode=true` flag in `WorkflowExecutor` gates the in-process agent execution path.
 

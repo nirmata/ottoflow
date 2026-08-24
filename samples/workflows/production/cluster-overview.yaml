@@ -81,38 +81,105 @@ spec:
                 string(c.resources.limits.memory) : "0"
               )
             ).flatten().filter(q, q != "0").map(q, quantity(q).asApproximateFloat()).sum()
+        # One actionable bullet per Failed pod: reason comes from status.reason if the API
+        # server set one, else the last container termination reason (OOMKilled, Error, ...).
+        # Every containerStatuses[]/lastState field read is has()-guarded since they're
+        # optional oneof-style fields that may not be present yet.
+        - name: failedPodDetails
+          expression: >-
+            variables.pods.filter(p, p.status.phase == "Failed").map(p,
+              format("- **%s/%s** (Failed): %s — `kubectl logs %s -n %s --previous --all-containers=true`",
+                p.metadata.namespace, p.metadata.name,
+                has(p.status.reason) && p.status.reason != "" ? p.status.reason :
+                  (has(p.status.containerStatuses) && p.status.containerStatuses.exists(c,
+                    has(c.lastState) && has(c.lastState.terminated) && has(c.lastState.terminated.reason))
+                    ? p.status.containerStatuses.filter(c,
+                        has(c.lastState) && has(c.lastState.terminated) && has(c.lastState.terminated.reason)
+                      )[0].lastState.terminated.reason
+                    : "no reason reported"),
+                p.metadata.name, p.metadata.namespace
+              )
+            )
+        # One actionable bullet per Pending pod: reason comes from a container's current
+        # waiting state (ImagePullBackOff, ContainerCreating, ...) if a container was
+        # scheduled, else the PodScheduled condition (e.g. Unschedulable: Insufficient cpu).
+        - name: pendingPodDetails
+          expression: >-
+            variables.pods.filter(p, p.status.phase == "Pending").map(p,
+              format("- **%s/%s** (Pending): %s — `kubectl describe pod %s -n %s`",
+                p.metadata.namespace, p.metadata.name,
+                (has(p.status.containerStatuses) && p.status.containerStatuses.exists(c,
+                  has(c.state) && has(c.state.waiting) && has(c.state.waiting.reason))
+                  ? "waiting " + p.status.containerStatuses.filter(c,
+                      has(c.state) && has(c.state.waiting) && has(c.state.waiting.reason)
+                    )[0].state.waiting.reason
+                  : (has(p.status.conditions) && p.status.conditions.exists(c,
+                      c.type == "PodScheduled" && c.status == "False" && has(c.reason))
+                      ? p.status.conditions.filter(c,
+                          c.type == "PodScheduled" && c.status == "False" && has(c.reason)
+                        )[0].reason
+                      : "pending, reason unknown")),
+                p.metadata.name, p.metadata.namespace
+              )
+            )
+        # Rendered only when there are Failed or Pending pods -- fully pre-formatted (heading
+        # included) so the report template below just drops it in or omits it with one %s.
+        - name: issueSection
+          expression: >-
+            (expressions.failedPods > 0 || expressions.pendingPods > 0)
+              ? format("## 🚨 Issue Details\n%s\n\n",
+                  (expressions.failedPodDetails + expressions.pendingPodDetails).join("\n"))
+              : ""
       outputs:
         - name: report
-          value:
-            summary:
-              totalNamespaces: size(variables.namespaces)
-              totalPods: size(variables.pods)
-              totalDeployments: size(variables.deployments)
-              totalServices: size(variables.services)
-            podsByPhase:
-              Running: expressions.runningPods
-              Pending: expressions.pendingPods
-              Failed: expressions.failedPods
-              Succeeded: expressions.succeededPods
-            namespaces: >-
-              expressions.namespaceNames.map(nsName, format("%s: %d pods, %d deployments, %d services",
+          expression: >-
+            format(
+              "# 📊 Cluster Overview\n\n" +
+              "**Health:** %s\n\n" +
+              "## 📋 Summary\n" +
+              "- Namespaces: %d (%d user, %d system)\n" +
+              "- Pods: %d\n" +
+              "- Deployments: %d\n" +
+              "- Services: %d\n\n" +
+              "## 🧭 Pods by phase\n" +
+              "- Running: %d\n" +
+              "- Pending: %d\n" +
+              "- Failed: %d\n" +
+              "- Succeeded: %d\n\n" +
+              "%s" +
+              "## 📈 Resource usage\n" +
+              "- CPU requests: %.2f cores\n" +
+              "- CPU limits: %.2f cores\n" +
+              "- Memory requests: %.2f GB\n" +
+              "- Memory limits: %.2f GB\n" +
+              "- Pods with resource requests: %d\n" +
+              "- Pods with resource limits: %d\n\n" +
+              "## 🗂️ Namespaces\n%s",
+              expressions.failedPods == 0 && expressions.pendingPods == 0 ? "Healthy" : "Issues Detected",
+              size(variables.namespaces),
+              size(expressions.namespaceNames.filter(nsName, nsName != "kube-system" && nsName != "kube-public" && nsName != "kube-node-lease")),
+              size(variables.namespaces) - size(expressions.namespaceNames.filter(nsName, nsName != "kube-system" && nsName != "kube-public" && nsName != "kube-node-lease")),
+              size(variables.pods),
+              size(variables.deployments),
+              size(variables.services),
+              expressions.runningPods,
+              expressions.pendingPods,
+              expressions.failedPods,
+              expressions.succeededPods,
+              expressions.issueSection,
+              expressions.totalCPURequests,
+              expressions.totalCPULimits,
+              expressions.totalMemoryRequests / 1073741824.0,
+              expressions.totalMemoryLimits / 1073741824.0,
+              size(expressions.podsWithResources.filter(p, p.spec.containers.exists(c, has(c.resources) && has(c.resources.requests)))),
+              size(expressions.podsWithResources.filter(p, p.spec.containers.exists(c, has(c.resources) && has(c.resources.limits)))),
+              expressions.namespaceNames.map(nsName, format("- %s: %d pods, %d deployments, %d services",
                 nsName,
                 size(variables.pods.filter(p, p.metadata.namespace == nsName)),
                 size(variables.deployments.filter(d, d.metadata.namespace == nsName)),
                 size(variables.services.filter(s, s.metadata.namespace == nsName))
-              ))
-            userNamespaces: >-
-              expressions.namespaceNames.filter(nsName, nsName != "kube-system" && nsName != "kube-public" && nsName != "kube-node-lease")
-            namespaceCount: size(expressions.namespaceNames)
-            resourceUsage:
-              cpuRequests: format("%.2f cores", expressions.totalCPURequests)
-              cpuLimits: format("%.2f cores", expressions.totalCPULimits)
-              memoryRequests: format("%.2f GB", expressions.totalMemoryRequests / 1073741824.0)
-              memoryLimits: format("%.2f GB", expressions.totalMemoryLimits / 1073741824.0)
-              podsWithResourceRequests: size(expressions.podsWithResources.filter(p, p.spec.containers.exists(c, has(c.resources) && has(c.resources.requests))))
-              podsWithResourceLimits: size(expressions.podsWithResources.filter(p, p.spec.containers.exists(c, has(c.resources) && has(c.resources.limits))))
-            clusterHealth: >-
-              expressions.failedPods == 0 && expressions.pendingPods == 0 ? "Healthy" : "Issues Detected"
+              )).join("\n")
+            )
   
   outputs:
     - name: report

@@ -2,6 +2,18 @@
 
 This document describes the three container images that make up OttoFlow, what each one does, and which image to update for a given type of change.
 
+```mermaid
+flowchart LR
+    WF[Workflow CRD] --> C[Controller]
+    C --> WR[WorkflowRun]
+    WR --> J[Runner Job]
+    J --> E[Executor]
+    E --> CEL[CEL / resourceQuery]
+    E --> AR[agentRef]
+    AR --> AE[agent-executor]
+    E --> O[Outputs]
+```
+
 ---
 
 ## The Three Images

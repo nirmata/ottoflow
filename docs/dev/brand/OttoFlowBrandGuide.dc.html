@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<![CDATA[<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&family=Open+Sans:wght@300;400;600;700&family=Arimo:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #F3F6FA; -webkit-font-smoothing: antialiased; }
+  a { color: #2E5596; text-decoration: none; }
+  a:hover { color: #264A85; text-decoration: underline; }
+</style>
+</helmet>
+
+<div style="font-family: 'Open Sans', 'Helvetica Neue', Arial, sans-serif; color: #1E345D; background: #F3F6FA; padding: 64px 40px 96px; display: flex; flex-direction: column; align-items: center; gap: 64px">
+
+  <div style="width: 1120px; max-width: 100%; display: flex; flex-direction: column; gap: 64px">
+
+    <header style="display: flex; flex-direction: column; gap: 24px; padding-bottom: 8px">
+      <div style="display: flex; align-items: center; gap: 16px">
+        <img src="assets/ottoflow-mark-transparent.png" alt="OttoFlow" style="width: 56px; height: 56px; display: block">
+        <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 34px; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+      </div>
+      <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 60px; line-height: 1.05; letter-spacing: -0.015em; max-width: 20ch">Brand guide</div>
+      <p style="margin: 0; font-size: 18px; line-height: 1.55; max-width: 62ch; color: #4A5B7A; text-wrap: pretty">Colour, type and logo usage for OttoFlow, derived from the mark in <code style="font-family: ui-monospace, Menlo, monospace; font-size: 0.9em; background: #E6EDF7; padding: 2px 6px; border-radius: 4px">images/brand/ottoflow-horizontal-light.png</code> and aligned to the Nirmata visual identity. Every value below is sampled from the artwork itself.</p>
+    </header>
+
+    <section style="display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #E3E8EF; padding-bottom: 12px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px">Logo</div>
+        <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Lockups &amp; icons</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px">
+        <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Horizontal · light</div>
+          <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 2px 6px rgba(30,52,93,0.08); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: hidden">
+            <div style="zoom: 0.42"><div id="lockup-h-light" style="background: #FFFFFF; display: flex; align-items: center; gap: 28px; padding: 40px 56px">
+              <img src="assets/ottoflow-mark-transparent.png" alt="OttoFlow mark" style="width: 132px; height: 132px; display: block">
+              <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 96px; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+            </div></div>
+          </div>
+        </div>
+
+        <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Horizontal · dark</div>
+          <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 2px 6px rgba(30,52,93,0.08); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: hidden">
+            <div style="zoom: 0.42"><div id="lockup-h-dark" style="background: #192C5D; display: flex; align-items: center; gap: 28px; padding: 40px 56px">
+              <img src="assets/ottoflow-mark-transparent.png" alt="OttoFlow mark" style="width: 132px; height: 132px; display: block">
+              <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 96px; line-height: 1; letter-spacing: -0.01em"><span style="color: #FFFFFF">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+            </div></div>
+          </div>
+        </div>
+
+        <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Vertical · light</div>
+          <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 2px 6px rgba(30,52,93,0.08); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: hidden">
+            <div style="zoom: 0.6"><div id="lockup-v-light" style="background: #FFFFFF; display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 48px 64px">
+              <img src="assets/ottoflow-mark-transparent.png" alt="OttoFlow mark" style="width: 180px; height: 180px; display: block">
+              <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 72px; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+            </div></div>
+          </div>
+        </div>
+
+        <div style="min-width: 0; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Vertical · dark</div>
+          <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 2px 6px rgba(30,52,93,0.08); display: flex; align-items: center; justify-content: center; padding: 16px; overflow: hidden">
+            <div style="zoom: 0.6"><div id="lockup-v-dark" style="background: #192C5D; display: flex; flex-direction: column; align-items: center; gap: 24px; padding: 48px 64px">
+              <img src="assets/ottoflow-mark-transparent.png" alt="OttoFlow mark" style="width: 180px; height: 180px; display: block">
+              <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 72px; line-height: 1; letter-spacing: -0.01em"><span style="color: #FFFFFF">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+            </div></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 16px">
+        <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">App icon &amp; avatar</div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; box-shadow: 0 2px 6px rgba(30,52,93,0.08); padding: 40px; display: flex; align-items: flex-end; gap: 48px; flex-wrap: wrap">
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 12px">
+            <img id="icon-circle" src="assets/ottoflow-mark-transparent.png" alt="Circle icon" style="width: 128px; height: 128px; display: block">
+            <div style="font-size: 12px; color: #7B8AA3">Circle · transparent</div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 12px">
+            <div id="icon-rounded" style="width: 128px; height: 128px; border-radius: 28px; background: #192C5D; display: flex; align-items: center; justify-content: center; overflow: hidden">
+              <img src="assets/ottoflow-mark-transparent.png" alt="Rounded icon" style="width: 128px; height: 128px; display: block">
+            </div>
+            <div style="font-size: 12px; color: #7B8AA3">Rounded square</div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 12px">
+            <div style="display: flex; align-items: flex-end; gap: 16px">
+              <img src="assets/ottoflow-mark-transparent.png" alt="64" style="width: 64px; height: 64px; display: block">
+              <img src="assets/ottoflow-mark-transparent.png" alt="32" style="width: 32px; height: 32px; display: block">
+              <img src="assets/ottoflow-mark-transparent.png" alt="16" style="width: 16px; height: 16px; display: block">
+            </div>
+            <div style="font-size: 12px; color: #7B8AA3">64 · 32 · 16 px</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 8px">
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 28px 32px; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 18px">Clear space &amp; minimum size</div>
+          <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 1.5; color: #4A5B7A">
+            <li>Clear space on all sides equals half the height of the otter mark.</li>
+            <li>Horizontal lockup: never below 120&nbsp;px wide on screen, 30&nbsp;mm in print.</li>
+            <li>Icon alone: never below 16&nbsp;px. Below 32&nbsp;px, drop the whiskers by using the rounded-square icon.</li>
+            <li>Gap between mark and wordmark is fixed at 21% of the mark height.</li>
+          </ul>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 28px 32px; display: flex; flex-direction: column; gap: 12px">
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 18px">Don't</div>
+          <ul style="margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; font-size: 15px; line-height: 1.5; color: #4A5B7A">
+            <li>Recolour the otter, or place it on a busy photograph.</li>
+            <li>Set "OttoFlow" as one colour — the two-tone split is the wordmark.</li>
+            <li>Stretch, rotate, or add a drop shadow to the mark.</li>
+            <li>Use the teal for body copy or headlines; it is a mark and accent colour only.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #E3E8EF; padding-bottom: 12px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px">Colour</div>
+        <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Sampled from the mark</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px">
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 6px rgba(30,52,93,0.08)">
+          <div style="height: 120px; background: #7BC3C7"></div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 4px">
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 16px">OttoFlow Teal</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #4A5B7A">#7BC3C7</div>
+            <div style="font-size: 12px; color: #7B8AA3; line-height: 1.4">Signature accent. "Flow" in the wordmark, links, active states.</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 6px rgba(30,52,93,0.08)">
+          <div style="height: 120px; background: #192C5D"></div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 4px">
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 16px">Otter Navy</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #4A5B7A">#192C5D</div>
+            <div style="font-size: 12px; color: #7B8AA3; line-height: 1.4">Dark backgrounds, glasses frame. Sits one step deeper than Nirmata Navy.</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 6px rgba(30,52,93,0.08)">
+          <div style="height: 120px; background: #1A3D6F"></div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 4px">
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 16px">Deep Sea</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #4A5B7A">#1A3D6F</div>
+            <div style="font-size: 12px; color: #7B8AA3; line-height: 1.4">Icon backdrop. Panels and section fills on dark surfaces.</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden; box-shadow: 0 2px 6px rgba(30,52,93,0.08)">
+          <div style="height: 120px; background: #000000"></div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 4px">
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 16px">Wordmark Black</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: #4A5B7A">#000000</div>
+            <div style="font-size: 12px; color: #7B8AA3; line-height: 1.4">"Otto" only. Everywhere else use Nirmata Navy for text.</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px">
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden">
+          <div style="height: 76px; background: #80CDC4"></div>
+          <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 14px; font-weight: 600">Mint</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #7B8AA3">#80CDC4</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden">
+          <div style="height: 76px; background: #A7D7D9"></div>
+          <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 14px; font-weight: 600">Shallow</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #7B8AA3">#A7D7D9</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden">
+          <div style="height: 76px; background: #D8EAEA"></div>
+          <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 14px; font-weight: 600">Mist</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #7B8AA3">#D8EAEA</div>
+          </div>
+        </div>
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; overflow: hidden">
+          <div style="height: 76px; background: #F3F9F9; border-bottom: 1px solid #E3E8EF"></div>
+          <div style="padding: 14px 16px; display: flex; flex-direction: column; gap: 2px">
+            <div style="font-size: 14px; font-weight: 600">Frost</div>
+            <div style="font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: #7B8AA3">#F3F9F9</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 28px 32px; display: flex; flex-direction: column; gap: 16px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 18px">Relationship to the Nirmata palette</div>
+        <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #4A5B7A; max-width: 76ch">OttoFlow is a Nirmata product, so it inherits Nirmata Navy for all text and Nirmata Blue for interactive elements. The OttoFlow teal replaces Nirmata Sky as the product's accent — the two are close in hue but Sky is brighter, so pick one per surface rather than mixing them.</p>
+        <div style="display: flex; gap: 12px; flex-wrap: wrap">
+          <div style="display: flex; align-items: center; gap: 10px; background: #F6F8FB; border: 1px solid #E3E8EF; border-radius: 999px; padding: 8px 16px 8px 8px"><div style="width: 24px; height: 24px; border-radius: 999px; background: #1E345D"></div><div style="font-size: 13px">Nirmata Navy · #1E345D · all text</div></div>
+          <div style="display: flex; align-items: center; gap: 10px; background: #F6F8FB; border: 1px solid #E3E8EF; border-radius: 999px; padding: 8px 16px 8px 8px"><div style="width: 24px; height: 24px; border-radius: 999px; background: #2E5596"></div><div style="font-size: 13px">Nirmata Blue · #2E5596 · buttons, links</div></div>
+          <div style="display: flex; align-items: center; gap: 10px; background: #F6F8FB; border: 1px solid #E3E8EF; border-radius: 999px; padding: 8px 16px 8px 8px"><div style="width: 24px; height: 24px; border-radius: 999px; background: #71CFEB"></div><div style="font-size: 13px">Nirmata Sky · #71CFEB · do not mix with teal</div></div>
+          <div style="display: flex; align-items: center; gap: 10px; background: #F6F8FB; border: 1px solid #E3E8EF; border-radius: 999px; padding: 8px 16px 8px 8px"><div style="width: 24px; height: 24px; border-radius: 999px; background: #FF5859"></div><div style="font-size: 13px">Nirmata Red · #FF5859 · errors only</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #E3E8EF; padding-bottom: 12px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px">Type</div>
+        <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Ubuntu · Open Sans · Arimo</div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px">
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 32px; display: flex; flex-direction: column; gap: 16px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Headlines</div>
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 56px; line-height: 1.05; letter-spacing: -0.015em">Ubuntu</div>
+          <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #4A5B7A">Light 300 for display and h1, Regular 400 for h2, Medium 500 for h3 and h4. The bigger the size, the lighter the weight. Headlines are always Nirmata Navy — never teal.</p>
+          <div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #E3E8EF; padding-top: 16px">
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 44px; line-height: 1.15">Deterministic by default</div>
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px; line-height: 1.2">Collect, analyze, publish</div>
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 24px; line-height: 1.25">Step types</div>
+            <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 18px; line-height: 1.3">Validate before you run</div>
+          </div>
+        </div>
+
+        <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 32px; display: flex; flex-direction: column; gap: 16px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Body &amp; UI</div>
+          <div style="font-family: 'Open Sans', sans-serif; font-weight: 600; font-size: 56px; line-height: 1.05; letter-spacing: -0.01em">Open Sans</div>
+          <p style="margin: 0; font-size: 16px; line-height: 1.55; color: #1E345D">Regular 400 for body at 16px/1.55. Semibold 600 for labels, table headers and buttons. Bold 700 only for inline emphasis. Captions run at 12px, uppercase, tracked 0.08em.</p>
+          <div style="display: flex; flex-direction: column; gap: 10px; border-top: 1px solid #E3E8EF; padding-top: 16px">
+            <div style="font-family: 'Open Sans', sans-serif; font-size: 16px; line-height: 1.55">Body 16 / 1.55 — OttoFlow runs autonomous AI workflows on Kubernetes.</div>
+            <div style="font-family: 'Open Sans', sans-serif; font-size: 14px; line-height: 1.5; color: #4A5B7A">Small 14 / 1.5 — secondary copy and helper text.</div>
+            <div style="font-family: 'Open Sans', sans-serif; font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Caption 12 · uppercase</div>
+            <div style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 14px; background: #F6F8FB; border: 1px solid #E3E8EF; border-radius: 8px; padding: 10px 12px">ottoflow run pod-triage -n ottoflow</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 32px; display: flex; gap: 40px; align-items: center; flex-wrap: wrap">
+        <div style="font-family: Arimo, 'Helvetica Neue', Arial, sans-serif; font-size: 64px; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+        <div style="flex: 1; min-width: 300px; display: flex; flex-direction: column; gap: 8px">
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 18px">The wordmark</div>
+          <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #4A5B7A; max-width: 62ch">The existing logotype is set in a Helvetica-class grotesque at Regular weight, reproduced here in Arimo, which is metrically identical and open-licensed. Treat the wordmark as fixed artwork: never re-set it in Ubuntu, and never re-space it. Ubuntu is for headlines that sit next to the logo, not for the logo itself.</p>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #E3E8EF; padding-bottom: 12px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px">Files</div>
+      </div>
+      <div style="background: #FFFFFF; border: 1px solid #E3E8EF; border-radius: 16px; padding: 32px; display: grid; grid-template-columns: 1fr 1fr; gap: 32px">
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Exports</div>
+          <div style="font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.9; color: #4A5B7A">
+            <div>assets/logos/ottoflow-horizontal-light.png</div>
+            <div>assets/logos/ottoflow-horizontal-dark.png</div>
+            <div>assets/logos/ottoflow-vertical-light.png</div>
+            <div>assets/logos/ottoflow-vertical-dark.png</div>
+            <div>assets/logos/ottoflow-icon-circle.png</div>
+            <div>assets/logos/ottoflow-icon-rounded.png</div>
+            <div>assets/logos/icons/ · 512 → 16 px</div>
+            <div>assets/ottoflow-tokens.css</div>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px">
+          <div style="font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">A note on resolution</div>
+          <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #4A5B7A">The otter in the source file is 392&nbsp;×&nbsp;392&nbsp;px of raster artwork — that is the ceiling on real detail. These exports resample it cleanly and hold up to about 400&nbsp;px on screen or 40&nbsp;mm in print. Anything larger, or any true vector use, needs the original illustration source.</p>
+          <p style="margin: 0; font-size: 15px; line-height: 1.55; color: #4A5B7A">The wordmark in every export is live type, so it stays crisp at any size.</p>
+        </div>
+      </div>
+    </section>
+
+    <section style="display: flex; flex-direction: column; gap: 24px">
+      <div style="display: flex; align-items: baseline; gap: 16px; border-bottom: 1px solid #E3E8EF; padding-bottom: 12px">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 32px">In use</div>
+      </div>
+      <div style="background: #192C5D; border-radius: 16px; padding: 56px; display: flex; flex-direction: column; gap: 28px">
+        <div style="display: flex; align-items: center; gap: 14px">
+          <img src="assets/ottoflow-mark-transparent.png" alt="" style="width: 40px; height: 40px; display: block">
+          <div style="font-family: Arimo, sans-serif; font-size: 24px; line-height: 1"><span style="color: #FFFFFF">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+        </div>
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 52px; line-height: 1.1; color: #FFFFFF; max-width: 22ch">Spend the model only where judgement is needed.</div>
+        <p style="margin: 0; font-family: 'Open Sans', sans-serif; font-size: 17px; line-height: 1.6; color: #CDD8F0; max-width: 60ch">Collection and publication stay deterministic. The agent sees computed summaries, never raw cluster specs.</p>
+        <div style="display: flex; gap: 12px">
+          <div style="background: #7BC3C7; color: #10233F; font-family: 'Open Sans', sans-serif; font-weight: 600; font-size: 15px; padding: 12px 24px; border-radius: 999px">Get started</div>
+          <div style="border: 1px solid #4A5B7A; color: #FFFFFF; font-family: 'Open Sans', sans-serif; font-weight: 600; font-size: 15px; padding: 12px 24px; border-radius: 999px">Read the docs</div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>]]>
+</x-dc>
+</body>
+</html>

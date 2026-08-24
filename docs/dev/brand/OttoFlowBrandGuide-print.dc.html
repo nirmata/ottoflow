@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<![CDATA[<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&family=Open+Sans:wght@300;400;600;700&family=Arimo:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="./doc-page.js"></script>
+<style>
+  doc-page:not(:defined) { visibility: hidden; }
+  body { margin: 0; -webkit-font-smoothing: antialiased; }
+  a { color: #2E5596; text-decoration: none; }
+  a:hover { color: #264A85; text-decoration: underline; }
+</style>
+</helmet>
+
+<doc-page margin="0.75in">
+  <div style="font-family: 'Open Sans', Helvetica, Arial, sans-serif; color: #1E345D; font-size: 10.5pt; line-height: 1.55">
+
+    <div style="display: flex; align-items: center; gap: 14px; margin-bottom: 36px">
+      <img src="images/brand/ottoflow-icon-circle.png" alt="OttoFlow" style="width: 44px; height: 44px; display: block">
+      <div style="font-family: Arimo, Helvetica, Arial, sans-serif; font-size: 26px; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+    </div>
+
+    <h1 style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 40pt; line-height: 1.05; letter-spacing: -0.015em; margin: 0 0 14px; color: #1E345D">Brand guide</h1>
+    <p style="margin: 0 0 8px; font-size: 12pt; line-height: 1.55; color: #4A5B7A; max-width: 46em">Colour, type and logo usage for OttoFlow. Every colour below is sampled directly from <code style="font-family: Menlo, Consolas, monospace; font-size: 0.88em; background: #E6EDF7; padding: 1px 5px; border-radius: 3px">images/brand/ottoflow-horizontal-light.png</code>; typography follows the Nirmata visual identity.</p>
+    <p style="margin: 0 0 40px; font-size: 9.5pt; color: #7B8AA3">Design tokens: <code style="font-family: Menlo, Consolas, monospace; font-size: 0.95em">docs/dev/brand/ottoflow-tokens.css</code></p>
+
+    <h2 style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 22pt; margin: 0 0 6px; color: #1E345D; border-bottom: 1px solid #E3E8EF; padding-bottom: 8px">Logo</h2>
+
+    <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 14pt; margin: 22px 0 8px; color: #1E345D">Horizontal lockup</h3>
+    <p style="margin: 0 0 14px; max-width: 46em">The primary form. Use it wherever there is room for a wide mark — README headers, site navigation, slide masters, docs. On Otter Navy or any dark surface, "Otto" switches to white; the teal stays the same.</p>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; break-inside: avoid; margin-bottom: 24px">
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; padding: 18px; display: flex; align-items: center; justify-content: center; background: #FFFFFF"><img src="images/brand/ottoflow-horizontal-light.png" alt="Horizontal lockup, light" style="width: 100%; height: auto; display: block"></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center"><img src="images/brand/ottoflow-horizontal-dark.png" alt="Horizontal lockup, dark" style="width: 100%; height: auto; display: block"></div>
+    </div>
+
+    <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 14pt; margin: 22px 0 8px; color: #1E345D">Vertical lockup</h3>
+    <p style="margin: 0 0 14px; max-width: 46em">For square or narrow spaces — social avatars with a name, conference banners, sticker sheets, centred title cards.</p>
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; break-inside: avoid; margin-bottom: 24px">
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; padding: 18px; display: flex; align-items: center; justify-content: center; background: #FFFFFF"><img src="images/brand/ottoflow-vertical-light.png" alt="Vertical lockup, light" style="width: 74%; height: auto; display: block"></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center"><img src="images/brand/ottoflow-vertical-dark.png" alt="Vertical lockup, dark" style="width: 100%; height: auto; display: block"></div>
+    </div>
+
+    <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 14pt; margin: 22px 0 8px; color: #1E345D">Icon</h3>
+    <div style="display: flex; align-items: flex-end; gap: 34px; border: 1px solid #E3E8EF; border-radius: 10px; padding: 22px 26px; break-inside: avoid; margin-bottom: 14px">
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px"><img src="images/brand/ottoflow-icon-circle.png" alt="Circle icon" style="width: 84px; height: 84px; display: block"><div style="font-size: 8.5pt; color: #7B8AA3">Circle · transparent</div></div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px"><img src="images/brand/ottoflow-icon-rounded.png" alt="Rounded icon" style="width: 84px; height: 84px; display: block; border-radius: 18px"><div style="font-size: 8.5pt; color: #7B8AA3">Rounded square</div></div>
+      <div style="display: flex; flex-direction: column; align-items: center; gap: 8px"><div style="display: flex; align-items: flex-end; gap: 12px"><img src="images/brand/ottoflow-icon-circle.png" alt="" style="width: 48px; height: 48px"><img src="images/brand/ottoflow-icon-circle.png" alt="" style="width: 32px; height: 32px"><img src="images/brand/ottoflow-icon-circle.png" alt="" style="width: 16px; height: 16px"></div><div style="font-size: 8.5pt; color: #7B8AA3">48 · 32 · 16 px</div></div>
+    </div>
+    <p style="margin: 0 0 24px; font-size: 9.5pt; color: #4A5B7A">Pre-scaled sizes live in <code style="font-family: Menlo, Consolas, monospace">images/brand/icons/</code>: <code style="font-family: Menlo, Consolas, monospace">ottoflow-icon-{512,256,128,64,32,16}.png</code> and <code style="font-family: Menlo, Consolas, monospace">ottoflow-rounded-{512,192,180}.png</code>.</p>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; break-inside: avoid; margin-bottom: 32px">
+      <div>
+        <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 13pt; margin: 0 0 8px; color: #1E345D">Clear space &amp; minimum size</h3>
+        <ul style="margin: 0; padding-left: 18px; font-size: 10pt; line-height: 1.5; color: #4A5B7A">
+          <li style="margin-bottom: 5px">Clear space on all sides equals half the height of the otter mark.</li>
+          <li style="margin-bottom: 5px">Horizontal lockup: never below 120&nbsp;px wide on screen, 30&nbsp;mm in print.</li>
+          <li style="margin-bottom: 5px">Icon alone: never below 16&nbsp;px. Below 32&nbsp;px use the rounded-square icon.</li>
+          <li>Gap between mark and wordmark is fixed at 21% of the mark height.</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 13pt; margin: 0 0 8px; color: #1E345D">Don't</h3>
+        <ul style="margin: 0; padding-left: 18px; font-size: 10pt; line-height: 1.5; color: #4A5B7A">
+          <li style="margin-bottom: 5px">Recolour the otter, or place it on a busy photograph.</li>
+          <li style="margin-bottom: 5px">Set "OttoFlow" in a single colour — the two-tone split is the wordmark.</li>
+          <li style="margin-bottom: 5px">Stretch, rotate, or add a drop shadow to the mark.</li>
+          <li>Use the teal for body copy or headlines; it is a mark and accent colour only.</li>
+        </ul>
+      </div>
+    </div>
+
+    <h2 style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 22pt; margin: 0 0 6px; color: #1E345D; border-bottom: 1px solid #E3E8EF; padding-bottom: 8px; break-before: page">Colour</h2>
+
+    <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 14pt; margin: 22px 0 12px; color: #1E345D">OttoFlow palette</h3>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; break-inside: avoid; margin-bottom: 12px">
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 62px; background: #7BC3C7"></div><div style="padding: 10px 12px"><div style="font-weight: 600; font-size: 10pt">OttoFlow Teal</div><div style="font-family: Menlo, Consolas, monospace; font-size: 9pt; color: #4A5B7A">#7BC3C7</div><div style="font-size: 8.5pt; color: #7B8AA3; line-height: 1.35; margin-top: 4px">Signature accent. "Flow", links, active states.</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 62px; background: #192C5D"></div><div style="padding: 10px 12px"><div style="font-weight: 600; font-size: 10pt">Otter Navy</div><div style="font-family: Menlo, Consolas, monospace; font-size: 9pt; color: #4A5B7A">#192C5D</div><div style="font-size: 8.5pt; color: #7B8AA3; line-height: 1.35; margin-top: 4px">Dark surfaces, glasses frame.</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 62px; background: #1A3D6F"></div><div style="padding: 10px 12px"><div style="font-weight: 600; font-size: 10pt">Deep Sea</div><div style="font-family: Menlo, Consolas, monospace; font-size: 9pt; color: #4A5B7A">#1A3D6F</div><div style="font-size: 8.5pt; color: #7B8AA3; line-height: 1.35; margin-top: 4px">Icon backdrop, dark panels.</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 62px; background: #000000"></div><div style="padding: 10px 12px"><div style="font-weight: 600; font-size: 10pt">Wordmark Black</div><div style="font-family: Menlo, Consolas, monospace; font-size: 9pt; color: #4A5B7A">#000000</div><div style="font-size: 8.5pt; color: #7B8AA3; line-height: 1.35; margin-top: 4px">"Otto" in the logotype only.</div></div></div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; break-inside: avoid; margin-bottom: 28px">
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 44px; background: #80CDC4"></div><div style="padding: 8px 12px"><div style="font-weight: 600; font-size: 9.5pt">Mint</div><div style="font-family: Menlo, Consolas, monospace; font-size: 8.5pt; color: #7B8AA3">#80CDC4</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 44px; background: #A7D7D9"></div><div style="padding: 8px 12px"><div style="font-weight: 600; font-size: 9.5pt">Shallow</div><div style="font-family: Menlo, Consolas, monospace; font-size: 8.5pt; color: #7B8AA3">#A7D7D9</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 44px; background: #D8EAEA"></div><div style="padding: 8px 12px"><div style="font-weight: 600; font-size: 9.5pt">Mist</div><div style="font-family: Menlo, Consolas, monospace; font-size: 8.5pt; color: #7B8AA3">#D8EAEA</div></div></div>
+      <div style="border: 1px solid #E3E8EF; border-radius: 10px; overflow: hidden"><div style="height: 44px; background: #F3F9F9; border-bottom: 1px solid #E3E8EF"></div><div style="padding: 8px 12px"><div style="font-weight: 600; font-size: 9.5pt">Frost</div><div style="font-family: Menlo, Consolas, monospace; font-size: 8.5pt; color: #7B8AA3">#F3F9F9</div></div></div>
+    </div>
+
+    <h3 style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 14pt; margin: 0 0 8px; color: #1E345D">Inherited Nirmata primaries</h3>
+    <p style="margin: 0 0 12px; max-width: 46em">OttoFlow is a Nirmata product, so it inherits Nirmata Navy for all text and Nirmata Blue for interactive elements. Nirmata Sky and OttoFlow Teal are close in hue but Sky is brighter — pick one per surface rather than using both.</p>
+    <table style="width: 100%; border-collapse: collapse; font-size: 10pt; margin-bottom: 32px; break-inside: avoid">
+      <thead><tr style="background: #F6F8FB"><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600; width: 52px"></th><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Name</th><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Hex</th><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Use</th></tr></thead>
+      <tbody>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF"><div style="width: 26px; height: 16px; border-radius: 4px; background: #1E345D"></div></td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Nirmata Navy</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; font-family: Menlo, Consolas, monospace; font-size: 9pt">#1E345D</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">All text — never #000 outside the logotype</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF"><div style="width: 26px; height: 16px; border-radius: 4px; background: #2E5596"></div></td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Nirmata Blue</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; font-family: Menlo, Consolas, monospace; font-size: 9pt">#2E5596</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Buttons, links</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF"><div style="width: 26px; height: 16px; border-radius: 4px; background: #71CFEB"></div></td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Nirmata Sky</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; font-family: Menlo, Consolas, monospace; font-size: 9pt">#71CFEB</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Do not mix with OttoFlow Teal on one surface</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF"><div style="width: 26px; height: 16px; border-radius: 4px; background: #FF5859"></div></td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Nirmata Red</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; font-family: Menlo, Consolas, monospace; font-size: 9pt">#FF5859</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Errors only</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF"><div style="width: 26px; height: 16px; border-radius: 4px; background: #D4DCE5"></div></td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Nirmata Gray</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; font-family: Menlo, Consolas, monospace; font-size: 9pt">#D4DCE5</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Dividers, neutral panels</td></tr>
+      </tbody>
+    </table>
+
+    <h2 style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 22pt; margin: 0 0 6px; color: #1E345D; border-bottom: 1px solid #E3E8EF; padding-bottom: 8px; break-before: page">Type</h2>
+
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 22px 0 28px; break-inside: avoid">
+      <div>
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 36pt; line-height: 1.05; letter-spacing: -0.015em; margin-bottom: 10px">Ubuntu</div>
+        <p style="margin: 0 0 12px; font-size: 10pt; color: #4A5B7A">Headlines. Light 300 for display and h1, Regular 400 for h2, Medium 500 for h3 and h4. The bigger the size, the lighter the weight. Always Nirmata Navy — never teal.</p>
+        <div style="border-top: 1px solid #E3E8EF; padding-top: 12px; display: flex; flex-direction: column; gap: 8px">
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 300; font-size: 24pt; line-height: 1.15">Deterministic by default</div>
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 17pt; line-height: 1.2">Collect, analyze, publish</div>
+          <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 13pt; line-height: 1.25">Step types</div>
+        </div>
+      </div>
+      <div>
+        <div style="font-family: 'Open Sans', sans-serif; font-weight: 600; font-size: 36pt; line-height: 1.05; letter-spacing: -0.01em; margin-bottom: 10px">Open Sans</div>
+        <p style="margin: 0 0 12px; font-size: 10pt; color: #4A5B7A">Body and UI. Regular 400 at 16px/1.55. Semibold 600 for labels, table headers and buttons. Bold 700 for inline emphasis only. Captions at 12px, uppercase, tracked 0.08em.</p>
+        <div style="border-top: 1px solid #E3E8EF; padding-top: 12px; display: flex; flex-direction: column; gap: 8px">
+          <div style="font-size: 10.5pt; line-height: 1.55">Body — OttoFlow runs autonomous AI workflows on Kubernetes.</div>
+          <div style="font-size: 9.5pt; color: #4A5B7A">Small — secondary copy and helper text.</div>
+          <div style="font-size: 8pt; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #7B8AA3">Caption · uppercase</div>
+        </div>
+      </div>
+    </div>
+
+    <table style="width: 100%; border-collapse: collapse; font-size: 10pt; margin-bottom: 28px; break-inside: avoid">
+      <thead><tr style="background: #F6F8FB"><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Token</th><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Size / line-height</th><th style="text-align: left; padding: 8px 12px; border: 1px solid #E3E8EF; font-weight: 600">Weight</th></tr></thead>
+      <tbody>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Display</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">64 / 1.1</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Ubuntu 300</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">H1</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">44 / 1.15</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Ubuntu 300</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">H2</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">32 / 1.2</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Ubuntu 400</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">H3</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">24 / 1.25</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Ubuntu 500</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">H4</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">18 / 1.3</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Ubuntu 500</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Body</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">16 / 1.55</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Open Sans 400</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Small</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">14 / 1.5</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Open Sans 400</td></tr>
+        <tr><td style="padding: 6px 12px; border: 1px solid #E3E8EF">Caption</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF">12 / 1.45, uppercase, 0.08em</td><td style="padding: 6px 12px; border: 1px solid #E3E8EF; color: #4A5B7A">Open Sans 600</td></tr>
+      </tbody>
+    </table>
+
+    <div style="display: flex; gap: 28px; align-items: center; border: 1px solid #E3E8EF; border-radius: 10px; padding: 22px 26px; break-inside: avoid; margin-bottom: 32px">
+      <div style="font-family: Arimo, Helvetica, Arial, sans-serif; font-size: 34pt; line-height: 1; letter-spacing: -0.01em"><span style="color: #000000">Otto</span><span style="color: #7BC3C7">Flow</span></div>
+      <div style="flex: 1; min-width: 0">
+        <div style="font-family: Ubuntu, sans-serif; font-weight: 500; font-size: 13pt; margin-bottom: 6px">The wordmark</div>
+        <p style="margin: 0; font-size: 10pt; line-height: 1.5; color: #4A5B7A">Set in a Helvetica-class grotesque at Regular weight, reproduced here in Arimo, which is metrically identical and open-licensed. Treat the wordmark as fixed artwork: never re-set it in Ubuntu, and never re-space it. Ubuntu is for headlines that sit next to the logo, not for the logo itself.</p>
+      </div>
+    </div>
+
+    <h2 style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 22pt; margin: 0 0 6px; color: #1E345D; border-bottom: 1px solid #E3E8EF; padding-bottom: 8px">Writing</h2>
+    <ul style="margin: 18px 0 32px; padding-left: 18px; font-size: 10.5pt; line-height: 1.55; color: #4A5B7A; max-width: 46em">
+      <li style="margin-bottom: 5px">Sentence case for headings and UI.</li>
+      <li style="margin-bottom: 5px">"We" for the team, "you" for the reader.</li>
+      <li style="margin-bottom: 5px">No emoji in product UI. One exclamation point per screen, at most.</li>
+      <li>No all-caps body copy; all-caps is for 12&nbsp;px captions only.</li>
+    </ul>
+
+    <h2 style="font-family: Ubuntu, sans-serif; font-weight: 400; font-size: 22pt; margin: 0 0 6px; color: #1E345D; border-bottom: 1px solid #E3E8EF; padding-bottom: 8px">A note on resolution</h2>
+    <p style="margin: 18px 0 12px; max-width: 46em">The otter in <code style="font-family: Menlo, Consolas, monospace; font-size: 0.9em">images/brand/ottoflow-horizontal-light.png</code> is <strong>392 × 392 px</strong> of raster artwork — that is the ceiling on real detail. The exports here resample it with high-quality filtering and hold up to roughly <strong>400 px on screen</strong> or <strong>40 mm in print</strong>. The wordmark in every export is live type, so it stays crisp at any size.</p>
+    <p style="margin: 0; max-width: 46em">For billboard, large-format print, or true vector output, the original illustration source (SVG or AI) is needed.</p>
+
+  </div>
+</doc-page>]]>
+</x-dc>
+</body>
+</html>

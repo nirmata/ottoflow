@@ -59,18 +59,23 @@ var (
 
 // runCmd represents the run command
 var runCmd = &cobra.Command{
-	Use:          "run [workflow-name]",
+	Use:          "run [workflow-name|workflow-file.yaml]",
 	Short:        "Create and watch a WorkflowRun",
 	SilenceUsage: true, // Don't print usage on error
-	Long: `Run a workflow: locally (with --workflow-dir or --file) or in-cluster (default).
+	Long: `Run a workflow: locally (with --workflow-dir, --file, or a plain file path) or in-cluster (default).
 
 When --workflow-dir is set, workflows are loaded from that directory and executed in-process
 (local execution). When --file/-f is set, a single manifest is loaded from a file, an http(s)
 URL, or stdin ("-") and executed the same way, with no directory and no cluster required for
-cluster-independent steps. Otherwise, a WorkflowRun is created in the cluster and the
+cluster-independent steps. Passing a bare file path with no flag does the same thing -- no
+--file/--local flag needed -- unless the file contains a WorkflowRun, which is applied in-cluster
+for backward compatibility. Otherwise, a WorkflowRun is created in the cluster and the
 controller runs the workflow in a Job.
 
 Examples:
+  # Local execution: run a single workflow manifest by path, no flags needed
+  ottoflow run samples/workflows/production/cluster-overview.yaml
+
   # Local execution: load and run a single workflow from a directory
   ottoflow run my-workflow --workflow-dir samples/workflows
 
@@ -107,7 +112,7 @@ func init() {
 	runCmd.Flags().StringVarP(&runFile, "file", "f", "",
 		"Run a manifest locally, in-process, from a file, an http(s) URL, or '-' for stdin (no cluster/controller required)")
 	runCmd.Flags().BoolVar(&allowInsecureURL, "allow-insecure-url", false,
-		"Permit http:// (non-TLS) URLs with -f")
+		"Permit http:// (non-TLS) URLs with -f or a bare http(s) URL argument")
 	runCmd.Flags().StringToStringVarP(&inputValues, "input", "i", map[string]string{},
 		"Input values as key=value pairs (can be specified multiple times)")
 	runCmd.Flags().StringVar(&timeout, "timeout", "10m", "Maximum time to wait for workflow completion (cluster watch)")
@@ -134,6 +139,27 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	if runFile != "" && workflowDir != "" {
 		return fmt.Errorf("--file and --workflow-dir are mutually exclusive")
 	}
+	// A bare file path or http(s) URL (e.g. `ottoflow run samples/foo.yaml` or
+	// `ottoflow run https://.../foo.yaml`) with no --file/--workflow-dir is ambiguous: it's
+	// historically been treated as a WorkflowRun to apply in-cluster, but a user pointing run
+	// at a Workflow manifest almost always wants it executed locally, the same as `-f <ref>`.
+	// classifyRunSource fetches it once (the same file/URL/stdin logic -f uses) and peeks at its
+	// Kind to route it correctly instead of requiring a flag.
+	var preloadedManifest []byte
+	var preloadedRun *ottoflowv1alpha1.WorkflowRun
+	if runFile == "" && workflowDir == "" && len(args) == 1 && (looksLikeFilePath(args[0]) || looksLikeURL(args[0])) {
+		manifest, run, err := classifyRunSource(cmd, ctx, args[0])
+		if err != nil {
+			return err
+		}
+		if run != nil {
+			preloadedRun = run
+		} else {
+			preloadedManifest = manifest
+			runFile = args[0]
+			args = nil
+		}
+	}
 	if runFile != "" || workflowDir != "" {
 		// --watch only has meaning against the cluster's async watch-and-poll loop; local
 		// execution always runs synchronously to completion, so the flag does nothing here.
@@ -148,7 +174,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		ctx = localCtx
 	}
 	if runFile != "" {
-		return runWorkflowFromStream(cmd, ctx, args)
+		return runWorkflowFromStream(cmd, ctx, args, preloadedManifest)
 	}
 	config, err := getKubeConfig()
 	if err != nil {
@@ -164,7 +190,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	if providerOverride != "" || modelOverride != "" {
 		fmt.Fprintln(os.Stderr, "Warning: --provider and --model flags only apply to local mode (--workflow-dir)")
 	}
-	return runWorkflowInCluster(ctx, k8sClient, args)
+	return runWorkflowInCluster(ctx, k8sClient, args, preloadedRun)
 }
 
 // applyLocalTimeout wraps ctx with a deadline from --timeout for local execution
@@ -221,15 +247,22 @@ func runWorkflowLocal(ctx context.Context, k8sClient client.Client, config *rest
 	return runLoadedWorkflow(ctx, exec, resolvedName, ns)
 }
 
-// runWorkflowFromStream implements `ottoflow run -f <ref>`: it loads a single manifest from a
-// file, an http(s) URL, or stdin ("-") and executes it locally, in-process. Unlike
-// --workflow-dir this path never requires a kubeconfig -- a Kubernetes client is built on a
-// best-effort basis so cluster-independent workflows (expressions, agent steps) run with zero
-// setup, while steps that do need a cluster (resourceQuery, mutate) fail with a clear error.
-func runWorkflowFromStream(cmd *cobra.Command, ctx context.Context, args []string) error {
-	data, err := readRunSource(cmd, ctx, runFile)
-	if err != nil {
-		return err
+// runWorkflowFromStream implements `ottoflow run -f <ref>` and the bare file-path/URL form: it
+// loads a single manifest from a file, an http(s) URL, or stdin ("-") and executes it locally,
+// in-process. Unlike --workflow-dir this path never requires a kubeconfig -- a Kubernetes client
+// is built on a best-effort basis so cluster-independent workflows (expressions, agent steps)
+// run with zero setup, while steps that do need a cluster (resourceQuery, mutate) fail with a
+// clear error. preloadedData, when non-nil, is already-fetched manifest bytes (the bare
+// path/URL form in runWorkflow fetches once to classify the Kind and passes the result here
+// instead of fetching the same URL twice); otherwise it's read from runFile.
+func runWorkflowFromStream(cmd *cobra.Command, ctx context.Context, args []string, preloadedData []byte) error {
+	data := preloadedData
+	if data == nil {
+		d, err := readRunSource(cmd, ctx, runFile)
+		if err != nil {
+			return err
+		}
+		data = d
 	}
 
 	config, k8sClient, err := resolveOptionalKubeClient()
@@ -442,7 +475,13 @@ type clusterRunOptions struct {
 	getNamespace  func() string
 }
 
-func runWorkflowInCluster(ctx context.Context, k8sClient client.Client, args []string) error {
+// runWorkflowInCluster creates and (by default) watches a WorkflowRun. preloadedRun, when
+// non-nil, is a WorkflowRun already parsed from a bare file-path/URL argument in runWorkflow
+// (which fetched it once to classify its Kind) and is applied as-is; otherwise the WorkflowRun
+// is built from args the normal way (a local WorkflowRun file path, or a workflow name).
+func runWorkflowInCluster(
+	ctx context.Context, k8sClient client.Client, args []string, preloadedRun *ottoflowv1alpha1.WorkflowRun,
+) error {
 	opts := clusterRunOptions{
 		workflowName:  workflowName,
 		inputValues:   inputValues,
@@ -452,9 +491,15 @@ func runWorkflowInCluster(ctx context.Context, k8sClient client.Client, args []s
 		includeInputs: includeInputs,
 		getNamespace:  getNamespace,
 	}
-	runObj, err := resolveWorkflowRunSpec(opts, args)
-	if err != nil {
-		return err
+	var runObj *ottoflowv1alpha1.WorkflowRun
+	if preloadedRun != nil {
+		runObj = preloadedRun.DeepCopy()
+	} else {
+		var err error
+		runObj, err = resolveWorkflowRunSpec(opts, args)
+		if err != nil {
+			return err
+		}
 	}
 	normalizeWorkflowRunSpec(runObj, opts)
 
@@ -491,16 +536,10 @@ func runWorkflowInCluster(ctx context.Context, k8sClient client.Client, args []s
 		ctx, k8sClient, client.ObjectKeyFromObject(runObj), timeoutDuration, opts.outputFormat, opts.includeInputs)
 }
 
-// resolveWorkflowRunSpec returns a WorkflowRun to create: from first arg as file path,
-// or built from workflow name.
+// resolveWorkflowRunSpec builds a WorkflowRun from a workflow name. A file-path/URL argument
+// naming a WorkflowRun directly is handled earlier, in runWorkflow (preloadedRun) -- by the time
+// this runs, args (per cobra.MaximumNArgs(1)) is either empty or a single non-file-like name.
 func resolveWorkflowRunSpec(opts clusterRunOptions, args []string) (*ottoflowv1alpha1.WorkflowRun, error) {
-	if len(args) > 0 && looksLikeFilePath(args[0]) {
-		wr, err := loadWorkflowRunFromFile(args[0])
-		if err != nil {
-			return nil, fmt.Errorf("failed to load WorkflowRun from %s: %w", args[0], err)
-		}
-		return wr, nil
-	}
 	name := resolveWorkflowName(opts, args)
 	if name == "" {
 		return nil, fmt.Errorf("workflow name is required (use --workflow or provide as argument)")
@@ -520,6 +559,51 @@ func resolveWorkflowRunSpec(opts clusterRunOptions, args []string) (*ottoflowv1a
 			InputValues: opts.inputValues,
 		},
 	}, nil
+}
+
+// parseWorkflowRunDoc scans data (already-loaded manifest bytes, from a file, URL, or stdin) for
+// a WorkflowRun document, splitting on YAML document separators the same way
+// loadWorkflowRunFromFile always has. Returns the first WorkflowRun found and ok=true, or
+// ok=false if data contains no WorkflowRun (e.g. a Workflow, Agent, or other Kind) -- callers
+// use that to route the source to local execution instead.
+func parseWorkflowRunDoc(data []byte) (wr *ottoflowv1alpha1.WorkflowRun, ok bool) {
+	documents := strings.Split("\n"+string(data), "\n---")
+	for _, doc := range documents {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+		candidate := &ottoflowv1alpha1.WorkflowRun{}
+		if err := yaml.Unmarshal([]byte(doc), candidate); err == nil && candidate.Kind == "WorkflowRun" {
+			return candidate, true
+		}
+	}
+	return nil, false
+}
+
+// classifyRunSource fetches ref (a file path, http(s) URL, or "-" for stdin -- the same sources
+// readRunSource accepts for -f) and classifies its content: a WorkflowRun document returns
+// (nil, wr, nil) for the caller to apply in-cluster; anything else (typically a Workflow) returns
+// (manifest, nil, nil) for local execution, with manifest holding the already-fetched bytes so
+// the caller never has to fetch the same URL a second time.
+func classifyRunSource(
+	cmd *cobra.Command, ctx context.Context, ref string,
+) ([]byte, *ottoflowv1alpha1.WorkflowRun, error) {
+	data, err := readRunSource(cmd, ctx, ref)
+	if err != nil {
+		return nil, nil, err
+	}
+	if wr, ok := parseWorkflowRunDoc(data); ok {
+		return nil, wr, nil
+	}
+	return data, nil, nil
+}
+
+// looksLikeURL reports whether arg is an http(s) URL, the same schemes readRunSource/fetchURL
+// accept for -f.
+func looksLikeURL(arg string) bool {
+	lower := strings.ToLower(arg)
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
 }
 
 func looksLikeFilePath(arg string) bool {
@@ -729,21 +813,8 @@ func loadWorkflowRunFromFile(filePath string) (*ottoflowv1alpha1.WorkflowRun, er
 	if err != nil {
 		return nil, err
 	}
-
-	// Split only on line-start separators: a bare "---" also matches markdown table
-	// separators inside expression strings, truncating the document mid-value.
-	documents := strings.Split("\n"+string(data), "\n---")
-	for _, doc := range documents {
-		doc = strings.TrimSpace(doc)
-		if doc == "" {
-			continue
-		}
-
-		workflowRun := &ottoflowv1alpha1.WorkflowRun{}
-		if err := yaml.Unmarshal([]byte(doc), workflowRun); err == nil && workflowRun.Kind == "WorkflowRun" {
-			return workflowRun, nil
-		}
+	if wr, ok := parseWorkflowRunDoc(data); ok {
+		return wr, nil
 	}
-
 	return nil, fmt.Errorf("no WorkflowRun found in file")
 }

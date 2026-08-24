@@ -74,6 +74,10 @@ See [Architecture](docs/user/concepts/architecture.md) for full details.
 
 ### Project Structure
 
+Verified against the working tree (`internal/controller/` and `internal/mcp/` do not
+exist — controllers live under `internal/workflow/controller/`, and MCP client code
+lives under `internal/agent/`):
+
 ```
 .
 ├── api/v1alpha1/          # CRD type definitions and OpenAPI schemas
@@ -82,17 +86,25 @@ See [Architecture](docs/user/concepts/architecture.md) for full details.
 │   ├── agent-executor/    # agent-executor binary (image: ghcr.io/nirmata/ottoflow/agent-executor)
 │   └── workflow-runner/  # runner binary (image: ghcr.io/nirmata/ottoflow/workflow-runner)
 ├── internal/
-│   ├── controller/        # Kubernetes controllers (reconciliation logic)
 │   ├── workflow/
-│   │   └── executor/      # All CEL + step execution logic (runs in workflow-runner)
-│   │       ├── cel.go         # CEL expression evaluator
-│   │       ├── cel_libraries.go # CEL library integration
-│   │       ├── exec_handler.go  # HTTP handler for agent-executor /api/exec endpoint
-│   │       ├── agent_executor.go # Agent step execution (runner side)
-│   │       ├── resource_macros.go # resource.Get() etc.
-│   │       └── ...
-│   ├── agent/             # Agent/LLM provider integration
-│   └── mcp/               # MCP tool integration
+│   │   ├── controller/    # Kubernetes controllers (reconciliation logic), cron scheduler,
+│   │   │                  # callback server, webhook trigger server
+│   │   ├── executor/      # All CEL + step execution logic (runs in workflow-runner)
+│   │   │   ├── cel.go         # CEL expression evaluator
+│   │   │   ├── cel_libraries.go # CEL library integration
+│   │   │   ├── exec_handler.go  # HTTP handler for agent-executor /api/exec endpoint
+│   │   │   ├── agent_executor.go # Agent step execution (runner side)
+│   │   │   ├── resource_macros.go # resource.Get() etc.
+│   │   │   └── ...
+│   │   ├── cluster/       # Target-cluster client resolution (ClusterRef)
+│   │   └── token/         # Token handling
+│   ├── agent/             # Agent/LLM provider integration (MCP client code lives here too)
+│   ├── auth/              # TokenReview + SubjectAccessReview authenticator (agent-executor)
+│   ├── certmanager/       # Internal TLS cert bootstrap (no cert-manager dependency)
+│   ├── webhook/           # Admission validators
+│   ├── metrics/           # Prometheus metric registration
+│   ├── tracing/           # OpenTelemetry tracer provider
+│   └── logging/           # Structured logging helpers
 ├── cli/                   # Command-line tool (`ottoflow` CLI)
 ├── samples/workflows/     # Example workflows
 ├── config/                # Kustomize configs and CRD manifests
@@ -101,7 +113,7 @@ See [Architecture](docs/user/concepts/architecture.md) for full details.
 
 ### Key Components
 
-#### Controller (`internal/controller/`)
+#### Controller (`internal/workflow/controller/`)
 - **Reconciler**: Manages Workflow and WorkflowRun lifecycle
 - **Event Handler**: Processes Kubernetes events for triggers
 - **Cron Manager**: Handles scheduled workflow execution
@@ -141,6 +153,9 @@ make build
 # Build CLI tool
 make build-cli
 
+# Cross-compile the CLI for linux/darwin/windows into bin/
+make build-cli-all
+
 # Build everything
 make all
 
@@ -176,6 +191,8 @@ IMAGE_TAG=0.0.1 make ko-push-manager
 ```
 
 With `KO_DOCKER_REPO=ghcr.io/nirmata/ottoflow` and `IMAGE_TAG=0.0.1`, the image is `ghcr.io/nirmata/ottoflow/controller:0.0.1`. Set `controller.image.fullOverride` in Helm to that image, and you can use `--workflow-runner-image-pull-secrets` in `controller.args`.
+
+To build (or push) all three images — `controller`, `agent-executor`, and `workflow-runner` — at once instead of just the controller, use `make ko-build`/`make ko-push` in place of the `-manager`-suffixed targets above.
 
 ### Running Locally
 
@@ -225,6 +242,21 @@ go test -v ./internal/executor/...
 make test-integration
 ```
 
+### What CI does
+
+The `CI` workflow (`.github/workflows/ci.yaml`) runs on pushes to `main`, `v*.*.*` tags, and
+pull requests. Its jobs:
+
+- **build** — `make build-cli`, then `helm lint`/`helm template` the chart and the chart RBAC
+  assertions (`go test ./test/chart/...`); uploads `bin/ottoflow` as an artifact.
+- **lint** — `golangci-lint` (v2.11.4) and a check that all Actions are SHA-pinned.
+- **verify-codegen** — `make verify-codegen`; fails if generated CRDs, deepcopy code, or docs
+  (CRD API reference, CLI reference) are stale or uncommitted.
+- **validate-samples** — builds the CLI, then `ottoflow validate --workflow-dir samples`.
+- **test** — `make test` (with cached envtest binaries for Kubernetes 1.29.0).
+- **images** — on pushes to `main` (not on PRs or tags), builds and pushes all three
+  container images with `ko` to `ghcr.io/nirmata/ottoflow`.
+
 ### Code Generation
 
 OttoFlow uses Kubernetes code generators:
@@ -248,6 +280,19 @@ make openapi
 - CRDs are automatically synced to `charts/ottoflow/crds/` when running `make manifests`
 - Source of truth: `config/crd/bases/` (generated from Go code)
 - Do not edit CRDs in `charts/ottoflow/crds/` directly - they are synced automatically
+
+### Build-time variables (Makefile)
+
+`KO_DOCKER_REPO` and `IMAGE_TAG` are covered above, under "Building container images". A few
+more `make` variables are worth knowing about:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `IMG` / `WORKFLOW_RUNNER_IMG` / `AGENT_EXECUTOR_IMG` | — | Image overrides for `make generate-manifests`/`make deploy` |
+| `HELM_CHART_PATH` | `./charts/ottoflow` | Chart location used by Helm-based `make` targets |
+| `HELM_RELEASE_NAME` | `ottoflow` | Release name used by Helm-based `make` targets |
+| `HELM_NAMESPACE` | `ottoflow` | Install namespace used by Helm-based `make` targets |
+| `ENVTEST_K8S_VERSION` | `1.29.0` | Kubernetes test-binary version `make test` downloads via `setup-envtest` |
 
 ---
 

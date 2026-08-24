@@ -18,6 +18,8 @@ builds:
     ldflags:
       - -s -w
       - -X github.com/nirmata/ottoflow/cli/cmd.version={{ .Version }}
+      - -X github.com/nirmata/ottoflow/cli/cmd.gitCommit={{ .ShortCommit }}
+      - -X github.com/nirmata/ottoflow/cli/cmd.buildTime={{ .Date }}
 
 archives:
   - id: ottoflow

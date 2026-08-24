@@ -25,7 +25,7 @@ history.
   they can be discussed before significant implementation work starts.
 - Licensing and legal questions (including anything about the
   [Business Source License](LICENSE.md) grant) are decided by Nirmata and
-  routed through [licensing@nirmata.com](mailto:licensing@nirmata.com) — they
+  routed through [hello@nirmata.com](mailto:hello@nirmata.com) — they
   are not something a pull request review can resolve.
 - There is no formal RFC process or vote today. As the project and external
   contributor base grow, this document will be updated to describe one.
@@ -59,7 +59,7 @@ informally.
   on them.
 - **Security vulnerabilities:** follow [SECURITY.md](SECURITY.md); do not open
   a public issue.
-- **Licensing questions:** [licensing@nirmata.com](mailto:licensing@nirmata.com).
+- **Licensing questions:** [hello@nirmata.com](mailto:hello@nirmata.com).
 
 ## Changing this document
 

@@ -1,22 +1,67 @@
-### Installation
+# Installation
 
-#### Prerequisites
+## Prerequisites
 
 - Kubernetes 1.29+
 - Helm 3.0+ (for Helm installation)
 
-#### Installing OttoFlow
+## Installing the CLI
+
+The `ottoflow` CLI runs workflows locally with no cluster required (`ottoflow run --workflow-dir ...`), or against a cluster (`ottoflow run`, `ottoflow validate`, `ottoflow status`).
+
+**Option A: Homebrew (macOS/Linux, recommended)**
+
+```bash
+brew install nirmata/tap/ottoflow
+```
+
+**Option B: Prebuilt binary**
+
+Download the archive for your platform (darwin/linux, amd64/arm64) from the
+[Releases page](https://github.com/nirmata/ottoflow/releases), verify it against the published
+`checksums.txt`, then extract it onto your `PATH`:
+
+```bash
+VERSION=v0.1.0-rc1   # replace with the release you want
+OS=darwin            # or linux
+ARCH=arm64           # or amd64
+
+curl -sSLO "https://github.com/nirmata/ottoflow/releases/download/${VERSION}/ottoflow_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+curl -sSLO "https://github.com/nirmata/ottoflow/releases/download/${VERSION}/checksums.txt"
+
+# Linux (GNU coreutils):
+sha256sum --ignore-missing -c checksums.txt
+# macOS (no sha256sum by default):
+grep "${OS}_${ARCH}" checksums.txt | shasum -a 256 -c -
+
+tar -xzf "ottoflow_${VERSION#v}_${OS}_${ARCH}.tar.gz"
+sudo mv ottoflow /usr/local/bin/
+```
+
+**Option C: Build from source**
+
+```bash
+make build-cli          # builds bin/ottoflow
+make install-cli        # go install into $GOPATH/bin (or $GOBIN)
+make install-cli-local  # copy bin/ottoflow to /usr/local/bin (uses sudo)
+```
+
+See [`cli/README.md`](../../../cli/README.md) for CLI usage and flags.
+
+## Installing OttoFlow (in-cluster controller)
 
 **Option A: Via Helm (recommended)**
 
 Use `helm upgrade --install` so installs and upgrades both work:
 
 From OCI registry (recommended, works for public and private repos):
+
 ```bash
 helm upgrade --install ottoflow oci://ghcr.io/nirmata/ottoflow --version <version> --namespace ottoflow --create-namespace
 ```
 
 From local chart:
+
 ```bash
 helm upgrade --install ottoflow ./charts/ottoflow --namespace ottoflow --create-namespace
 ```
@@ -43,7 +88,7 @@ kubectl apply -f config/generated/install.yaml
 
 See the [Helm Chart README](../../../charts/ottoflow/README.md) for chart options and the [Configuration Reference](../reference/configuration.md) for all flags and environment variables.
 
-#### Nirmata LLM credentials (optional)
+## Nirmata LLM credentials (optional)
 
 > **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `azure-openai`, `google`/`gemini`, and `local`. The Nirmata LLM credentials below apply only when running with the enterprise plugin.
 
@@ -67,6 +112,7 @@ stringData:
 Reference the secret so the workflow-runner pod receives it as environment variables (never put secrets in plain `value`; use `valueFrom.secretKeyRef`).
 
 **Option A – Workflow (recommended for cron-triggered runs)**  
+
 Add `spec.execution` to the **Workflow**. The scheduler copies it into every WorkflowRun it creates (e.g. from cron), so all runs use the secret:
 
 ```yaml

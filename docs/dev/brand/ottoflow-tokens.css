@@ -1,0 +1,59 @@
+/* ==========================================================================
+   OTTOFLOW — brand tokens
+   Colours sampled from images/brand/ottoflow-horizontal-light.png. Type inherits the Nirmata system.
+   ========================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Ubuntu:wght@300;400;500;700&family=Open+Sans:wght@300;400;600;700&family=Arimo:wght@400;500;700&display=swap');
+
+:root {
+  /* ---------- OttoFlow palette (from the mark) ---------- */
+  --otto-teal:        #7BC3C7;   /* signature accent — "Flow", links, active states */
+  --otto-navy:        #192C5D;   /* dark surfaces, glasses frame */
+  --otto-deep-sea:    #1A3D6F;   /* icon backdrop, dark panels */
+  --otto-mint:        #80CDC4;
+  --otto-shallow:     #A7D7D9;
+  --otto-mist:        #D8EAEA;
+  --otto-frost:       #F3F9F9;
+  --otto-wordmark:    #000000;   /* "Otto" in the logotype ONLY */
+
+  /* ---------- Inherited Nirmata primaries ---------- */
+  --nirmata-navy:     #1E345D;   /* all text — never #000 */
+  --nirmata-blue:     #2E5596;   /* buttons, links */
+  --nirmata-sky:      #71CFEB;   /* do not mix with --otto-teal on one surface */
+  --nirmata-red:      #FF5859;   /* errors only */
+  --nirmata-gray:     #D4DCE5;
+
+  /* ---------- Semantic ---------- */
+  --fg-1: var(--nirmata-navy);
+  --fg-2: #4A5B7A;
+  --fg-3: #7B8AA3;
+  --fg-inverse: #FFFFFF;
+  --bg-1: #FFFFFF;
+  --bg-2: #F6F8FB;
+  --bg-navy: var(--otto-navy);
+  --border-1: #E3E8EF;
+  --accent: var(--otto-teal);
+  --accent-hover: #66B2B7;
+
+  /* ---------- Type ---------- */
+  --font-display:  'Ubuntu', 'Helvetica Neue', Arial, sans-serif;
+  --font-body:     'Open Sans', 'Helvetica Neue', Arial, sans-serif;
+  --font-wordmark: 'Arimo', 'Helvetica Neue', Arial, sans-serif; /* logotype only */
+  --font-mono:     ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --fs-display: 64px; --lh-display: 1.1;  --fw-display: 300;
+  --fs-h1:      44px; --lh-h1:      1.15; --fw-h1:      300;
+  --fs-h2:      32px; --lh-h2:      1.2;  --fw-h2:      400;
+  --fs-h3:      24px; --lh-h3:      1.25; --fw-h3:      500;
+  --fs-h4:      18px; --lh-h4:      1.3;  --fw-h4:      500;
+  --fs-body:    16px; --lh-body:    1.55; --fw-body:    400;
+  --fs-small:   14px; --lh-small:   1.5;  --fw-small:   400;
+  --fs-caption: 12px; --lh-caption: 1.45; --fw-caption: 600;
+
+  /* ---------- Radii / shadows / motion ---------- */
+  --radius-sm: 8px; --radius-md: 12px; --radius-lg: 16px; --radius-pill: 999px;
+  --shadow-sm: 0 2px 6px rgba(25, 44, 93, 0.08);
+  --shadow-md: 0 6px 16px rgba(25, 44, 93, 0.10);
+  --ease-standard: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms; --dur-base: 200ms; --dur-slow: 320ms;
+}
