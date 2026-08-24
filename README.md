@@ -41,16 +41,16 @@ want free-form agents, use one of those instead.
 
 ## ✨ Key Features
 
-- ✅ **Declarative and Deterministic, Kubernetes-native workflows** — define workflows as Kubernetes CRDs in YAML.
+- ✅ **Declarative Kubernetes-native workflows** — define workflows as CRDs in YAML.
 - ✅ **Fast DAG execution** — explicit dependency resolution with parallel step batches.
 - ✅ **Multi-provider LLM support** — use OpenAI, Anthropic, etc. or local models with vLLM.
 - ✅ **Kubernetes and CNCF integrations** — query API resources, PromQL, Kagent using A2A, otel, and more.
 - ✅ **Compiled CEL expressions** — sandboxed execution with full K8s and [Kyverno CEL](https://github.com/kyverno/sdk) library support
-- ✅ **Multiple step types** — Expressions, ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
+- ✅ **Multiple step types** — ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
 - ✅ **Context optimization** — agent steps receive agregated computed summaries, never raw data dumps.
-- ✅ **Retry & conditional execution** — configurable retry policies, failure handling, and `matchConditions` gating per step.
-- ✅ **CLI with local mode** — execute workflows in-process against your kubecontext, no controller or CRDs required.
-- ✅ **Extensive AI-ready samples** — ready-to-run workflows under [`samples/`](samples/). Easy to generate and test with AI coding assistants.
+- ✅ **Retry & conditional execution** — retry policies and `matchConditions` gating per step.
+- ✅ **CLI with local mode** — execute workflows locally against your kubecontext.
+- ✅ **Extensive samples** — ready-to-run workflows under [`samples/`](samples/).
 
 ## ⚡ Quick Start - Your first AI workflow in under ~60 seconds
 
