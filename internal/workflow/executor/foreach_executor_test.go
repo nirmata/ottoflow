@@ -676,6 +676,62 @@ var _ = Describe("ForEach Executor", func() {
 			Expect(failed).To(HaveLen(1))
 		})
 
+		It("still writes step outputs when every item fails under a step-level failurePolicy: Continue, so a downstream step can read them", func() {
+			// Distinct from itemFailurePolicy (which governs individual items within the
+			// forEach): step.FailurePolicy is the outer, step-level escape hatch that lets the
+			// *workflow* proceed past this step even though it ends up Failed. The forEach step
+			// declares its own output (a count of failed items) and a downstream step reads it.
+			workflow := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-workflow", Namespace: "default"},
+				Spec: ottoflowv1alpha1.WorkflowSpec{
+					Variables: []ottoflowv1alpha1.Variable{
+						{Name: "items", Expression: `["a", "b", "c"]`},
+					},
+					Steps: []ottoflowv1alpha1.Step{
+						{
+							Name: "loop",
+							ForEach: &ottoflowv1alpha1.StepForEach{
+								Items: `variables.items`,
+								Step: &ottoflowv1alpha1.StepForEachStep{
+									Expressions: []ottoflowv1alpha1.Expression{
+										{Name: "boom", Expression: `variables.item.noSuchField`},
+									},
+								},
+								MaxConcurrency:    1,
+								ItemFailurePolicy: ottoflowv1alpha1.FailurePolicyContinue,
+							},
+							Outputs: []ottoflowv1alpha1.Output{
+								{Name: "failedCount", Expression: `size(steps.loop.failed)`},
+							},
+							FailurePolicy: ottoflowv1alpha1.FailurePolicyContinue,
+						},
+						{
+							Name:      "afterLoop",
+							DependsOn: []string{"loop"},
+							Outputs: []ottoflowv1alpha1.Output{
+								// Step outputs land in the flat variables map (no per-step
+								// namespace -- see ContextManager.WriteStepOutputs), so this
+								// reads the forEach step's declared output as variables.failedCount.
+								{Name: "echoedFailedCount", Expression: `variables.failedCount`},
+							},
+						},
+					},
+				},
+			}
+			Expect(workflowExecutor.contextManager.InitializeContext(ctx, workflow, workflowRun.Spec.InputValues)).To(Succeed())
+
+			// step-level failurePolicy: Continue means ExecuteWorkflow itself must not error,
+			// even though the forEach step is Failed.
+			Expect(workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)).To(Succeed())
+
+			Expect(workflowRun.Status.StepStatuses["loop"].Phase).To(Equal(ottoflowv1alpha1.StepPhaseFailed))
+			Expect(workflowRun.Status.StepStatuses["afterLoop"].Phase).To(Equal(ottoflowv1alpha1.StepPhaseSucceeded))
+
+			variables := workflowExecutor.contextManager.GetContext()["variables"].(map[string]interface{})
+			Expect(variables["failedCount"]).To(Equal(int64(3)))
+			Expect(variables["echoedFailedCount"]).To(Equal(int64(3)))
+		})
+
 		It("fails the step when stepTemplateRef resolution fails for every item", func() {
 			// No StepTemplate named "does-not-exist" is registered with the fake client, so
 			// every item fails during template resolution before the child step ever runs.

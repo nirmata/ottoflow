@@ -49,11 +49,15 @@ Checks performed:
   - Step expression-to-dependsOn alignment (MISSING_DEPENDS_ON)
   - Undefined inputs.* references (UNDEFINED_INPUT)
   - CEL expression syntax (compile-time, no evaluation)
-  - workflowRef, agentRef, stepTemplateRef (direct and forEach), and mcpToolCall.server
-    existence, checked against the cluster in cluster mode, or against the manifests loaded
-    from --workflow-dir in local mode; also checked for a loaded WorkflowRun's workflowRef.
-    NOTE: references declared inside an inline forEach.step are not statically resolved and
-    will only surface as a failure at run time.
+  - workflowRef, agentRef, stepTemplateRef (direct and forEach, plus one level into a
+    resolved template's own step), mcpToolCall.server, and the workflowRef/agentRef/
+    mcpToolCall.server declared inline on a forEach.step -- checked against the cluster in
+    cluster mode, or against the manifests loaded from --workflow-dir in local mode; also
+    checked for a loaded WorkflowRun's workflowRef.
+    In -f/--file mode, these are checked against every OttoFlow object found in the same
+    file (e.g. a Workflow plus its own StepTemplate/Agent/MCPServer), but an unresolved ref
+    is reported as a WARNING rather than a failure: a single file may legitimately reference
+    objects that are applied to the cluster separately and are not visible to this command.
 
 Examples:
   ottoflow validate --workflow-dir samples        # validate all workflows in directory
@@ -105,7 +109,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return runValidateDir(ctx, validateWorkflowDir)
 	}
 
-	wf, k8sClient, err := loadWorkflowForValidation(ctx, args)
+	wf, k8sClient, localExec, err := loadWorkflowForValidation(ctx, args)
 	if err != nil {
 		// A file holding only sibling OttoFlow resources (Agent, MCPServer, StepTemplate,
 		// WorkflowRun) has nothing for this command to check. Report and succeed: failing
@@ -137,7 +141,27 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 
 	errs := checkWorkflow(ctx, wf, k8sClient, celEnv, celEnvErr)
-	if len(errs) == 0 {
+
+	// WorkflowRun -> Workflow existence: only meaningful in local --workflow-dir mode, where
+	// localExec has every manifest from the directory loaded (see loadWorkflowForValidation).
+	// Runs regardless of whether a workflow name was given -- see checkWorkflowRunRefs's doc.
+	var runRefResults []workflowRunRefCheck
+	if localExec != nil {
+		runRefResults = checkWorkflowRunRefs(ctx, localExec)
+	}
+
+	// -f/--file mode: check the same references as Check 6, but against every OttoFlow
+	// object declared in the same file, and non-fatally -- a single file may legitimately
+	// reference objects applied to the cluster separately, which this command cannot see.
+	var fileWarnings []validationError
+	if validateFile != "" {
+		fileWarnings = fileRefWarnings(ctx, validateFile, wf)
+	}
+	for _, w := range fileWarnings {
+		fmt.Fprintf(os.Stderr, "WARNING [%-20s] step %q: %s\n", w.code, w.step, w.message)
+	}
+
+	if len(errs) == 0 && len(runRefResults) == 0 {
 		fmt.Printf("OK   workflow %q passed all checks\n", wf.Name)
 		if validateGenerateRBAC {
 			gen, err := clibac.New(clibac.Options{
@@ -157,6 +181,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	}
 	for _, e := range errs {
 		fmt.Println(e.String())
+	}
+	for _, res := range runRefResults {
+		fmt.Printf("FAIL workflowRun %q\n", res.runName)
+		for _, e := range res.errs {
+			fmt.Printf("     %s\n", e.String())
+		}
 	}
 	os.Exit(1)
 	return nil
@@ -288,48 +318,143 @@ func checkWorkflow(
 	}
 
 	// Check 6: WorkflowRef, AgentRef, StepTemplateRef (direct and forEach), and
-	// MCPToolCall.server existence (only run when a control-plane client is available --
-	// cluster mode, or local --workflow-dir mode via the fake client the loader builds).
-	// References declared inside an inline step.ForEach.Step are NOT checked here -- see the
-	// validate command's Long help for that documented gap.
-	if k8sClient != nil {
-		seen := make(map[string]struct{})
-		for _, step := range wf.Spec.Steps {
-			for _, ref := range collectStepReferences(&step) {
-				refNS := ref.namespace
-				if refNS == "" {
-					refNS = wf.Namespace
-				}
-				dedupKey := ref.kind + "/" + refNS + "/" + ref.name
-				if _, ok := seen[dedupKey]; ok {
-					continue
-				}
-				seen[dedupKey] = struct{}{}
+	// MCPToolCall.server existence -- see checkStepRefs.
+	errs = append(errs, checkStepRefs(ctx, wf, k8sClient)...)
 
-				info, ok := refKinds[ref.kind]
-				if !ok {
-					// Unreachable given collectStepReferences only emits kinds present in
-					// refKinds, but fail loudly rather than silently skip a check if that
-					// ever changes.
-					errs = append(errs, validationError{code: "REF_NOT_FOUND", step: step.Name, message: fmt.Sprintf("internal error: unknown reference kind %q", ref.kind)})
+	return errs
+}
+
+// checkStepRefs is Check 6: it verifies every workflowRef, agentRef, stepTemplateRef (direct
+// and forEach), mcpToolCall.server, and forEach.step's own inline workflowRef/agentRef/
+// mcpToolCall.server actually resolves. Only runs when a control-plane client is available --
+// cluster mode, or local mode (--workflow-dir or -f) via the fake client the loader builds.
+//
+// For a stepTemplateRef that does resolve, it also checks -- one level deep, no further
+// recursion -- the referenced StepTemplate's own Spec.Step for the same three reference
+// kinds, so a shared template with a stale internal ref is caught even though the workflow
+// itself never names that ref directly. StepTemplateStep has no stepTemplateRef or forEach
+// field of its own, so there is nothing deeper to walk into.
+func checkStepRefs(ctx context.Context, wf *ottoflowv1alpha1.Workflow, k8sClient client.Client) []validationError {
+	var errs []validationError
+	if k8sClient == nil {
+		return errs
+	}
+
+	seen := make(map[string]struct{})
+	for _, step := range wf.Spec.Steps {
+		for _, ref := range collectStepReferences(&step) {
+			refNS := ref.namespace
+			if refNS == "" {
+				refNS = wf.Namespace
+			}
+			dedupKey := ref.kind + "/" + refNS + "/" + ref.name
+			if _, ok := seen[dedupKey]; ok {
+				continue
+			}
+			seen[dedupKey] = struct{}{}
+
+			obj, verr := resolveRef(ctx, k8sClient, ref.kind, ref.name, refNS)
+			if verr != nil {
+				verr.step = step.Name
+				errs = append(errs, *verr)
+				continue
+			}
+
+			tpl, ok := obj.(*ottoflowv1alpha1.StepTemplate)
+			if ref.kind != "StepTemplate" || !ok {
+				continue
+			}
+			for _, innerRef := range collectStepTemplateInnerRefs(tpl.Spec.Step) {
+				innerNS := innerRef.namespace
+				if innerNS == "" {
+					innerNS = wf.Namespace
+				}
+				innerKey := innerRef.kind + "/" + innerNS + "/" + innerRef.name
+				if _, ok := seen[innerKey]; ok {
 					continue
 				}
-				nn := types.NamespacedName{Namespace: refNS, Name: ref.name}
-				if getErr := k8sClient.Get(ctx, nn, info.newObj()); getErr != nil {
-					if apierrors.IsNotFound(getErr) {
-						errs = append(errs, validationError{
-							code:    "REF_NOT_FOUND",
-							step:    step.Name,
-							message: fmt.Sprintf("%s %q not found in namespace %q", info.label, ref.name, refNS),
-						})
-					}
+				seen[innerKey] = struct{}{}
+
+				if _, verr := resolveRef(ctx, k8sClient, innerRef.kind, innerRef.name, innerNS); verr != nil {
+					verr.step = step.Name
+					verr.message = fmt.Sprintf("%s (via stepTemplate %q)", verr.message, tpl.Name)
+					errs = append(errs, *verr)
 				}
 			}
 		}
 	}
-
 	return errs
 }
+
+// resolveRef looks up the object identified by kind/name/namespace using k8sClient. It
+// returns the resolved object on success, or a validationError to report: REF_NOT_FOUND for
+// a missing object, or REF_CHECK_ERROR for any other Get failure (an RBAC denial in cluster
+// mode, for instance) -- a case the caller must surface rather than silently treat as "ref
+// resolved fine". The returned validationError has no step set; the caller fills it in.
+func resolveRef(
+	ctx context.Context, k8sClient client.Client, kind, name, namespace string,
+) (client.Object, *validationError) {
+	info, ok := refKinds[kind]
+	if !ok {
+		// Unreachable given collectStepReferences/collectStepTemplateInnerRefs only emit
+		// kinds present in refKinds, but fail loudly rather than silently skip a check if
+		// that ever changes.
+		return nil, &validationError{
+			code:    "REF_NOT_FOUND",
+			message: fmt.Sprintf("internal error: unknown reference kind %q", kind),
+		}
+	}
+	obj := info.newObj()
+	nn := types.NamespacedName{Namespace: namespace, Name: name}
+	if getErr := k8sClient.Get(ctx, nn, obj); getErr != nil {
+		if apierrors.IsNotFound(getErr) {
+			return nil, &validationError{
+				code:    "REF_NOT_FOUND",
+				message: fmt.Sprintf("%s %q not found in namespace %q", info.label, name, namespace),
+			}
+		}
+		return nil, &validationError{
+			code:    "REF_CHECK_ERROR",
+			message: fmt.Sprintf("%s %q: error checking existence in namespace %q: %v", info.label, name, namespace, getErr),
+		}
+	}
+	return obj, nil
+}
+
+// fileRefWarnings runs checkStepRefs against wf using every OttoFlow object found in the
+// same -f file (a self-contained file may hold the Workflow plus its own StepTemplate,
+// Agent, and/or MCPServer). Parses filePath independently of loadWorkflowFromFile: that
+// function only extracts the Workflow document and intentionally ignores sibling kinds. A
+// read or parse failure here is not reported -- loadWorkflowFromFile already succeeded
+// reading and parsing the Workflow out of this same file, so this is best-effort only.
+func fileRefWarnings(ctx context.Context, filePath string, wf *ottoflowv1alpha1.Workflow) []validationError {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil
+	}
+	exec := cliexec.NewLocalWorkflowExecutor(nil, "", 0, "", "")
+	if err := exec.LoadFromReader(strings.NewReader(string(data))); err != nil {
+		return nil
+	}
+
+	// checkStepRefs defaults an unset ref namespace to wf.Namespace. loadWorkflowFromFile
+	// (which produced wf) does not default an empty metadata.namespace the way LoadFromReader
+	// does for every object it loads into exec's control client -- so a namespace-less
+	// Workflow must be checked as if it were in "default" here too, or every unqualified ref
+	// in it would look up namespace "" against objects the loader filed under "default" and
+	// come back as false REF_NOT_FOUND warnings.
+	refWF := wf
+	if wf.Namespace == "" {
+		cp := *wf
+		cp.Namespace = fileRefDefaultNamespace
+		refWF = &cp
+	}
+	return checkStepRefs(ctx, refWF, exec.ControlClient())
+}
+
+// fileRefDefaultNamespace mirrors cliexec's own (unexported) default: every object
+// LoadFromReader loads with no declared namespace is filed under "default".
+const fileRefDefaultNamespace = "default"
 
 // workflowRunRefCheck is one WorkflowRun's static ref-check result: the run's own name, plus
 // any validationErrors found (currently only REF_NOT_FOUND against workflowRef).
@@ -351,30 +476,28 @@ type workflowRunRefCheck struct {
 func checkWorkflowRunRefs(ctx context.Context, exec *cliexec.LocalWorkflowExecutor) []workflowRunRefCheck {
 	var results []workflowRunRefCheck
 	for _, lr := range exec.ListWorkflowRuns() {
-		var wf ottoflowv1alpha1.Workflow
 		wfName := lr.Run.Spec.WorkflowRef.Name
-		key := types.NamespacedName{Namespace: lr.ResolvedNamespace, Name: wfName}
-		if err := exec.ControlClient().Get(ctx, key, &wf); err != nil {
-			if apierrors.IsNotFound(err) {
-				results = append(results, workflowRunRefCheck{
-					runName: lr.Run.Name,
-					errs: []validationError{{
-						code:    "REF_NOT_FOUND",
-						message: fmt.Sprintf("workflowRef %q not found in namespace %q", wfName, lr.ResolvedNamespace),
-					}},
-				})
-			}
+		if _, verr := resolveRef(ctx, exec.ControlClient(), "Workflow", wfName, lr.ResolvedNamespace); verr != nil {
+			results = append(results, workflowRunRefCheck{
+				runName: lr.Run.Name,
+				errs:    []validationError{*verr},
+			})
 		}
 	}
 	return results
 }
 
-// loadWorkflowForValidation loads a Workflow from file, directory, or cluster.
-// Returns nil k8sClient when loading locally (no cluster checks will be run).
-func loadWorkflowForValidation(ctx context.Context, args []string) (*ottoflowv1alpha1.Workflow, client.Client, error) {
+// loadWorkflowForValidation loads a Workflow from file, directory, or cluster. Returns nil
+// k8sClient when loading locally from -f (no cluster checks will be run for that path; see
+// fileRefWarnings for the -f-specific ref checks). Returns a non-nil localExec only for
+// --workflow-dir mode -- callers use it to also run checkWorkflowRunRefs, since that exec has
+// every manifest in the directory loaded, not just the named workflow.
+func loadWorkflowForValidation(
+	ctx context.Context, args []string,
+) (*ottoflowv1alpha1.Workflow, client.Client, *cliexec.LocalWorkflowExecutor, error) {
 	if validateFile != "" {
 		wf, err := loadWorkflowFromFile(validateFile)
-		return wf, nil, err
+		return wf, nil, nil, err
 	}
 
 	if validateWorkflowDir != "" {
@@ -384,29 +507,29 @@ func loadWorkflowForValidation(ctx context.Context, args []string) (*ottoflowv1a
 		}
 		exec := cliexec.NewLocalWorkflowExecutor(nil, "", 0, "", "")
 		if err := exec.LoadFromDirectory(validateWorkflowDir); err != nil {
-			return nil, nil, fmt.Errorf("load workflow dir: %w", err)
+			return nil, nil, nil, fmt.Errorf("load workflow dir: %w", err)
 		}
 		wf, err := exec.GetWorkflow(ctx, name, getNamespace())
-		return wf, exec.ControlClient(), err
+		return wf, exec.ControlClient(), exec, err
 	}
 
 	// Cluster mode.
 	if len(args) == 0 {
-		return nil, nil, fmt.Errorf("workflow name required (or use --file / --workflow-dir for local validation)")
+		return nil, nil, nil, fmt.Errorf("workflow name required (or use --file / --workflow-dir for local validation)")
 	}
 	config, err := getKubeConfig()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get kubeconfig: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to get kubeconfig: %w", err)
 	}
 	k8sClient, err := createK8sClient(config)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 	var wf ottoflowv1alpha1.Workflow
 	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: getNamespace(), Name: args[0]}, &wf); err != nil {
-		return nil, nil, fmt.Errorf("get workflow %q: %w", args[0], err)
+		return nil, nil, nil, fmt.Errorf("get workflow %q: %w", args[0], err)
 	}
-	return &wf, k8sClient, nil
+	return &wf, k8sClient, nil, nil
 }
 
 // generateRBACBytes generates RBAC manifests for wf using gen and returns the YAML bytes.
@@ -522,9 +645,10 @@ type stepRef struct {
 
 // collectStepReferences returns every reference declaration on step that names another
 // OttoFlow CRD by kind/name/namespace: workflowRef, agentRef, the direct stepTemplateRef step
-// type, forEach.stepTemplateRef, and mcpToolCall.server. References declared inside an inline
-// step.ForEach.Step are intentionally NOT collected -- they are only known once the forEach's
-// items expression is evaluated at run time, so they cannot be statically resolved here.
+// type, forEach.stepTemplateRef, forEach.step's own inline workflowRef/agentRef/
+// mcpToolCall.server, and mcpToolCall.server. All of these are static names known without
+// evaluating any CEL expression (in particular, without evaluating the forEach's items
+// expression), so all of them can be resolved here.
 func collectStepReferences(step *ottoflowv1alpha1.Step) []stepRef {
 	var refs []stepRef
 	if step.WorkflowRef != nil && step.WorkflowRef.Name != "" {
@@ -540,10 +664,51 @@ func collectStepReferences(step *ottoflowv1alpha1.Step) []stepRef {
 		if tplRef := step.ForEach.StepTemplateRef; tplRef != nil && tplRef.Name != "" {
 			refs = append(refs, stepRef{kind: "StepTemplate", name: tplRef.Name, namespace: tplRef.Namespace})
 		}
+		if fes := step.ForEach.Step; fes != nil {
+			refs = append(refs, collectForEachStepReferences(fes)...)
+		}
 	}
 	if step.MCPToolCall != nil && step.MCPToolCall.Server != "" {
 		// server is a bare name with no namespace field of its own; it always defers to wf.Namespace.
 		refs = append(refs, stepRef{kind: "MCPServer", name: step.MCPToolCall.Server})
+	}
+	return refs
+}
+
+// collectForEachStepReferences returns the workflowRef/agentRef/mcpToolCall.server
+// references declared on an inline forEach.step. These are static names -- exactly like
+// forEach.stepTemplateRef, already checked above -- so they can be resolved without
+// evaluating the forEach's items expression.
+func collectForEachStepReferences(fes *ottoflowv1alpha1.StepForEachStep) []stepRef {
+	var refs []stepRef
+	if fes.WorkflowRef != nil && fes.WorkflowRef.Name != "" {
+		refs = append(refs, stepRef{kind: "Workflow", name: fes.WorkflowRef.Name, namespace: fes.WorkflowRef.Namespace})
+	}
+	if fes.AgentRef != nil && fes.AgentRef.Name != "" {
+		refs = append(refs, stepRef{kind: "Agent", name: fes.AgentRef.Name, namespace: fes.AgentRef.Namespace})
+	}
+	if fes.MCPToolCall != nil && fes.MCPToolCall.Server != "" {
+		refs = append(refs, stepRef{kind: "MCPServer", name: fes.MCPToolCall.Server})
+	}
+	return refs
+}
+
+// collectStepTemplateInnerRefs returns the workflowRef/agentRef/mcpToolCall.server
+// references declared on a StepTemplate's own Spec.Step -- used by checkStepRefs to check
+// one level into a resolved stepTemplateRef. A StepTemplateStep has no stepTemplateRef or
+// forEach field of its own, so this never needs to recurse any further.
+func collectStepTemplateInnerRefs(tplStep ottoflowv1alpha1.StepTemplateStep) []stepRef {
+	var refs []stepRef
+	if tplStep.WorkflowRef != nil && tplStep.WorkflowRef.Name != "" {
+		refs = append(refs, stepRef{
+			kind: "Workflow", name: tplStep.WorkflowRef.Name, namespace: tplStep.WorkflowRef.Namespace,
+		})
+	}
+	if tplStep.AgentRef != nil && tplStep.AgentRef.Name != "" {
+		refs = append(refs, stepRef{kind: "Agent", name: tplStep.AgentRef.Name, namespace: tplStep.AgentRef.Namespace})
+	}
+	if tplStep.MCPToolCall != nil && tplStep.MCPToolCall.Server != "" {
+		refs = append(refs, stepRef{kind: "MCPServer", name: tplStep.MCPToolCall.Server})
 	}
 	return refs
 }

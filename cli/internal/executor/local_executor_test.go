@@ -479,3 +479,71 @@ spec:
 		t.Errorf("with client: expected a not-found error naming the pod, got: %v", err)
 	}
 }
+
+// TestListWorkflowRuns_SortedDeterministically is a regression test: ListWorkflowRuns used to
+// iterate e.workflowRuns (a Go map) directly, so the order of e.g. `validate --workflow-dir`'s
+// "FAIL workflowRun ..." lines was nondeterministic across runs. It must return entries sorted
+// by (ResolvedNamespace, Run.Name) regardless of map iteration order.
+func TestListWorkflowRuns_SortedDeterministically(t *testing.T) {
+	dir := t.TempDir()
+
+	// Three WorkflowRuns whose index keys ("namespace/workflowRef.name") are all distinct, so
+	// no two collide and all three are retained. Metadata.name intentionally out of order.
+	yaml := `apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: WorkflowRun
+metadata:
+  name: run-z
+spec:
+  workflowRef:
+    name: wf-z
+    namespace: zeta
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: WorkflowRun
+metadata:
+  name: run-b
+spec:
+  workflowRef:
+    name: wf-b
+    namespace: alpha
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: WorkflowRun
+metadata:
+  name: run-a
+spec:
+  workflowRef:
+    name: wf-a
+    namespace: alpha
+`
+	if err := os.WriteFile(filepath.Join(dir, "runs.yaml"), []byte(yaml), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	exec := NewLocalWorkflowExecutor(nil, "", 5, "", "")
+	if err := exec.LoadFromDirectory(dir); err != nil {
+		t.Fatalf("LoadFromDirectory: %v", err)
+	}
+
+	// Run the listing several times: a map-iteration-order bug wouldn't necessarily surface
+	// on the first call.
+	for i := 0; i < 5; i++ {
+		lrs := exec.ListWorkflowRuns()
+		if len(lrs) != 3 {
+			t.Fatalf("expected 3 WorkflowRuns, got %d", len(lrs))
+		}
+		wantOrder := []struct {
+			ns, name string
+		}{
+			{"alpha", "run-a"},
+			{"alpha", "run-b"},
+			{"zeta", "run-z"},
+		}
+		for i, want := range wantOrder {
+			if lrs[i].ResolvedNamespace != want.ns || lrs[i].Run.Name != want.name {
+				t.Fatalf("entry %d: expected (%s, %s), got (%s, %s)",
+					i, want.ns, want.name, lrs[i].ResolvedNamespace, lrs[i].Run.Name)
+			}
+		}
+	}
+}

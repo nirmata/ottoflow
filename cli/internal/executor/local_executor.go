@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -337,13 +338,26 @@ type LoadedWorkflowRun struct {
 }
 
 // ListWorkflowRuns returns every loaded WorkflowRun paired with the namespace the loader
-// resolved it into.
+// resolved it into, sorted by (ResolvedNamespace, Run.Name) so callers that print one line
+// per run (e.g. `validate --workflow-dir`'s FAIL workflowRun output) get stable, reproducible
+// ordering instead of Go's randomized map iteration order.
 func (e *LocalWorkflowExecutor) ListWorkflowRuns() []LoadedWorkflowRun {
 	out := make([]LoadedWorkflowRun, 0, len(e.workflowRuns))
 	for key, wr := range e.workflowRuns {
+		// ResolvedNamespace is recovered from the index key ("namespace/workflowRef.name")
+		// rather than carried as its own field on LoadedWorkflowRun/indexWorkflowRuns: the
+		// index map is also read directly by mergeInputValues and workflowRunNameMismatch,
+		// and threading an explicit namespace field through those call sites for this one
+		// caller wasn't worth the churn.
 		resolvedNS := strings.TrimSuffix(key, "/"+wr.Spec.WorkflowRef.Name)
 		out = append(out, LoadedWorkflowRun{ResolvedNamespace: resolvedNS, Run: wr})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ResolvedNamespace != out[j].ResolvedNamespace {
+			return out[i].ResolvedNamespace < out[j].ResolvedNamespace
+		}
+		return out[i].Run.Name < out[j].Run.Name
+	})
 	return out
 }
 
