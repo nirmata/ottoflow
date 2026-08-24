@@ -12,7 +12,7 @@
 #       export LLAMACPP_HOST=http://127.0.0.1:11434/
 #
 # It seeds samples/fixtures/failing-pods.yaml (a crash-looping OOMKilled pod, an
-# ImagePullBackOff pod, and a healthy one), waits for the crash-looper to
+# ImagePullBackOff pod, and two healthy ones), waits for the crash-looper to
 # accumulate restarts, records the GIF, then removes the fixture.
 set -euo pipefail
 cd "$(dirname "$0")/.."

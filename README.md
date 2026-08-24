@@ -112,9 +112,10 @@ GEMINI_API_KEY=AIza... \
 Use <https://aistudio.google.com/api-keys> to get an API key.
 
 Prefer OpenAI, Anthropic, or no cloud key at all? Override with `--provider`/`--model`
-and the matching environment variable — no editing the workflow required. `-n ottoflow`
-only controls where the `Workflow`/`Agent` objects resolve — it does not change which
-namespace `pod-triage` scans, that's still always `default`:
+and the matching environment variable — no editing the workflow required. (`-n ottoflow`
+is optional here: with `-f` the workflow loads under its own `metadata.namespace`, and
+`-n` is only a hint to disambiguate when several same-named workflows are loaded at once.
+Either way it never changes which namespace `pod-triage` scans — that's always `default`.)
 
 ```sh
 # OpenAI -- OPENAI_API_KEY must be set; --model optional (defaults to gpt-4o)
@@ -199,17 +200,12 @@ The controller reconciles Workflows/WorkflowRuns and runs the leader-elected
 scheduler; agent steps execute via the agent-executor pod (set LLM keys via
 `agentExecutor.env` in the chart).
 
-With OttoFlow installed in the cluster, root-cause a single failing pod
-(seed the fixture from [above](#give-it-something-to-triage) first):
-
-```sh
-kubectl apply -f samples/workflows/production/workload-troubleshooter.yaml
-ottoflow run workload-troubleshooter --input podName=crashy --input namespace=default -n ottoflow
-```
-
-`workload-troubleshooter` pulls the pod's events and logs and asks the agent
-for a root cause — it needs the in-cluster controller (logs aren't available
-in local `--workflow-dir` mode).
+For an LLM-driven root cause of a single failing pod — events and logs in, cause
+and remediation out — see
+[`workload-troubleshooter.yaml`](samples/workflows/production/workload-troubleshooter.yaml).
+It's in-cluster only (it needs pod logs, unavailable in local `--workflow-dir`
+mode) and runs the agent on the agent-executor, so it uses the LLM you configured
+there rather than the `--provider`/`--model` flags (which apply to local runs only).
 
 ## 📚 Documentation · Help · Contributing · License
 
