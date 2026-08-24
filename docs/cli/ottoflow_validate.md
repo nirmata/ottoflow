@@ -11,7 +11,15 @@ Checks performed:
   - Step expression-to-dependsOn alignment (MISSING_DEPENDS_ON)
   - Undefined inputs.* references (UNDEFINED_INPUT)
   - CEL expression syntax (compile-time, no evaluation)
-  - WorkflowRef and AgentRef existence (when connected to a cluster)
+  - workflowRef, agentRef, stepTemplateRef (direct and forEach, plus one level into a
+    resolved template's own step), mcpToolCall.server, and the workflowRef/agentRef/
+    mcpToolCall.server declared inline on a forEach.step -- checked against the cluster in
+    cluster mode, or against the manifests loaded from --workflow-dir in local mode; also
+    checked for a loaded WorkflowRun's workflowRef.
+    In -f/--file mode, these are checked against every OttoFlow object found in the same
+    file (e.g. a Workflow plus its own StepTemplate/Agent/MCPServer), but an unresolved ref
+    is reported as a WARNING rather than a failure: a single file may legitimately reference
+    objects that are applied to the cluster separately and are not visible to this command.
 
 Examples:
   ottoflow validate --workflow-dir samples        # validate all workflows in directory
