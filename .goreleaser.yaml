@@ -60,3 +60,26 @@ brews:
       system "#{bin}/ottoflow", "--help"
     install: |
       bin.install "ottoflow"
+  # Prerelease channel: publishes only on prerelease tags (e.g. v0.1.0-alpha1),
+  # the inverse of the stable entry above (which skips those via skip_upload: auto).
+  - name: ottoflow-rc
+    repository:
+      owner: nirmata
+      name: homebrew-tap
+      token: '{{ .Env.TAP_GITHUB_TOKEN }}'
+    directory: .
+    homepage: https://github.com/nirmata/ottoflow
+    description: 'Release-candidate builds of the OttoFlow CLI'
+    license: BUSL-1.1
+    # Only publish for prerelease tags; skip on stable releases.
+    skip_upload: '{{ if .Prerelease }}false{{ else }}true{{ end }}'
+    conflicts:
+      - ottoflow
+    commit_author:
+      name: nirmata-bot
+      email: bot@nirmata.com
+    commit_msg_template: 'Brew formula update for {{ .ProjectName }}-rc version {{ .Tag }}'
+    test: |
+      system "#{bin}/ottoflow", "--help"
+    install: |
+      bin.install "ottoflow"
