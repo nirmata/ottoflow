@@ -86,6 +86,19 @@ For details on the data collection, analysis, and reporting view the [workflow s
 
 ## Execute an AI workflow
 
+### Give it something to triage
+
+`pod-triage` scans the `default` namespace, so on a fresh cluster there's
+nothing failing to look at. Seed a few deliberately-broken pods first:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/fixtures/failing-pods.yaml
+```
+
+This creates a crash-looping (OOMKilled) pod, an ImagePullBackOff pod, and
+two healthy ones — real, differing failures for the workflow to prioritize.
+Clean up afterward with `kubectl delete -f` on the same URL.
+
 ### Pick your LLM provider
 
 `pod-triage` adds an LLM step. The sample's `Agent` defaults to **Gemini** —
@@ -99,25 +112,27 @@ GEMINI_API_KEY=AIza... \
 Use <https://aistudio.google.com/api-keys> to get an API key.
 
 Prefer OpenAI, Anthropic, or no cloud key at all? Override with `--provider`/`--model`
-and the matching environment variable — no editing the workflow required:
+and the matching environment variable — no editing the workflow required. `-n ottoflow`
+only controls where the `Workflow`/`Agent` objects resolve — it does not change which
+namespace `pod-triage` scans, that's still always `default`:
 
 ```sh
 # OpenAI -- OPENAI_API_KEY must be set; --model optional (defaults to gpt-4o)
 OPENAI_API_KEY=sk-... \
-  ottoflow run samples/workflows/production/pod-triage.yaml -n ottoflow --provider openai
+  ottoflow run -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/workflows/production/pod-triage.yaml -n ottoflow --provider openai
 ```
 
 ```sh
 # Anthropic -- ANTHROPIC_API_KEY must be set; --model optional (defaults to a current Claude model)
 ANTHROPIC_API_KEY=sk-ant-... \
-  ottoflow run samples/workflows/production/pod-triage.yaml -n ottoflow --provider anthropic
+  ottoflow run -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/workflows/production/pod-triage.yaml -n ottoflow --provider anthropic
 ```
 
 ```sh
 # Local -- no cloud key, no cluster data leaves your machine. --model is required
 # here; there is no default local model.
 LLAMACPP_HOST=http://127.0.0.1:11434/ \
-  ottoflow run samples/workflows/production/pod-triage.yaml -n ottoflow \
+  ottoflow run -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/workflows/production/pod-triage.yaml -n ottoflow \
   --provider local --model gemma3:4b
 ```
 
@@ -183,6 +198,18 @@ ottoflow run cluster-overview -n ottoflow
 The controller reconciles Workflows/WorkflowRuns and runs the leader-elected
 scheduler; agent steps execute via the agent-executor pod (set LLM keys via
 `agentExecutor.env` in the chart).
+
+With OttoFlow installed in the cluster, root-cause a single failing pod
+(seed the fixture from [above](#give-it-something-to-triage) first):
+
+```sh
+kubectl apply -f samples/workflows/production/workload-troubleshooter.yaml
+ottoflow run workload-troubleshooter --input podName=crashy --input namespace=default -n ottoflow
+```
+
+`workload-troubleshooter` pulls the pod's events and logs and asks the agent
+for a root cause — it needs the in-cluster controller (logs aren't available
+in local `--workflow-dir` mode).
 
 ## 📚 Documentation · Help · Contributing · License
 

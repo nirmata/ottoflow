@@ -11,7 +11,7 @@
 #   - a llama.cpp-compatible server reachable, with LLAMACPP_HOST exported, e.g.
 #       export LLAMACPP_HOST=http://127.0.0.1:11434/
 #
-# It seeds hack/demo-fixture.yaml (a crash-looping OOMKilled pod, an
+# It seeds samples/fixtures/failing-pods.yaml (a crash-looping OOMKilled pod, an
 # ImagePullBackOff pod, and a healthy one), waits for the crash-looper to
 # accumulate restarts, records the GIF, then removes the fixture.
 set -euo pipefail
@@ -23,8 +23,8 @@ command -v vhs >/dev/null 2>&1 || {
 }
 
 echo "Seeding demo failure pods into namespace 'default'..."
-kubectl apply -f hack/demo-fixture.yaml
-trap 'kubectl delete -f hack/demo-fixture.yaml --ignore-not-found >/dev/null 2>&1 || true' EXIT
+kubectl apply -f samples/fixtures/failing-pods.yaml
+trap 'kubectl delete -f samples/fixtures/failing-pods.yaml --ignore-not-found >/dev/null 2>&1 || true' EXIT
 
 echo "Waiting for 'crashy' to accumulate OOMKilled restarts (>3)..."
 for _ in $(seq 1 60); do

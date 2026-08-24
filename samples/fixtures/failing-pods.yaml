@@ -1,12 +1,10 @@
-# Demo fixture for `make demo` (applied by hack/gen-demo-gif.sh). Seeds four pods
-# so the recorded pod-triage run shows the agent PRIORITIZING across real, differing
-# signals rather than restating one fact. Two fail differently, two are healthy —
-# giving "4 pods scanned, 2 flagged unhealthy", matching the README transcript:
+# Deliberately-broken pods for the README pod-triage quickstart: a
+# crash-looping (OOMKilled) pod, an ImagePullBackOff pod, and two healthy
+# ones. Applied to the `default` namespace because pod-triage scans `default`.
 #   crashy      — OOMKilled crash-looper: restartCount climbs, lastState OOMKilled
 #   web-broken  — ImagePullBackOff: bad image tag, never starts (0 restarts)
 #   healthy-web — healthy; never flagged (proves the filter excludes healthy pods)
 #   healthy-api — healthy; never flagged
-# Applied to namespace "default" because pod-triage's resourceQuery scans default.
 apiVersion: v1
 kind: Pod
 metadata:
