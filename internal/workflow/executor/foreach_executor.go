@@ -167,11 +167,11 @@ func (e *WorkflowExecutor) executeForEach(ctx context.Context, workflowRun *otto
 	// itemsList is non-empty here: the len(itemsList) == 0 case already returned above.
 	succeeded := len(results.Results) - len(results.Failed)
 	if succeeded == 0 {
+		firstFailure := ""
 		if len(results.Failed) > 0 {
-			return fmt.Errorf("forEach: all %d item(s) failed with itemFailurePolicy=%s; first failure to complete: %s",
-				len(itemsList), itemFailurePolicy, results.Failed[0].Error)
+			firstFailure = results.Failed[0].Error
 		}
-		return fmt.Errorf("forEach: no items completed successfully (loop cancelled or incomplete); %d item(s) requested", len(itemsList))
+		return foreachFailureError(len(itemsList), len(results.Failed), itemFailurePolicy, firstFailure)
 	}
 
 	// itemFailurePolicy=Continue succeeds by design, but a partially or fully failed loop
@@ -190,6 +190,26 @@ func (e *WorkflowExecutor) executeForEach(ctx context.Context, workflowRun *otto
 	}
 
 	return nil
+}
+
+// foreachFailureError builds the terminal error for a forEach loop that produced zero
+// successful items. failed is the number of items that recorded a failure; because a worker
+// records a failure entry and a result entry together, failed also equals the number of items
+// that ran to completion. When failed < requested, the remaining items never recorded a result
+// -- the context was cancelled mid-loop -- so they are reported as incomplete rather than folded
+// into an "all N failed" claim. firstFailure is the first failure message by completion order,
+// or "" when nothing failed (failed == 0).
+func foreachFailureError(requested, failed int, itemFailurePolicy, firstFailure string) error {
+	switch {
+	case failed == 0:
+		return fmt.Errorf("forEach: no items completed successfully (loop cancelled or incomplete); %d item(s) requested", requested)
+	case failed < requested:
+		return fmt.Errorf("forEach: %d of %d item(s) failed and %d did not complete (loop cancelled or incomplete) with itemFailurePolicy=%s; first failure to complete: %s",
+			failed, requested, requested-failed, itemFailurePolicy, firstFailure)
+	default:
+		return fmt.Errorf("forEach: all %d item(s) failed with itemFailurePolicy=%s; first failure to complete: %s",
+			requested, itemFailurePolicy, firstFailure)
+	}
 }
 
 // processItemsConcurrently processes items using a worker pool pattern
