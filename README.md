@@ -60,7 +60,26 @@ want free-form agents, use one of those instead.
 brew install nirmata/tap/ottoflow
 ```
 
-See [installation guide](docs/user/tasks/installation.md) for other options.
+See [installation guide](docs/user/tasks/installation.md) for additional options.
+
+## Create a test cluster (optional)
+
+The demo OttoFlow workflows used below are safe to execute on your clusters. 
+
+If you need a test cluster create one:
+
+```sh
+kind create cluster --name=ottoflow
+```
+
+The `cluster-overview` and `pod-triage` help identify issues. Seed a few deliberately-broken pods first:
+
+```sh
+kubectl apply -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/fixtures/failing-pods.yaml
+```
+
+This creates a crash-looping (OOMKilled) pod, an ImagePullBackOff pod, and
+two healthy ones — real, differing failures for the workflows to prioritize.
 
 ## Execute a CEL workflow
 
@@ -77,18 +96,7 @@ For details on the data collection, analysis, and reporting view the [workflow s
 
 ## Execute an AI workflow
 
-### Give it something to triage
-
-`pod-triage` scans the `default` namespace, so on a fresh cluster there's
-nothing failing to look at. Seed a few deliberately-broken pods first:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/nirmata/ottoflow/main/samples/fixtures/failing-pods.yaml
-```
-
-This creates a crash-looping (OOMKilled) pod, an ImagePullBackOff pod, and
-two healthy ones — real, differing failures for the workflow to prioritize.
-Clean up afterward with `kubectl delete -f` on the same URL.
+AI workflows include steps that call LLMs.
 
 ### Pick your LLM provider
 
