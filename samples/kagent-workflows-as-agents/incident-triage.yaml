@@ -1,0 +1,85 @@
+---
+# Incident-triage judgement workflow that delegates to kagent's in-cluster
+# k8s-agent over A2A (externalAgentRef), then applies an OttoFlow policy gate
+# over the verdict. kagent supplies the model, so this workflow needs no
+# OttoFlow Agent CR and no LLM credentials Secret.
+#
+# Division of labour:
+#   - kagent's k8s-agent produces the SRE verdict (severity + recommended action).
+#   - OttoFlow then applies a CEL policy gate to that verdict: it AUTO-APPROVES
+#     only low-severity, non-destructive recommendations and HOLDS everything else
+#     (high severity or a destructive action) for human approval.
+#
+# It is still exposed to kagent via spec.expose.kagent, so the full loop is:
+#   kagent UI -> OttoFlow orchestration (delegate + policy gate) -> kagent k8s-agent.
+#
+# Usage:
+#   ottoflow run incident-triage --input incident="payments pods CrashLoopBackOff after the 14:00 deploy"
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: incident-triage
+spec:
+  inputs:
+    - name: incident
+      description: "Free-text incident description to triage"
+  expose:
+    kagent:
+      displayName: "Incident Triage"
+      description: 'SRE incident triage with an OttoFlow approval gate — kagent''s k8s-agent assesses, OttoFlow holds risky actions for human approval.  Try: "checkout pods CrashLoopBackOff after the 14:00 deploy; recommend rolling back the release"'
+      # Two prompts that exercise BOTH gate branches:
+      #   1st -> HELD (high severity + destructive rollback), 2nd -> AUTO-APPROVED (low sev, non-destructive).
+      examples:
+        - "checkout pods CrashLoopBackOff after the 14:00 deploy; recommend rolling back the release"
+        - "a single dev-namespace pod logs a noisy INFO line every few minutes; no user impact"
+      tags:
+        - sre
+        - incident
+        - triage
+  steps:
+    - name: triage
+      message: "Delegating incident triage to the in-cluster kagent k8s-agent"
+      externalAgentRef:
+        # kagent exposes each agent's A2A endpoint under the kagent controller Service.
+        url: "http://kagent-controller.kagent.svc:8083/api/a2a/kagent/k8s-agent"
+        protocol: a2a
+        allowInsecureHTTP: true
+        prompt: >-
+          "You are an SRE incident triage assistant. Triage this incident and " +
+          "return a concise verdict with exactly these labeled sections: " +
+          "Severity (one of P1, P2, P3, P4 where P1 is highest), likely root cause, " +
+          "recommended immediate action, and whether human approval is needed before " +
+          "acting (Yes or No with a one-line reason). Be terse and decisive; do not " +
+          "ask clarifying questions.\n\n" +
+          "After the verdict, on its OWN LAST LINE, output EXACTLY one machine-readable " +
+          "trailer in this format (uppercase, no extra words):\n" +
+          "DECISION: severity=<P1|P2|P3|P4>; destructive=<true|false>\n" +
+          "Set destructive=true if the recommended immediate action mutates cluster " +
+          "state (rollback, delete, scale, restart, or apply); otherwise destructive=false. " +
+          "Emit the trailer verbatim so it can be parsed.\n\nIncident:\n" + inputs.incident
+        timeout: "10m"
+      outputs:
+        - name: agentVerdict
+          expression: "a2aResult.artifacts[0].parts[0].text"
+
+    # OttoFlow policy gate over the kagent verdict. Auto-approve ONLY when the
+    # verdict is low severity (P3/P4) AND not destructive; fail-safe HOLD otherwise
+    # (P1/P2, destructive=true, or a missing/garbled trailer that fails to match).
+    - name: gate
+      message: "Applying OttoFlow policy gate over the kagent verdict"
+      dependsOn:
+        - triage
+      expressions:
+        - name: autoApprove
+          expression: >-
+            (variables.agentVerdict.contains("severity=P3") || variables.agentVerdict.contains("severity=P4"))
+            && !variables.agentVerdict.contains("destructive=true")
+      outputs:
+        - name: verdict
+          expression: >-
+            expressions.autoApprove
+            ? "AUTO-APPROVED — low severity, non-destructive; safe to proceed."
+            : "HELD for human approval — high severity or destructive action detected."
+  outputs:
+    - name: result
+      expression: 'variables.agentVerdict + "\n\n🛡  OttoFlow policy gate: " + variables.verdict'

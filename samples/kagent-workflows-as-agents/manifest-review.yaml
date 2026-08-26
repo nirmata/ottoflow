@@ -1,0 +1,44 @@
+---
+# Manifest-review judgement workflow that delegates to kagent's in-cluster
+# k8s-agent over A2A (externalAgentRef). kagent supplies the model, so this
+# workflow needs no OttoFlow Agent CR and no LLM credentials Secret.
+#
+# It is no longer exposed as a kagent agent (no spec.expose.kagent block) -- it is
+# kept on disk as a paste-in example workflow for reference.
+#
+# Usage:
+#   ottoflow run manifest-review --input manifest="$(cat pod.yaml)"
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: manifest-review
+spec:
+  inputs:
+    - name: manifest
+      description: "Free-text Kubernetes manifest YAML to review"
+  steps:
+    - name: review
+      message: "Delegating manifest review to the in-cluster kagent k8s-agent"
+      externalAgentRef:
+        # kagent exposes each agent's A2A endpoint under the kagent controller Service.
+        url: "http://kagent-controller.kagent.svc:8083/api/a2a/kagent/k8s-agent"
+        protocol: a2a
+        allowInsecureHTTP: true
+        prompt: >-
+          "You are a Kubernetes security and policy reviewer. Review the manifest " +
+          "below and list every security or policy issue you find, each with a " +
+          "concrete fix. Check at least for: privileged containers, " +
+          "allowPrivilegeEscalation, missing resource requests/limits, image tag " +
+          "\":latest\" or missing tag, missing or weak securityContext " +
+          "(runAsNonRoot, readOnlyRootFilesystem, dropped capabilities), " +
+          "hostPath / hostNetwork / hostPID / hostIPC use, and running as root. " +
+          "Format each finding as \"- Issue: ... | Fix: ...\". If the manifest has " +
+          "no issues, respond exactly: \"Clean: no issues found.\" Be terse." +
+          "\n\nManifest:\n" + inputs.manifest
+        timeout: "10m"
+      outputs:
+        - name: review
+          expression: "a2aResult.artifacts[0].parts[0].text"
+  outputs:
+    - name: review
+      expression: 'variables.review'

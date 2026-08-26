@@ -39,6 +39,7 @@ PACKAGE ?= github.com/nirmata/ottoflow
 MANAGER_IMPORT_PATH = github.com/nirmata/ottoflow/cmd/controller
 AGENT_EXECUTOR_IMPORT_PATH = github.com/nirmata/ottoflow/cmd/agent-executor
 WORKFLOW_RUNNER_IMPORT_PATH = github.com/nirmata/ottoflow/cmd/workflow-runner
+SERVE_A2A_IMPORT_PATH = github.com/nirmata/ottoflow/cmd/serve-a2a
 # Image tag for ko (semantic: repo tag or 0.0.0-dev-<sha>; override with IMAGE_TAG=)
 KO_TAGS := -t $(IMAGE_TAG)
 
@@ -294,10 +295,11 @@ run: manifests generate fmt vet ## Run a controller from your host (creates otto
 # otherwise 0.0.0-g<short-sha>. Override with IMAGE_TAG= when running make.
 # Set KO_DOCKER_REPO to your container registry. For local testing use KO_DOCKER_REPO=ko.local.
 .PHONY: ko-build
-ko-build: ko ## Build container images with ko (manager, agent-executor, workflow-runner).
+ko-build: ko ## Build container images with ko (manager, agent-executor, workflow-runner, serve-a2a).
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --push=false --base-import-paths --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(MANAGER_IMPORT_PATH)
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --push=false --base-import-paths --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(AGENT_EXECUTOR_IMPORT_PATH)
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --push=false --base-import-paths --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(WORKFLOW_RUNNER_IMPORT_PATH)
+	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --push=false --base-import-paths --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(SERVE_A2A_IMPORT_PATH)
 
 .PHONY: ko-build-manager
 ko-build-manager: ko ## Build manager container image with ko.
@@ -316,6 +318,7 @@ ko-push: ko ## Build and push container images with ko.
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --base-import-paths --push --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(MANAGER_IMPORT_PATH)
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --base-import-paths --push --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(AGENT_EXECUTOR_IMPORT_PATH)
 	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --base-import-paths --push --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(WORKFLOW_RUNNER_IMPORT_PATH)
+	KO_DOCKER_REPO=$(KO_DOCKER_REPO) $(KO) build --base-import-paths --push --platform=linux/amd64,linux/arm64 $(KO_TAGS) $(SERVE_A2A_IMPORT_PATH)
 
 .PHONY: ko-push-manager
 ko-push-manager: ko ## Build and push manager container image with ko.

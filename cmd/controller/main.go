@@ -85,6 +85,9 @@ func main() {
 	var webhookTriggerAddr string
 	var mcpAddr string
 	var mcpCallerNamespace string
+	var serveA2AImage string
+	var serveA2AServiceAccount string
+	var serveA2AClusterRole string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -142,6 +145,17 @@ func main() {
 		"Address for the webhook trigger HTTP server (empty disables). "+
 			"Receives signed POST requests and creates WorkflowRuns when enabled. "+
 			"TLS should be terminated at ingress; see docs/user/tasks/triggers.md.")
+	flag.StringVar(&serveA2AImage, "serve-a2a-image", os.Getenv("SERVE_A2A_IMAGE"),
+		"Image for the serve-a2a BYO kagent Agent that exposes Workflows with spec.expose.kagent set. "+
+			"Empty disables a2a exposure (Agents are not created).")
+	flag.StringVar(&serveA2AServiceAccount, "serve-a2a-service-account",
+		envOrDefault("SERVE_A2A_SERVICE_ACCOUNT", "serve-a2a"),
+		"ServiceAccount name the serve-a2a BYO pod runs as (created per namespace; default: serve-a2a).")
+	flag.StringVar(&serveA2AClusterRole, "serve-a2a-cluster-role",
+		envOrDefault("SERVE_A2A_CLUSTER_ROLE", "ottoflow-serve-a2a"),
+		"Shared ClusterRole the serve-a2a BYO pod's ServiceAccount is bound to (Helm-provisioned; "+
+			"the controller only creates a RoleBinding to it, never the ClusterRole itself). "+
+			"Default: ottoflow-serve-a2a.")
 
 	webhookServiceName := envOrDefault("WEBHOOK_SERVICE_NAME", "ottoflow-webhook")
 	webhookConfigName := envOrDefault("WEBHOOK_CONFIG_NAME", "ottoflow-validating")
@@ -381,6 +395,20 @@ func main() {
 		ControllerNamespace: namespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkflowRun")
+		os.Exit(1)
+	}
+	if serveA2AImage == "" {
+		setupLog.Info("--serve-a2a-image (or SERVE_A2A_IMAGE) is empty; a2a exposure is disabled " +
+			"(Workflows with spec.expose.kagent will not get a kagent Agent)")
+	}
+	if err = (&workflowcontroller.WorkflowExposureReconciler{
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		ServeA2AImage:          serveA2AImage,
+		ServeA2AServiceAccount: serveA2AServiceAccount,
+		ServeA2AClusterRole:    serveA2AClusterRole,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "WorkflowExposure")
 		os.Exit(1)
 	}
 

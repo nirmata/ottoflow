@@ -89,6 +89,12 @@ spec:
           {{- end }}
         {{- end }}
         {{- end }}
+        {{- if .Values.agentExecutor.llmCredentialsSecret }}
+        envFrom:
+        - secretRef:
+            name: {{ .Values.agentExecutor.llmCredentialsSecret }}
+            optional: true
+        {{- end }}
         ports:
         - name: https
           containerPort: {{ .Values.agentExecutor.service.port }}

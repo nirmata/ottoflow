@@ -352,6 +352,22 @@ _Appears in:_
 | `outboundRequestsPerMinute` _integer_ | OutboundRequestsPerMinute limits the rate of outbound calls (MCP, agent executor) per WorkflowRun.<br />When set, the executor waits as needed before each call. Zero or nil means no rate limit. |  | Optional: \{\} <br /> |
 
 
+#### ExposeSpec
+
+
+
+ExposeSpec configures external surfaces a Workflow is published to. Currently only kagent.
+
+
+
+_Appears in:_
+- [WorkflowSpec](#workflowspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `kagent` _[KagentExposeSpec](#kagentexposespec)_ | Kagent, when set, opts the Workflow into kagent (agent-to-agent) exposure via a kagent BYO Agent. |  | Optional: \{\} <br /> |
+
+
 #### Expression
 
 
@@ -404,6 +420,25 @@ _Appears in:_
 | `description` _string_ | Description is a human-readable description of the input |  | Optional: \{\} <br /> |
 | `default` _string_ | Default is the default value for the input (optional) |  | Optional: \{\} <br /> |
 | `required` _boolean_ | Required indicates if the input must be provided |  | Optional: \{\} <br /> |
+
+
+#### KagentExposeSpec
+
+
+
+KagentExposeSpec describes the kagent agent card metadata for a Workflow exposed via kagent.
+
+
+
+_Appears in:_
+- [ExposeSpec](#exposespec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `displayName` _string_ | DisplayName is a human-friendly name for the agent card. Defaults to the Workflow name. |  | Optional: \{\} <br /> |
+| `description` _string_ | Description is a human-readable description of what the agent does. |  | Optional: \{\} <br /> |
+| `examples` _string array_ | Examples are sample prompts shown on the agent card. |  | Optional: \{\} <br /> |
+| `tags` _string array_ | Tags are labels shown on the agent card for discovery. |  | Optional: \{\} <br /> |
 
 
 #### KubeConfigSecretRef
@@ -1672,5 +1707,6 @@ _Appears in:_
 | `celCostLimit` _integer_ | CELCostLimit is the maximum cost budget for CEL expression evaluation in this workflow.<br />If unset, a default (~2MB-equivalent) is used. Increase for workflows that do large data joins. |  | Optional: \{\} <br /> |
 | `execution` _[WorkflowRunExecutionSpec](#workflowrunexecutionspec)_ | Execution is the default execution spec for WorkflowRuns created from this Workflow (e.g. by cron).<br />When the scheduler creates a WorkflowRun, it copies this into the run's spec so runner Jobs get<br />the same env, volumes, etc. Use this to inject Nirmata LLM credentials (valueFrom.secretKeyRef). |  | Optional: \{\} <br /> |
 | `executionLimits` _[ExecutionLimits](#executionlimits)_ | ExecutionLimits configures concurrency and rate limits for this workflow. |  | Optional: \{\} <br /> |
+| `expose` _[ExposeSpec](#exposespec)_ | Expose publishes this Workflow to external agent surfaces (e.g. kagent). Presence of expose.kagent opts in. |  | Optional: \{\} <br /> |
 
 

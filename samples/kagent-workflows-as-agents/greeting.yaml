@@ -1,0 +1,37 @@
+---
+# Minimal no-LLM workflow exposed to kagent via A2A. No Agent, no LLM credentials,
+# no cost per call -- useful for proving the A2A exposure path end-to-end before
+# wiring up a real judgement agent.
+#
+# Usage:
+#   ottoflow run a2a-proof-greeting --input name=world
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: a2a-proof-greeting
+spec:
+  inputs:
+    - name: name
+      description: "Who to greet"
+      default: "world"
+  expose:
+    kagent:
+      displayName: "Greeting"
+      description: 'A2A plumbing proof (no LLM).  Try: "kagent"'
+      examples:
+        - "kagent"
+        - "OttoFlow"
+      tags:
+        - demo
+        - starter
+  steps:
+    - name: greet
+      expressions:
+        - name: greeting
+          expression: '"hello " + inputs.name'
+      outputs:
+        - name: message
+          expression: 'expressions.greeting'
+  outputs:
+    - name: greeting
+      expression: 'variables.message'

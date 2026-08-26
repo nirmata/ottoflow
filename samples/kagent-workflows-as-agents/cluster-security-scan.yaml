@@ -1,0 +1,132 @@
+---
+# cluster-security-scan — cluster-wide Pod security posture scan, orchestrated by
+# OttoFlow and delegated to kagent's in-cluster k8s-agent over A2A.
+#
+# Loop: kagent UI -> serve-a2a -> OttoFlow (collect + check + report) -> kagent k8s-agent.
+# The chat message is mapped into the (ignored) `request` input; the scan is ALWAYS
+# all-namespaces.
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: cluster-security-scan
+spec:
+  celCostLimit: 100000000
+  inputs:
+    - name: request
+      description: "Free-text request (ignored — the scan always covers all namespaces)."
+  expose:
+    kagent:
+      displayName: "Cluster Security Scan"
+      description: 'Cluster-wide Pod security posture scan orchestrated by OttoFlow and explained by kagent''s k8s-agent. Flags privileged containers, unpinned/:latest images, missing resource requests/limits, and run-as-root. Try: "scan the cluster for risky pods".'
+      examples:
+        - "scan the cluster for risky pods"
+        - "what are the biggest pod security risks right now?"
+      tags:
+        - kubernetes
+        - security
+        - posture
+        - scan
+  steps:
+    - name: collect
+      message: "Scanning all namespaces for risky pods"
+      resourceQuery:
+        apiVersion: v1
+        resource: Pod
+        namespace: '""'
+        outputs:
+          findings: |-
+            items.map(p, {
+              "namespace": dyn(p.metadata.namespace),
+              "name": dyn(p.metadata.name),
+              "reasons": dyn(
+                ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
+                    has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged))
+                  ? ["privileged container"] : []) +
+                ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
+                    c.image.endsWith(":latest") || !c.image.contains(":")))
+                  ? ["unpinned image (:latest or untagged)"] : []) +
+                ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
+                    !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests)))
+                  ? ["missing resource requests/limits"] : []) +
+                ((!(has(p.spec) && has(p.spec.securityContext) && has(p.spec.securityContext.runAsNonRoot)
+                      && p.spec.securityContext.runAsNonRoot)
+                   && !(has(p.spec) && has(p.spec.containers) && size(p.spec.containers) > 0
+                      && p.spec.containers.all(c,
+                          has(c.securityContext) && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot)))
+                  ? ["runs as root (no runAsNonRoot)"] : [])
+              )
+            }).filter(f, size(f.reasons) > 0)
+      outputs:
+        - name: count
+          expression: 'size(variables.findings)'
+
+    - name: analyze
+      message: "Delegating risk analysis to the in-cluster kagent k8s-agent"
+      dependsOn: [collect]
+      externalAgentRef:
+        url: "http://kagent-controller.kagent.svc:8083/api/a2a/kagent/k8s-agent"
+        protocol: a2a
+        allowInsecureHTTP: true
+        prompt: >-
+          "You are a Kubernetes security analyst. Below is a list of risky pods, each with the "
+          + "reasons it was flagged. Explain each risk in plain terms and rank the pods by severity "
+          + "(most dangerous first). Be concise. If the list is empty, respond exactly: "
+          + "\"No risky pods found.\"\n\nRisky pods (" + string(variables.count) + " total):\n"
+          + variables.findings.map(f, "- " + f.namespace + "/" + f.name + ": " + f.reasons.join(", ")).join("\n")
+        timeout: "10m"
+      outputs:
+        - name: analysis
+          expression: "a2aResult.artifacts[0].parts[0].text"
+
+    - name: gate
+      message: "Applying OttoFlow policy gate"
+      dependsOn: [collect]
+      expressions:
+        - name: compliant
+          expression: 'variables.count == 0'
+      outputs:
+        - name: verdict
+          expression: >-
+            expressions.compliant
+            ? "COMPLIANT — no risky pods"
+            : "VIOLATIONS — " + string(variables.count) + " risky pod(s)"
+
+    - name: report
+      message: "Filing OpenReports Report for risky pods"
+      dependsOn: [collect, gate]
+      matchConditions:
+        - name: hasViolations
+          expression: 'variables.count > 0'
+      openReport:
+        reportName: "cluster-security-scan"
+        source: "ottoflow"
+        resultsExpression: |-
+          variables.findings.map(f, {
+            "policy":   dyn("pod-security-baseline"),
+            "rule":     dyn(f.namespace + "/" + f.name),
+            "result":   dyn("fail"),
+            "scored":   dyn(true),
+            "severity": dyn("high"),
+            "source":   dyn("ottoflow"),
+            "message":  dyn(f.reasons.join(", "))
+          })
+      outputs:
+        - name: reportMode
+          expression: "reportResult.mode"
+        - name: reportName
+          expression: "reportResult.name"
+        - name: reportNamespace
+          expression: "reportResult.namespace"
+
+  outputs:
+    - name: result
+      expression: >-
+        "🔎 Cluster security scan — " + string(variables.count) + " risky pod(s) found.\n\n"
+        + variables.analysis
+        + "\n\n🛡  OttoFlow policy gate: " + variables.verdict
+        + (variables.count > 0
+            ? (variables.?reportMode.orValue("data") == "crd"
+                ? "\n📄 Report filed: openreports.io/Report \"" + variables.?reportName.orValue("cluster-security-scan")
+                  + "\" in namespace " + variables.?reportNamespace.orValue("ottoflow")
+                : "\n📄 Report data captured in-run (install the OpenReports CRD to file a Report object).")
+            : "")

@@ -1,0 +1,29 @@
+{{- if and .Values.rbac.create .Values.serveA2A.enabled }}
+---
+# serve-a2a ClusterRole - least-privilege permissions for the serve-a2a BYO Agent pods.
+# The controller creates a per-namespace RoleBinding (never a Role) binding each serve-a2a
+# ServiceAccount to this shared ClusterRole, so the controller only needs "bind" on it and
+# does not mint these permissions itself (passes Kubernetes RBAC escalation checks under
+# locked-down permissions). A serve-a2a pod reads its Workflow and creates/reads WorkflowRuns.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ottoflow.serveA2AClusterRole" . }}
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: serve-a2a-rbac
+rules:
+  - apiGroups:
+      - ottoflow.nirmata.io
+    resources:
+      - workflows
+    verbs:
+      - get
+  - apiGroups:
+      - ottoflow.nirmata.io
+    resources:
+      - workflowruns
+    verbs:
+      - create
+      - get
+{{- end }}

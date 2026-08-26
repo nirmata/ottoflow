@@ -1,0 +1,119 @@
+---
+# Multi-input extraction demo exposed to kagent via A2A.
+#
+# Unlike the delegate-to-kagent samples (incident-triage, manifest-review) which
+# hand the whole task to kagent's k8s-agent, this workflow does the LLM work
+# IN-WORKFLOW with an OttoFlow Agent CR:
+#
+#   1. serve-a2a maps the whole free-text chat message -> the workflow's FIRST
+#      input (`request`). One plain-English sentence in.
+#   2. Step `extract` runs an OttoFlow Agent (Anthropic) whose outputExtraction
+#      parses the model's JSON into structured fields. Because the step declares
+#      NO `outputs` block, the extracted keys (deployment, namespace, replicas)
+#      are written straight into `variables.*`.
+#   3. Step `plan` applies a CEL policy gate over those structured fields and
+#      renders an advisory, cluster-safe scale plan. Nothing is applied.
+#
+# Requires ANTHROPIC_API_KEY on the agent-executor (Secret nirmata-llm-credentials).
+#
+# Usage:
+#   ottoflow run scale-request-review --input request="bump the payments deployment in prod to 5 replicas"
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Agent
+metadata:
+  name: scale-request-extractor
+  namespace: ottoflow
+spec:
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-5-20250929
+  prompt: |
+    You extract structured fields from a free-text Kubernetes scaling request.
+    Return ONLY a single-line JSON object -- no markdown, no code fences, no prose.
+    Schema (all keys required): {"deployment": string, "namespace": string, "replicas": integer}
+    Rules:
+      - replicas MUST be a JSON integer (5, not "5").
+      - If a namespace is not stated, use "default".
+    Example in:  "bump the payments deployment in prod to 5 replicas"
+    Example out: {"deployment":"payments","namespace":"prod","replicas":5}
+  # No pattern -> the whole extracted JSON object is returned; its keys land in
+  # variables.* because the consuming step declares no outputs block.
+  outputExtraction:
+    type: json
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: scale-request-review
+  namespace: ottoflow
+spec:
+  inputs:
+    - name: request
+      description: "Free-text scaling request, e.g. 'scale payments in prod to 5 replicas'"
+  expose:
+    kagent:
+      displayName: "Scale Request Review"
+      description: 'Turns a plain-English scaling request into a structured, policy-checked plan (advisory -- no cluster changes).  Try: "bump the payments deployment in prod to 5 replicas"'
+      # 1st -> HELD (prod namespace), 2nd -> AUTO-APPROVED (default ns, small count),
+      # 3rd -> HELD (large replica count).
+      examples:
+        - "bump the payments deployment in prod to 5 replicas"
+        - "scale the frontend to 2 replicas"
+        - "scale checkout in prod to 50 replicas"
+      tags:
+        - scaling
+        - extraction
+        - policy-gate
+  steps:
+    # Extract structured fields from the free-text request. No outputs block, so
+    # the extracted JSON keys (deployment, namespace, replicas) become variables.*
+    - name: extract
+      message: "Extracting deployment / namespace / replicas from the request"
+      agentRef:
+        name: scale-request-extractor
+        namespace: ottoflow
+        additionalPrompts:
+          - '"Scaling request:\n" + inputs.request'
+
+    # OttoFlow policy gate over the extracted fields. AUTO-APPROVE only when the
+    # target is non-production AND the replica count is within safe bounds; HOLD
+    # for human approval otherwise (production namespace or a large replica count).
+    - name: plan
+      message: "Applying OttoFlow policy gate and rendering an advisory scale plan"
+      dependsOn:
+        - extract
+      expressions:
+        - name: replicasInt
+          expression: "int(variables.replicas)"
+        - name: hold
+          expression: 'variables.namespace == "prod" || expressions.replicasInt > 10'
+        - name: verdict
+          expression: >-
+            expressions.hold
+            ? "HELD for human approval -- production namespace or large replica count."
+            : "AUTO-APPROVED -- non-production and within safe replica bounds."
+      outputs:
+        - name: plan
+          expression: >-
+            "Requested scale:\n  deployment: " + variables.deployment +
+            "\n  namespace:  " + variables.namespace +
+            "\n  replicas:   " + string(expressions.replicasInt) +
+            "\n\nWould scale " + variables.deployment + " in " + variables.namespace +
+            " to " + string(expressions.replicasInt) + " replicas.\n" +
+            "🛡  OttoFlow policy gate: " + expressions.verdict +
+            "\n(advisory only -- no changes applied)"
+  outputs:
+    - name: result
+      expression: "variables.plan"
+# ---
+# Example WorkflowRun (uncomment to run without the CLI):
+#
+# apiVersion: ottoflow.nirmata.io/v1alpha1
+# kind: WorkflowRun
+# metadata:
+#   name: scale-request-review-run-001
+#   namespace: ottoflow
+# spec:
+#   workflowRef:
+#     name: scale-request-review
+#   inputValues:
+#     request: "bump the payments deployment in prod to 5 replicas"

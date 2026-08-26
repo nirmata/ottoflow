@@ -73,6 +73,36 @@ type WorkflowSpec struct {
 	// ExecutionLimits configures concurrency and rate limits for this workflow.
 	// +optional
 	ExecutionLimits *ExecutionLimits `json:"executionLimits,omitempty"`
+
+	// Expose publishes this Workflow to external agent surfaces (e.g. kagent). Presence of expose.kagent opts in.
+	// +optional
+	Expose *ExposeSpec `json:"expose,omitempty"`
+}
+
+// ExposeSpec configures external surfaces a Workflow is published to. Currently only kagent.
+type ExposeSpec struct {
+	// Kagent, when set, opts the Workflow into kagent (agent-to-agent) exposure via a kagent BYO Agent.
+	// +optional
+	Kagent *KagentExposeSpec `json:"kagent,omitempty"`
+}
+
+// KagentExposeSpec describes the kagent agent card metadata for a Workflow exposed via kagent.
+type KagentExposeSpec struct {
+	// DisplayName is a human-friendly name for the agent card. Defaults to the Workflow name.
+	// +optional
+	DisplayName string `json:"displayName,omitempty"`
+
+	// Description is a human-readable description of what the agent does.
+	// +optional
+	Description string `json:"description,omitempty"`
+
+	// Examples are sample prompts shown on the agent card.
+	// +optional
+	Examples []string `json:"examples,omitempty"`
+
+	// Tags are labels shown on the agent card for discovery.
+	// +optional
+	Tags []string `json:"tags,omitempty"`
 }
 
 // ExecutionLimits configures per-workflow concurrency and rate limits.

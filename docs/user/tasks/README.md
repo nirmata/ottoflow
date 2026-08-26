@@ -8,6 +8,7 @@ Step-by-step guides for common tasks with OttoFlow.
 - [Getting Started](getting-started.md) - Create your first workflow
 - [MCP Servers and Tool Calls](mcp-servers-and-tools.md) - Configure MCP servers and call MCP tools from workflow steps
 - [Serving Workflows as MCP Tools](workflows-as-mcp-tools.md) - Let an agent framework call your workflows as tools
+- [Serving Workflows as A2A Agents](workflows-as-a2a-agents.md) - Expose a workflow to kagent as its own A2A agent
 - [Triggers](triggers.md) - Setting up cron, event, and webhook triggers
 - [Custom Metrics](custom-metrics.md) - Defining custom Prometheus metrics from workflows
 

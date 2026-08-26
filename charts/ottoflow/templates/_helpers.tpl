@@ -268,6 +268,32 @@ Agent Executor image
 {{- end }}
 
 {{/*
+Create the name of the shared ClusterRole the serve-a2a ServiceAccount is bound to
+*/}}
+{{- define "ottoflow.serveA2AClusterRole" -}}
+{{- .Values.serveA2A.clusterRole | default (printf "%s-serve-a2a" (include "ottoflow.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+serve-a2a image
+*/}}
+{{- define "ottoflow.serveA2AImage" -}}
+{{- if .Values.serveA2A.image.fullOverride }}
+{{- .Values.serveA2A.image.fullOverride }}
+{{- else }}
+{{- $registry := .Values.global.imageRegistry }}
+{{- if .Values.serveA2A.image.registry }}
+{{- $registry = .Values.serveA2A.image.registry }}
+{{- end }}
+{{- if $registry }}
+{{- printf "%s/%s:%s" $registry .Values.serveA2A.image.repository (.Values.serveA2A.image.tag | default (printf "v%s" .Chart.AppVersion)) }}
+{{- else }}
+{{- printf "%s:%s" .Values.serveA2A.image.repository (.Values.serveA2A.image.tag | default (printf "v%s" .Chart.AppVersion)) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
 Workflow Runner image
 */}}
 {{- define "ottoflow.workflowRunnerImage" -}}

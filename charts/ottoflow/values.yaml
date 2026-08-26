@@ -271,6 +271,10 @@ agentExecutor:
   # Environment variables
   env: []
 
+  # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
+  # agent-executor pod via envFrom, for Workflow steps using agentRef. Empty by default (no injection).
+  llmCredentialsSecret: ""
+
   # Command (optional, defaults to /ko-app/agent-executor for ko-built images)
   # For ko-built images: /ko-app/agent-executor
   command: []
@@ -348,6 +352,35 @@ workflowRunner:
   # so the runner can verify agent-executor TLS. Required when agentExecutor.tls.internal is enabled and runs use a different namespace.
   # Secret must exist in each WorkflowRun namespace. Defaults to the same CA secret name as the controller when agent executor TLS is internal.
   agentExecutorCASecret: ""
+
+# serve-a2a exposure configuration.
+# When enabled, the controller publishes Workflows with spec.expose.kagent set as kagent BYO
+# Agents (running the serve-a2a image) and, per Workflow namespace, creates a ServiceAccount
+# plus a RoleBinding to the shared serve-a2a ClusterRole below. The controller only binds that
+# ClusterRole; it never mints the permissions itself.
+serveA2A:
+  # Enable a2a exposure. When true the chart passes --serve-a2a-image / --serve-a2a-service-account
+  # / --serve-a2a-cluster-role to the controller and creates the shared serve-a2a ClusterRole.
+  # When false, Workflows with spec.expose.kagent set do not get a kagent Agent.
+  enabled: false
+
+  # serve-a2a image. This image publishes starting with the next release tag (ko-push runs only
+  # on release, not on every commit), so only set enabled: true once that image exists for the
+  # tag you're deploying, or point fullOverride at your own build in the meantime.
+  image:
+    registry: "ghcr.io/nirmata/ottoflow"
+    repository: serve-a2a
+    # When empty, chart uses .Chart.AppVersion (fixed tag for released charts)
+    tag: ""
+    # Override full image if needed
+    fullOverride: ""
+
+  # ServiceAccount name each serve-a2a BYO pod runs as (created per namespace by the controller).
+  serviceAccountName: serve-a2a
+
+  # Shared ClusterRole the serve-a2a ServiceAccount is bound to (created by this chart when
+  # rbac.create and serveA2A.enabled). When empty, defaults to "<fullname>-serve-a2a".
+  clusterRole: ""
 
 # RBAC configuration
 rbac:

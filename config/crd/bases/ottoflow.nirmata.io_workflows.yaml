@@ -3340,6 +3340,35 @@ spec:
                     format: int32
                     type: integer
                 type: object
+              expose:
+                description: Expose publishes this Workflow to external agent surfaces
+                  (e.g. kagent). Presence of expose.kagent opts in.
+                properties:
+                  kagent:
+                    description: Kagent, when set, opts the Workflow into kagent (agent-to-agent)
+                      exposure via a kagent BYO Agent.
+                    properties:
+                      description:
+                        description: Description is a human-readable description of
+                          what the agent does.
+                        type: string
+                      displayName:
+                        description: DisplayName is a human-friendly name for the
+                          agent card. Defaults to the Workflow name.
+                        type: string
+                      examples:
+                        description: Examples are sample prompts shown on the agent
+                          card.
+                        items:
+                          type: string
+                        type: array
+                      tags:
+                        description: Tags are labels shown on the agent card for discovery.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                type: object
               inputs:
                 description: |-
                   Inputs defines input parameters for the workflow template.

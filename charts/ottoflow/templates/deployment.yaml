@@ -83,6 +83,11 @@ spec:
         {{- if .Values.controller.prometheusURL }}
         - --prometheus-url={{ .Values.controller.prometheusURL }}
         {{- end }}
+        {{- if .Values.serveA2A.enabled }}
+        - --serve-a2a-image={{ include "ottoflow.serveA2AImage" . }}
+        - --serve-a2a-service-account={{ .Values.serveA2A.serviceAccountName | default "serve-a2a" }}
+        - --serve-a2a-cluster-role={{ include "ottoflow.serveA2AClusterRole" . }}
+        {{- end }}
         {{- if and .Values.controller.webhookTrigger .Values.controller.webhookTrigger.enabled }}
         - --webhook-trigger-addr={{ .Values.controller.webhookTrigger.addr | default ":8083" }}
         {{- end }}

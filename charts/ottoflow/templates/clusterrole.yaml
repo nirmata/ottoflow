@@ -191,6 +191,52 @@ rules:
       - get
       - patch
       - update
+{{- if .Values.serveA2A.enabled }}
+  # serve-a2a exposure (WorkflowExposureReconciler): manages kagent BYO Agents and binds the
+  # serve-a2a ServiceAccount to the shared serve-a2a ClusterRole in each Workflow's namespace.
+  - apiGroups:
+      - kagent.dev
+    resources:
+      - agents
+    verbs:
+      - get
+      - list
+      - create
+      - update
+      - patch
+      - delete
+  # RoleBindings - bind the serve-a2a SA to the shared serve-a2a ClusterRole (create + read only;
+  # never updated or deleted on per-Workflow reconcile).
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - rolebindings
+    verbs:
+      - create
+      - get
+      - list
+      - watch
+  # Workflows - add/remove the a2a-exposure finalizer via Update (the read-only workflows rule
+  # above does not grant write; this adds update/patch on the top-level resource).
+  - apiGroups:
+      - ottoflow.nirmata.io
+    resources:
+      - workflows
+    verbs:
+      - update
+      - patch
+  # bind on the serve-a2a ClusterRole so per-namespace RoleBindings can reference it even though
+  # the controller may not itself hold every verb the serve-a2a role grants (K8s RBAC
+  # escalation-prevention requires bind OR holding every referenced permission).
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterroles
+    verbs:
+      - bind
+    resourceNames:
+      - {{ include "ottoflow.serveA2AClusterRole" . }}
+{{- end }}
 {{- if and .Values.rbac.coreClusterRole .Values.rbac.coreClusterRole.extraResources }}
   {{- toYaml .Values.rbac.coreClusterRole.extraResources | nindent 2 }}
 {{- end }}
