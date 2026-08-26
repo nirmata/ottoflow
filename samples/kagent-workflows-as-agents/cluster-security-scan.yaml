@@ -43,16 +43,17 @@ spec:
                     has(c.securityContext) && has(c.securityContext.privileged) && c.securityContext.privileged))
                   ? ["privileged container"] : []) +
                 ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
-                    c.image.endsWith(":latest") || !c.image.contains(":")))
+                    c.image.endsWith(":latest")
+                    || (!c.image.contains("@") && c.image.find("[^/]+:[^/]+$") == "")))
                   ? ["unpinned image (:latest or untagged)"] : []) +
                 ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
                     !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests)))
                   ? ["missing resource requests/limits"] : []) +
-                ((!(has(p.spec) && has(p.spec.securityContext) && has(p.spec.securityContext.runAsNonRoot)
-                      && p.spec.securityContext.runAsNonRoot)
-                   && !(has(p.spec) && has(p.spec.containers) && size(p.spec.containers) > 0
-                      && p.spec.containers.all(c,
-                          has(c.securityContext) && has(c.securityContext.runAsNonRoot) && c.securityContext.runAsNonRoot)))
+                ((has(p.spec) && has(p.spec.containers) && p.spec.containers.exists(c,
+                    (has(c.securityContext) && has(c.securityContext.runAsNonRoot))
+                      ? !c.securityContext.runAsNonRoot
+                      : !(has(p.spec.securityContext) && has(p.spec.securityContext.runAsNonRoot)
+                          && p.spec.securityContext.runAsNonRoot)))
                   ? ["runs as root (no runAsNonRoot)"] : [])
               )
             }).filter(f, size(f.reasons) > 0)

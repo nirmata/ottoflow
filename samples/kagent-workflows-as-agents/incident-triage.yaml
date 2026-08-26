@@ -70,10 +70,14 @@ spec:
       dependsOn:
         - triage
       expressions:
+        # Fail CLOSED: auto-approve only on a positive match of the exact machine-readable
+        # trailer the prompt asks for. Requiring `destructive=false` to be present (rather than
+        # `destructive=true` to be absent) means a garbled, missing, or echoed trailer
+        # (destructive=unknown, no trailer at all, user text) matches nothing and is HELD.
         - name: autoApprove
           expression: >-
-            (variables.agentVerdict.contains("severity=P3") || variables.agentVerdict.contains("severity=P4"))
-            && !variables.agentVerdict.contains("destructive=true")
+            variables.agentVerdict.contains("DECISION: severity=P3; destructive=false")
+            || variables.agentVerdict.contains("DECISION: severity=P4; destructive=false")
       outputs:
         - name: verdict
           expression: >-

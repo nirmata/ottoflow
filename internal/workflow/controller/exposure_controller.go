@@ -16,6 +16,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -64,7 +65,7 @@ func kagentAgentGVK() schema.GroupVersionKind {
 
 // +kubebuilder:rbac:groups=kagent.dev,resources=agents,verbs=get;list;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch;create;update;delete
 
 // WorkflowExposureReconciler publishes Workflows that opt in via spec.expose.kagent as kagent
 // BYO Agents (pointing at the serve-a2a image), plus the ServiceAccount and RoleBinding the
@@ -95,12 +96,22 @@ func (r *WorkflowExposureReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	exposeKagent := wf.Spec.Expose != nil && wf.Spec.Expose.Kagent != nil
+	exposeKagent := wf.Spec.Expose.IsKagentEnabled()
 	beingDeleted := !wf.DeletionTimestamp.IsZero()
 
-	// Teardown: field cleared or Workflow being deleted. Delete the Agent, keep the shared
-	// SA/Role/RoleBinding (they are namespace fixtures shared by other exposed Workflows).
-	if !exposeKagent || beingDeleted {
+	// A2A maps a single free-text prompt to the workflow's FIRST input (see serve-a2a). A
+	// required input the prompt can't fill (any required, default-less input after the first)
+	// makes the workflow unexposable: it would accept the A2A call and then fail in the executor.
+	// Refuse to expose it — and tear down any Agent published before the schema became incompatible.
+	exposable := exposeKagent && inputsExposable(wf)
+	if exposeKagent && !exposable {
+		logger.Info("workflow opts into a2a exposure but has a required input the A2A prompt cannot fill; not exposing",
+			logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
+	}
+
+	// Teardown: not opted in, incompatible input schema, or Workflow being deleted. Delete the
+	// Agent, keep the shared SA/RoleBinding (namespace fixtures shared by other exposed Workflows).
+	if !exposable || beingDeleted {
 		if controllerutil.ContainsFinalizer(wf, a2aExposureFinalizer) {
 			if err := r.deleteAgent(ctx, wf); err != nil {
 				logger.Error(err, "failed to delete kagent Agent", logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
@@ -166,7 +177,7 @@ func (r *WorkflowExposureReconciler) ensureRBAC(ctx context.Context, ns string) 
 		return err
 	}
 
-	rb := &rbacv1.RoleBinding{
+	desired := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: ns},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
@@ -179,7 +190,37 @@ func (r *WorkflowExposureReconciler) ensureRBAC(ctx context.Context, ns string) 
 			Namespace: ns,
 		}},
 	}
-	return r.createIfAbsent(ctx, rb)
+	return r.reconcileRoleBinding(ctx, desired)
+}
+
+// reconcileRoleBinding makes the serve-a2a RoleBinding match desired. Unlike the ServiceAccount,
+// the binding is reconciled rather than created-if-absent: if an operator changes
+// serviceAccountName or clusterRole, a create-if-absent binding would keep pointing at the old
+// ServiceAccount/ClusterRole while newly reconciled BYO Agents run as the new ServiceAccount and
+// silently lose Workflow access. roleRef is immutable, so a drifted roleRef is fixed by
+// delete+recreate; a drifted subject list is fixed with an in-place update.
+func (r *WorkflowExposureReconciler) reconcileRoleBinding(ctx context.Context, desired *rbacv1.RoleBinding) error {
+	var existing rbacv1.RoleBinding
+	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+	if apierrors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+
+	if existing.RoleRef != desired.RoleRef {
+		// roleRef is immutable; the only way to repoint it is to recreate the binding.
+		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return r.Create(ctx, desired)
+	}
+	if !equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects) {
+		existing.Subjects = desired.Subjects
+		return r.Update(ctx, &existing)
+	}
+	return nil
 }
 
 // createIfAbsent creates obj only when it does not already exist. It never updates or
@@ -216,6 +257,15 @@ func (r *WorkflowExposureReconciler) upsertAgent(ctx context.Context, wf *ottofl
 	case err != nil:
 		return err // includes NoMatch (CRD absent), handled by the caller
 	default:
+		// Do not hijack an Agent we do not manage: an unrelated kagent Agent (or one belonging to
+		// a different Workflow) may already hold this computed name. Overwriting its spec+labels
+		// would take it over. Only reconcile when the live object carries our management labels for
+		// THIS Workflow; otherwise surface the conflict rather than silently owning it.
+		if !managedBy(existing, wf) {
+			return fmt.Errorf(
+				"kagent Agent %s/%s already exists and is not managed by OttoFlow for workflow %q (uid %s); refusing to overwrite it",
+				existing.GetNamespace(), existing.GetName(), wf.Name, wf.UID)
+		}
 		// Preserve the live object's metadata (resourceVersion etc.); only reconcile spec + labels.
 		existing.Object["spec"] = desired.Object["spec"]
 		existing.SetLabels(desired.GetLabels())
@@ -318,6 +368,33 @@ func buildAgentObject(wf *ottoflowv1alpha1.Workflow, image, serviceAccount strin
 			},
 		},
 	}}
+}
+
+// inputsExposable reports whether the workflow's input schema can be satisfied by A2A's
+// single-prompt→first-input mapping. The prompt fills only the FIRST input, so any required
+// input without a default at a later index can never be supplied over A2A. The first input may
+// be required (the prompt fills it) and any later input is fine as long as it is optional or
+// has a default.
+func inputsExposable(wf *ottoflowv1alpha1.Workflow) bool {
+	for i, in := range wf.Spec.Inputs {
+		if i == 0 {
+			continue
+		}
+		if in.Required && in.Default == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// managedBy reports whether an existing Agent carries this controller's management labels for the
+// given Workflow (namespace + name + uid all match). Used before overwriting so a reconcile never
+// hijacks an Agent it does not own that merely shares the computed name.
+func managedBy(obj *unstructured.Unstructured, wf *ottoflowv1alpha1.Workflow) bool {
+	labels := obj.GetLabels()
+	return labels[labelWorkflowNamespace] == wf.Namespace &&
+		labels[labelWorkflowName] == wf.Name &&
+		labels[labelWorkflowUID] == string(wf.UID)
 }
 
 // agentName returns a DNS-1123-safe (<=63 char) name for a Workflow's Agent. kagent's UI

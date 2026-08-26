@@ -84,8 +84,11 @@ spec:
       expressions:
         - name: replicasInt
           expression: "int(variables.replicas)"
+        # HOLD in production, for a large count, or for a malformed count. The lower bound makes
+        # a garbled extraction (a negative or zero replica count — impossible in Kubernetes) fail
+        # CLOSED instead of being auto-approved.
         - name: hold
-          expression: 'variables.namespace == "prod" || expressions.replicasInt > 10'
+          expression: 'variables.namespace == "prod" || expressions.replicasInt > 10 || expressions.replicasInt < 1'
         - name: verdict
           expression: >-
             expressions.hold

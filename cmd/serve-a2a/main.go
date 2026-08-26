@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -44,6 +45,18 @@ func main() {
 	// deploys this server BYO-style will set the real in-cluster Service URL later.
 	publicURL := envOr("A2A_PUBLIC_URL", fmt.Sprintf("http://localhost:%s/", port))
 
+	// A2A_RUN_TIMEOUT bounds how long a single A2A call waits for its WorkflowRun. A workflow's
+	// real budget is workflow-specific (a chain of agent calls can be long), so it is tunable.
+	// Empty leaves it at the server default; a non-empty invalid value fails fast at startup.
+	var runTimeout time.Duration
+	if v := os.Getenv("A2A_RUN_TIMEOUT"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			klog.Fatalf("invalid A2A_RUN_TIMEOUT %q: %v", v, err)
+		}
+		runTimeout = d
+	}
+
 	cfg, err := config.GetConfig()
 	if err != nil {
 		klog.Fatalf("loading kube config: %v", err)
@@ -58,7 +71,7 @@ func main() {
 		klog.Fatalf("creating kube client: %v", err)
 	}
 
-	srv := a2a.NewServer(k8sClient, workflowName, namespace, publicURL)
+	srv := a2a.NewServer(k8sClient, workflowName, namespace, publicURL, runTimeout)
 	mux := http.NewServeMux()
 	srv.Register(mux)
 

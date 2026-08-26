@@ -86,6 +86,23 @@ type ExposeSpec struct {
 	Kagent *KagentExposeSpec `json:"kagent,omitempty"`
 }
 
+// GetKagent returns the kagent exposure spec, or nil when the Workflow does not opt into
+// kagent (A2A) exposure. Nil-safe on the pointer so callers can chain
+// wf.Spec.Expose.GetKagent() without a preceding nil check, the same way MCPTool does.
+func (e *ExposeSpec) GetKagent() *KagentExposeSpec {
+	if e == nil {
+		return nil
+	}
+	return e.Kagent
+}
+
+// IsKagentEnabled reports whether the Workflow opts into kagent (A2A) exposure. Nil is the
+// common case (most workflows never opt in), so the nil check lives here rather than at each
+// call site.
+func (e *ExposeSpec) IsKagentEnabled() bool {
+	return e.GetKagent() != nil
+}
+
 // KagentExposeSpec describes the kagent agent card metadata for a Workflow exposed via kagent.
 type KagentExposeSpec struct {
 	// DisplayName is a human-friendly name for the agent card. Defaults to the Workflow name.

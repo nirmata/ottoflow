@@ -8,12 +8,18 @@ that can be found in the LICENSE.md file.
 package controller
 
 import (
+	"context"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
@@ -152,4 +158,153 @@ func TestBuildAgentObjectCustomDescription(t *testing.T) {
 	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "description"); got != "Custom desc" {
 		t.Errorf("spec.description=%q want %q", got, "Custom desc")
 	}
+}
+
+func TestInputsExposable(t *testing.T) {
+	req := func(name string) ottoflowv1alpha1.Input {
+		return ottoflowv1alpha1.Input{Name: name, Required: true}
+	}
+	reqWithDefault := func(name string) ottoflowv1alpha1.Input {
+		return ottoflowv1alpha1.Input{Name: name, Required: true, Default: "x"}
+	}
+	opt := func(name string) ottoflowv1alpha1.Input {
+		return ottoflowv1alpha1.Input{Name: name}
+	}
+
+	cases := []struct {
+		name   string
+		inputs []ottoflowv1alpha1.Input
+		want   bool
+	}{
+		{"no inputs", nil, true},
+		{"single required first (prompt fills it)", []ottoflowv1alpha1.Input{req("a")}, true},
+		{"optional first, required second (prompt cannot fill it)", []ottoflowv1alpha1.Input{opt("a"), req("b")}, false},
+		{"two required (second unfillable)", []ottoflowv1alpha1.Input{req("a"), req("b")}, false},
+		{"required-with-default second is fine", []ottoflowv1alpha1.Input{opt("a"), reqWithDefault("b")}, true},
+		{"all optional", []ottoflowv1alpha1.Input{opt("a"), opt("b")}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := wf("ns", "wf")
+			w.Spec.Inputs = tc.inputs
+			if got := inputsExposable(w); got != tc.want {
+				t.Errorf("inputsExposable = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagedBy(t *testing.T) {
+	w := wf("prod", "report") // uid is "uid-report"
+	managed := &unstructured.Unstructured{}
+	managed.SetLabels(map[string]string{
+		labelWorkflowNamespace: "prod",
+		labelWorkflowName:      "report",
+		labelWorkflowUID:       "uid-report",
+	})
+	if !managedBy(managed, w) {
+		t.Error("managedBy = false for an Agent carrying our labels, want true")
+	}
+
+	// An unrelated Agent that merely shares the name (different UID) must not be adopted.
+	foreign := &unstructured.Unstructured{}
+	foreign.SetLabels(map[string]string{
+		labelWorkflowNamespace: "prod",
+		labelWorkflowName:      "report",
+		labelWorkflowUID:       "someone-elses-uid",
+	})
+	if managedBy(foreign, w) {
+		t.Error("managedBy = true for an Agent with a different workflow UID, want false")
+	}
+
+	// An Agent with no management labels at all (a user's hand-made Agent) must not be adopted.
+	unlabeled := &unstructured.Unstructured{}
+	if managedBy(unlabeled, w) {
+		t.Error("managedBy = true for an unlabeled Agent, want false")
+	}
+}
+
+func newExposureReconciler(t *testing.T, objs ...client.Object) *WorkflowExposureReconciler {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding client-go scheme: %v", err)
+	}
+	if err := ottoflowv1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("adding ottoflow scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	return &WorkflowExposureReconciler{
+		Client:                 c,
+		Scheme:                 scheme,
+		ServeA2AServiceAccount: "serve-a2a",
+		ServeA2AClusterRole:    "ottoflow-serve-a2a",
+	}
+}
+
+func TestReconcileRoleBinding(t *testing.T) {
+	desired := func() *rbacv1.RoleBinding {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a"},
+			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "ottoflow-serve-a2a"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "serve-a2a", Namespace: "team-a"}},
+		}
+	}
+
+	t.Run("creates when absent", func(t *testing.T) {
+		r := newExposureReconciler(t)
+		if err := r.reconcileRoleBinding(context.Background(), desired()); err != nil {
+			t.Fatalf("reconcileRoleBinding: %v", err)
+		}
+		var got rbacv1.RoleBinding
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+			t.Fatalf("expected the RoleBinding to be created: %v", err)
+		}
+	})
+
+	t.Run("recreates when roleRef drifts (immutable)", func(t *testing.T) {
+		stale := desired()
+		stale.RoleRef.Name = "old-clusterrole" // operator changed the configured ClusterRole
+		r := newExposureReconciler(t, stale)
+		if err := r.reconcileRoleBinding(context.Background(), desired()); err != nil {
+			t.Fatalf("reconcileRoleBinding: %v", err)
+		}
+		var got rbacv1.RoleBinding
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+			t.Fatalf("getting RoleBinding: %v", err)
+		}
+		if got.RoleRef.Name != "ottoflow-serve-a2a" {
+			t.Errorf("roleRef.Name = %q, want it repointed to %q", got.RoleRef.Name, "ottoflow-serve-a2a")
+		}
+	})
+
+	t.Run("updates subjects when only the ServiceAccount drifts", func(t *testing.T) {
+		stale := desired()
+		stale.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: "old-sa", Namespace: "team-a"}}
+		r := newExposureReconciler(t, stale)
+		if err := r.reconcileRoleBinding(context.Background(), desired()); err != nil {
+			t.Fatalf("reconcileRoleBinding: %v", err)
+		}
+		var got rbacv1.RoleBinding
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+			t.Fatalf("getting RoleBinding: %v", err)
+		}
+		if len(got.Subjects) != 1 || got.Subjects[0].Name != "serve-a2a" {
+			t.Errorf("subjects = %+v, want the reconciled serve-a2a ServiceAccount", got.Subjects)
+		}
+	})
+
+	t.Run("no-op when already correct", func(t *testing.T) {
+		r := newExposureReconciler(t, desired())
+		if err := r.reconcileRoleBinding(context.Background(), desired()); err != nil {
+			t.Fatalf("reconcileRoleBinding: %v", err)
+		}
+		var got rbacv1.RoleBinding
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+			t.Fatalf("getting RoleBinding: %v", err)
+		}
+		if got.RoleRef.Name != "ottoflow-serve-a2a" || len(got.Subjects) != 1 {
+			t.Errorf("RoleBinding changed unexpectedly: %+v", got)
+		}
+	})
 }

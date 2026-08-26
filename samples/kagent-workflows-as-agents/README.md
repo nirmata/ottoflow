@@ -1,9 +1,10 @@
 # Serving Workflows as kagent Agents (A2A)
 
-These samples show the opposite direction from
-[`samples/kagent-workflows-as-tools/`](../kagent-workflows-as-tools/): instead of
-OttoFlow calling out to kagent over MCP, a Workflow is exposed *to* kagent as its own
-[A2A](https://a2aprotocol.ai/) agent, callable from kagent's UI or any other A2A client.
+These samples are the A2A-agent counterpart to
+[`samples/kagent-workflows-as-tools/`](../kagent-workflows-as-tools/). In both, kagent calls
+*into* OttoFlow — the difference is the surface a Workflow is exposed on: there it is an MCP
+**tool** kagent invokes, here it is exposed as its own [A2A](https://a2aprotocol.ai/) **agent**
+with its own agent card, callable from kagent's UI or any other A2A client.
 
 See [Serving Workflows as MCP Tools](../../docs/user/tasks/workflows-as-mcp-tools.md)
 for the other direction, or

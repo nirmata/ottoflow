@@ -191,9 +191,11 @@ rules:
       - get
       - patch
       - update
-{{- if .Values.serveA2A.enabled }}
-  # serve-a2a exposure (WorkflowExposureReconciler): manages kagent BYO Agents and binds the
-  # serve-a2a ServiceAccount to the shared serve-a2a ClusterRole in each Workflow's namespace.
+  # serve-a2a TEARDOWN (WorkflowExposureReconciler) - intentionally NOT gated on serveA2A.enabled.
+  # A Workflow that was exposed carries the a2a-exposure finalizer and owns a kagent Agent; if
+  # these permissions vanished when the feature is turned off, the controller could neither delete
+  # the Agent nor remove the finalizer, leaving orphaned Agents and Workflows stuck Terminating.
+  # Teardown must always be possible, so it stays granted regardless of the flag.
   - apiGroups:
       - kagent.dev
     resources:
@@ -201,12 +203,30 @@ rules:
     verbs:
       - get
       - list
+      - delete
+  # Workflows - remove the a2a-exposure finalizer via Update/Patch (the read-only workflows rule
+  # above grants no top-level write). Ungated for the same teardown reason.
+  - apiGroups:
+      - ottoflow.nirmata.io
+    resources:
+      - workflows
+    verbs:
+      - update
+      - patch
+{{- if .Values.serveA2A.enabled }}
+  # serve-a2a SETUP (only needed while the feature is enabled): create/update kagent BYO Agents,
+  # manage the per-namespace RoleBinding, and bind the shared serve-a2a ClusterRole.
+  - apiGroups:
+      - kagent.dev
+    resources:
+      - agents
+    verbs:
       - create
       - update
       - patch
-      - delete
-  # RoleBindings - bind the serve-a2a SA to the shared serve-a2a ClusterRole (create + read only;
-  # never updated or deleted on per-Workflow reconcile).
+  # RoleBindings - bind the serve-a2a SA to the shared serve-a2a ClusterRole, and reconcile it
+  # (update, or delete+recreate) when serviceAccountName or clusterRole change: roleRef is
+  # immutable, so a drifted binding must be recreated or newly reconciled Agents lose access.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
@@ -216,15 +236,8 @@ rules:
       - get
       - list
       - watch
-  # Workflows - add/remove the a2a-exposure finalizer via Update (the read-only workflows rule
-  # above does not grant write; this adds update/patch on the top-level resource).
-  - apiGroups:
-      - ottoflow.nirmata.io
-    resources:
-      - workflows
-    verbs:
       - update
-      - patch
+      - delete
   # bind on the serve-a2a ClusterRole so per-namespace RoleBindings can reference it even though
   # the controller may not itself hold every verb the serve-a2a role grants (K8s RBAC
   # escalation-prevention requires bind OR holding every referenced permission).

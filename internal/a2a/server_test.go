@@ -58,7 +58,7 @@ func TestAgentCardServedAtWellKnownPath(t *testing.T) {
 	wf := &ottoflowv1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "greeter"},
 	}
-	s := NewServer(newFakeClient(t, wf), "greeter", "default", "http://example.test/")
+	s := NewServer(newFakeClient(t, wf), "greeter", "default", "http://example.test/", 0)
 
 	mux := http.NewServeMux()
 	s.Register(mux)
@@ -198,16 +198,17 @@ func TestStreamEventSequenceFailed(t *testing.T) {
 func TestCreateRunInputMapping(t *testing.T) {
 	newWF := func() *ottoflowv1alpha1.Workflow {
 		return &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "greeter"},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "greeter", UID: types.UID("wf-uid")},
 			Spec: ottoflowv1alpha1.WorkflowSpec{
 				Inputs: []ottoflowv1alpha1.Input{{Name: "prompt"}},
 				Steps:  []ottoflowv1alpha1.Step{{Name: "noop"}},
+				Expose: &ottoflowv1alpha1.ExposeSpec{Kagent: &ottoflowv1alpha1.KagentExposeSpec{}},
 			},
 		}
 	}
 
 	t.Run("non-empty text maps to first input", func(t *testing.T) {
-		s := NewServer(newFakeClient(t, newWF()), "greeter", "default", "")
+		s := NewServer(newFakeClient(t, newWF()), "greeter", "default", "", 0)
 		run, err := s.createRun(context.Background(), "hello there")
 		if err != nil {
 			t.Fatalf("createRun: %v", err)
@@ -218,7 +219,7 @@ func TestCreateRunInputMapping(t *testing.T) {
 	})
 
 	t.Run("empty text leaves InputValues unset so the default applies", func(t *testing.T) {
-		s := NewServer(newFakeClient(t, newWF()), "greeter", "default", "")
+		s := NewServer(newFakeClient(t, newWF()), "greeter", "default", "", 0)
 		run, err := s.createRun(context.Background(), "")
 		if err != nil {
 			t.Fatalf("createRun: %v", err)
@@ -227,6 +228,95 @@ func TestCreateRunInputMapping(t *testing.T) {
 			t.Errorf("InputValues[prompt] = %q, want unset", v)
 		}
 	})
+
+	t.Run("run is owned by the workflow so it is garbage-collected", func(t *testing.T) {
+		s := NewServer(newFakeClient(t, newWF()), "greeter", "default", "", 0)
+		run, err := s.createRun(context.Background(), "hi")
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		owners := run.GetOwnerReferences()
+		if len(owners) != 1 || owners[0].Kind != "Workflow" || owners[0].UID != types.UID("wf-uid") {
+			t.Fatalf("owner references = %+v, want a controller ref to Workflow wf-uid", owners)
+		}
+		if owners[0].Controller == nil || !*owners[0].Controller {
+			t.Errorf("owner ref Controller = %v, want true", owners[0].Controller)
+		}
+	})
+
+	t.Run("run is refused once the workflow opts out", func(t *testing.T) {
+		wf := newWF()
+		wf.Spec.Expose = nil // opted out between reconcile and this call
+		s := NewServer(newFakeClient(t, wf), "greeter", "default", "", 0)
+		if _, err := s.createRun(context.Background(), "hi"); err == nil {
+			t.Fatal("createRun succeeded for an opted-out workflow, want an error")
+		}
+	})
+
+	t.Run("run is refused at the concurrency limit", func(t *testing.T) {
+		wf := newWF()
+		one := int32(1)
+		wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: &one}
+		active := &ottoflowv1alpha1.WorkflowRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: "greeter-running",
+				Labels: map[string]string{"ottoflow.nirmata.io/workflow": "greeter"},
+			},
+			Status: ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+		}
+		s := NewServer(newFakeClient(t, wf, active), "greeter", "default", "", 0)
+		if _, err := s.createRun(context.Background(), "hi"); err == nil {
+			t.Fatal("createRun succeeded at the concurrency limit, want an error")
+		}
+	})
+}
+
+// --- agent card metadata --------------------------------------------------------------
+
+func TestBuildCardUsesExposeMetadata(t *testing.T) {
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "greeter"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Expose: &ottoflowv1alpha1.ExposeSpec{Kagent: &ottoflowv1alpha1.KagentExposeSpec{
+				DisplayName: "Greeter",
+				Description: "Says hello",
+				Tags:        []string{"demo"},
+				Examples:    []string{"say hi"},
+			}},
+		},
+	}
+	card := BuildCard(wf, "http://example.test/")
+	if card.Name != "Greeter" {
+		t.Errorf("card.Name = %q, want the displayName %q", card.Name, "Greeter")
+	}
+	if card.Description != "Says hello" {
+		t.Errorf("card.Description = %q, want the expose description", card.Description)
+	}
+	if len(card.Skills) != 1 || card.Skills[0].ID != "greeter" {
+		t.Fatalf("skills = %+v, want one skill keyed by the workflow name", card.Skills)
+	}
+	if got := card.Skills[0].Tags; len(got) != 1 || got[0] != "demo" {
+		t.Errorf("skill.Tags = %v, want [demo]", got)
+	}
+	if got := card.Skills[0].Examples; len(got) != 1 || got[0] != "say hi" {
+		t.Errorf("skill.Examples = %v, want [say hi]", got)
+	}
+}
+
+// --- deadline behavior ----------------------------------------------------------------
+
+func TestStillRunningEventsAreNotFailed(t *testing.T) {
+	artifactEvt, statusEvt := buildStillRunningEvents("run-9", "ctx-9", "default", defaultRunTimeout)
+	if statusEvt.Status.State == stateFailed {
+		t.Errorf("deadline status state = %q, want anything but %q", statusEvt.Status.State, stateFailed)
+	}
+	if !statusEvt.Final {
+		t.Error("deadline status Final = false, want true to close the stream")
+	}
+	text := artifactEvt.Artifact.Parts[0].Text
+	if !strings.Contains(text, "run-9") || !strings.Contains(text, "still executing") {
+		t.Errorf("deadline artifact text = %q, want it to name the run and say it is still executing", text)
+	}
 }
 
 // --- SSE envelope -----------------------------------------------------------------------

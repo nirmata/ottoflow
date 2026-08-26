@@ -4,7 +4,8 @@
 # The controller creates a per-namespace RoleBinding (never a Role) binding each serve-a2a
 # ServiceAccount to this shared ClusterRole, so the controller only needs "bind" on it and
 # does not mint these permissions itself (passes Kubernetes RBAC escalation checks under
-# locked-down permissions). A serve-a2a pod reads its Workflow and creates/reads WorkflowRuns.
+# locked-down permissions). A serve-a2a pod reads its Workflow, and lists/creates/reads
+# WorkflowRuns (list is needed to enforce the workflow's maxConcurrentRuns cap before creating one).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -26,4 +27,5 @@ rules:
     verbs:
       - create
       - get
+      - list
 {{- end }}

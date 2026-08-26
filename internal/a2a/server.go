@@ -10,6 +10,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,11 +26,12 @@ import (
 
 const (
 	pollInterval = 1 * time.Second
-	// runTimeout: 10m headroom, since composed workflows chain several
-	// sequential agent calls and can exceed the previous 2m budget.
-	runTimeout     = 10 * time.Minute
-	heartbeatEvery = 5 * time.Second
-	maxBodyBytes   = 1 << 20
+	// defaultRunTimeout: 10m headroom, since composed workflows chain several
+	// sequential agent calls and can exceed the previous 2m budget. Overridable
+	// per deployment (A2A_RUN_TIMEOUT) since a workflow's real bound is workflow-specific.
+	defaultRunTimeout = 10 * time.Minute
+	heartbeatEvery    = 5 * time.Second
+	maxBodyBytes      = 1 << 20
 
 	methodStream = "message/stream"
 	methodSend   = "message/send"
@@ -48,16 +50,26 @@ const (
 
 // Server exposes one OttoFlow Workflow as an A2A agent over HTTP.
 type Server struct {
-	client    client.Client
-	wfName    string
-	wfNS      string
-	publicURL string
+	client     client.Client
+	wfName     string
+	wfNS       string
+	publicURL  string
+	runTimeout time.Duration
 }
 
-// NewServer builds a Server for the named Workflow.
-func NewServer(c client.Client, wfName, wfNS, publicURL string) *Server {
-	return &Server{client: c, wfName: wfName, wfNS: wfNS, publicURL: publicURL}
+// NewServer builds a Server for the named Workflow. A non-positive runTimeout falls back to
+// defaultRunTimeout.
+func NewServer(c client.Client, wfName, wfNS, publicURL string, runTimeout time.Duration) *Server {
+	if runTimeout <= 0 {
+		runTimeout = defaultRunTimeout
+	}
+	return &Server{client: c, wfName: wfName, wfNS: wfNS, publicURL: publicURL, runTimeout: runTimeout}
 }
+
+// errRunStillExecuting signals pollToTerminal gave up at the deadline while the WorkflowRun is
+// still executing (as opposed to a real polling error). Callers report this honestly instead of
+// as a failed task: the run continues and may still succeed.
+var errRunStillExecuting = errors.New("workflowrun still executing at deadline")
 
 // Register wires the A2A routes onto mux.
 func (s *Server) Register(mux *http.ServeMux) {
@@ -232,6 +244,13 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, req *rpcRe
 
 	final, err := s.pollToTerminal(ctx, taskID, working)
 	if err != nil {
+		// A deadline hit is not a failure: the run continues. Emit an honest notice, not "failed".
+		if errors.Is(err, errRunStillExecuting) {
+			artifactEvt, statusEvt := buildStillRunningEvents(taskID, contextID, s.wfNS, s.runTimeout)
+			send(artifactEvt)
+			send(statusEvt)
+			return
+		}
 		send(statusUpdateEvent{
 			TaskID: taskID, ContextID: contextID, Kind: kindStatusUpdate,
 			Status: taskStatus{State: stateFailed, Timestamp: now()}, Final: true,
@@ -255,6 +274,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, req *rpcRequ
 	}
 	final, err := s.pollToTerminal(ctx, run.Name, nil)
 	if err != nil {
+		// A deadline hit is not a failure: return an honest task naming the run, not an RPC error.
+		if errors.Is(err, errRunStillExecuting) {
+			w.Header().Set("Content-Type", "application/json")
+			task := buildStillRunningTask(run.Name, string(run.UID), s.wfNS, s.runTimeout)
+			if encErr := json.NewEncoder(w).Encode(rpcEnvelope{JSONRPC: "2.0", ID: req.ID, Result: task}); encErr != nil {
+				klog.Errorf("encoding message/send response: %v", encErr)
+			}
+			return
+		}
 		writeRPCError(w, req.ID, -32603, err.Error())
 		return
 	}
@@ -320,6 +348,42 @@ func buildTerminalEvents(taskID, contextID string, run *ottoflowv1alpha1.Workflo
 	return artifactEvt, statusEvt
 }
 
+// stillRunningText is the human-facing notice for a run that outlived the serve-a2a deadline.
+// It names the run and how to check it, and states plainly that the run was not canceled.
+func stillRunningText(runName, ns string, d time.Duration) string {
+	return fmt.Sprintf(
+		"Workflow run %s did not finish within %s and is still executing; it was not canceled. "+
+			"Check its status with: kubectl -n %s get workflowrun %s",
+		runName, d, ns, runName)
+}
+
+// buildStillRunningEvents is the streaming terminal pair for a deadline hit: an artifact carrying
+// the honest notice, and a final status that is NOT "failed" — the run continues and may succeed.
+func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (artifactUpdateEvent, statusUpdateEvent) {
+	text := stillRunningText(taskID, ns, d)
+	artifactEvt := artifactUpdateEvent{
+		TaskID: taskID, ContextID: contextID, Kind: kindArtifactUpdate,
+		Artifact:  artifact{ArtifactID: taskID + "-notice", Name: "notice", Parts: []textPart{{Kind: "text", Text: text}}},
+		Append:    false,
+		LastChunk: true,
+	}
+	statusEvt := statusUpdateEvent{
+		TaskID: taskID, ContextID: contextID, Kind: kindStatusUpdate,
+		Status: taskStatus{State: stateCompleted, Timestamp: now()}, Final: true,
+	}
+	return artifactEvt, statusEvt
+}
+
+// buildStillRunningTask is the non-streaming (message/send) equivalent of buildStillRunningEvents.
+func buildStillRunningTask(runName, contextID, ns string, d time.Duration) taskResult {
+	text := stillRunningText(runName, ns, d)
+	return taskResult{
+		ID: runName, ContextID: contextID, Kind: kindTask,
+		Status:    taskStatus{State: stateCompleted, Timestamp: now()},
+		Artifacts: []artifact{{ArtifactID: runName + "-notice", Name: "notice", Parts: []textPart{{Kind: "text", Text: text}}}},
+	}
+}
+
 // --- workflow plumbing -------------------------------------------------------
 
 func (s *Server) getWorkflow(ctx context.Context) (*ottoflowv1alpha1.Workflow, error) {
@@ -338,10 +402,30 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 		return nil, err
 	}
 
+	// Re-check opt-in at call time. This BYO pod can outlive spec.expose.kagent being cleared
+	// (teardown races the reconciler), and getWorkflow only proves the Workflow still exists.
+	// Mirrors the MCP tool server's re-check so opting out actually stops new runs.
+	if !wf.Spec.Expose.IsKagentEnabled() {
+		return nil, fmt.Errorf("workflow %s/%s is not exposed as an A2A agent", s.wfNS, wf.Name)
+	}
+
+	// Honor the same per-workflow concurrency cap cron/event/MCP-created runs honor. Without it
+	// repeated A2A calls launch an unbounded number of runner Jobs.
+	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil && *rp.MaxConcurrentRuns > 0 {
+		active, err := s.countActiveRuns(ctx, wf.Name)
+		if err != nil {
+			return nil, fmt.Errorf("counting active runs for %s/%s: %w", s.wfNS, wf.Name, err)
+		}
+		if active >= int(*rp.MaxConcurrentRuns) {
+			return nil, fmt.Errorf("workflow %s/%s is at its concurrency limit (%d running)", s.wfNS, wf.Name, active)
+		}
+	}
+
 	inputs := map[string]string{}
-	// ponytail: single-input shortcut — the whole prompt text maps to the workflow's
-	// first input. Empty text is left unset so the input's default applies. Generalize
-	// to structured multi-input mapping when a multi-input agent needs it.
+	// ponytail: single-input shortcut — the whole prompt text maps to the workflow's first
+	// input. Empty text is left unset so the input's default applies. Workflows with more than
+	// one required input are refused at reconcile time (see WorkflowExposureReconciler), so the
+	// A2A call never reaches a workflow this mapping cannot satisfy.
 	if text != "" && len(wf.Spec.Inputs) > 0 {
 		inputs[wf.Spec.Inputs[0].Name] = text
 	}
@@ -350,6 +434,15 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: wf.Name + "-a2a-",
 			Namespace:    s.wfNS,
+			// Own the run by the Workflow so deleting the Workflow garbage-collects its A2A runs,
+			// matching the shared run builder used by cron/event/MCP triggers.
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: ottoflowv1alpha1.GroupVersion.String(),
+				Kind:       "Workflow",
+				Name:       wf.Name,
+				UID:        wf.UID,
+				Controller: &[]bool{true}[0],
+			}},
 			Labels: map[string]string{
 				"ottoflow.nirmata.io/workflow":   wf.Name,
 				"ottoflow.nirmata.io/created-by": "serve-a2a",
@@ -368,10 +461,30 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	return run, nil
 }
 
+// countActiveRuns counts Pending+Running WorkflowRuns for the workflow, matching
+// countActiveWorkflowRuns in the controller. Requires the serve-a2a role to list WorkflowRuns.
+func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error) {
+	var list ottoflowv1alpha1.WorkflowRunList
+	if err := s.client.List(ctx, &list,
+		client.InNamespace(s.wfNS),
+		client.MatchingLabels{"ottoflow.nirmata.io/workflow": wfName},
+	); err != nil {
+		return 0, err
+	}
+	active := 0
+	for i := range list.Items {
+		switch list.Items[i].Status.Phase {
+		case ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
+			active++
+		}
+	}
+	return active, nil
+}
+
 // pollToTerminal polls the WorkflowRun until it reaches Succeeded/Failed or the deadline
 // elapses. onHeartbeat (if non-nil) is invoked at most every heartbeatEvery while running.
 func (s *Server) pollToTerminal(ctx context.Context, name string, onHeartbeat func()) (*ottoflowv1alpha1.WorkflowRun, error) {
-	ctx, cancel := context.WithTimeout(ctx, runTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.runTimeout)
 	defer cancel()
 
 	ticker := time.NewTicker(pollInterval)
@@ -381,6 +494,11 @@ func (s *Server) pollToTerminal(ctx context.Context, name string, onHeartbeat fu
 	for {
 		select {
 		case <-ctx.Done():
+			// Our own deadline elapsed: the run is still executing, not failed. Callers surface
+			// this honestly. A parent cancellation (client hung up) stays a plain error.
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, errRunStillExecuting
+			}
 			return nil, fmt.Errorf("waiting for workflowrun %s: %w", name, ctx.Err())
 		case <-ticker.C:
 		}

@@ -47,12 +47,35 @@ type AgentSkill struct {
 	Examples    []string `json:"examples"`
 }
 
-// BuildCard synthesizes an AgentCard from the target Workflow.
+// BuildCard synthesizes an AgentCard from the target Workflow, drawing the human-facing
+// name, description, tags and examples from spec.expose.kagent when set. These are the same
+// values the API and the samples advertise; before this the card silently served only the
+// Workflow name and an empty skill, so an A2A client saw none of them.
 func BuildCard(wf *ottoflowv1alpha1.Workflow, url string) AgentCard {
-	// Workflow has no Description field; synthesize a sane default.
+	// Workflow has no top-level Description; fall back to a synthesized sentence.
+	name := wf.Name
 	desc := fmt.Sprintf("Runs the %s OttoFlow workflow", wf.Name)
+	var tags, examples []string
+	if k := wf.Spec.Expose.GetKagent(); k != nil {
+		if k.DisplayName != "" {
+			name = k.DisplayName
+		}
+		if k.Description != "" {
+			desc = k.Description
+		}
+		tags = k.Tags
+		examples = k.Examples
+	}
+	// The A2A schema requires non-null arrays; keep empty slices rather than nil.
+	if tags == nil {
+		tags = []string{}
+	}
+	if examples == nil {
+		examples = []string{}
+	}
+
 	return AgentCard{
-		Name:               wf.Name,
+		Name:               name,
 		Description:        desc,
 		URL:                url,
 		Version:            cardAgentVersion,
@@ -62,11 +85,12 @@ func BuildCard(wf *ottoflowv1alpha1.Workflow, url string) AgentCard {
 		DefaultInputModes:  []string{"text"},
 		DefaultOutputModes: []string{"text"},
 		Skills: []AgentSkill{{
+			// ID stays the Workflow name (stable identifier); Name is the human label.
 			ID:          wf.Name,
-			Name:        wf.Name,
+			Name:        name,
 			Description: desc,
-			Tags:        []string{},
-			Examples:    []string{},
+			Tags:        tags,
+			Examples:    examples,
 		}},
 	}
 }
