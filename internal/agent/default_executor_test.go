@@ -231,8 +231,8 @@ var _ = Describe("DefaultAgentExecutor getDefaultModel", func() {
 		Expect(e.getDefaultModel("openai")).To(Equal("gpt-4o"))
 		Expect(e.getDefaultModel("anthropic")).To(Equal("claude-opus-5"))
 		Expect(e.getDefaultModel("azure-openai")).To(Equal("gpt-4o"))
-		Expect(e.getDefaultModel("google")).To(Equal("gemini-2.5-flash"))
-		Expect(e.getDefaultModel("gemini")).To(Equal("gemini-2.5-flash"))
+		Expect(e.getDefaultModel("google")).To(Equal("gemini-3.6-flash"))
+		Expect(e.getDefaultModel("gemini")).To(Equal("gemini-3.6-flash"))
 	})
 
 	It("returns empty string for local/unknown/nirmata rather than guessing", func() {

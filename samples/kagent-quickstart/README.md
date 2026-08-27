@@ -102,7 +102,7 @@ kubectl create secret generic openai-key -n kagent \
 ```yaml
 spec:
   provider: Gemini
-  model: gemini-2.5-flash
+  model: gemini-3.6-flash
   apiKeySecret: gemini-key
   apiKeySecretKey: GEMINI_API_KEY
 ```

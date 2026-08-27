@@ -211,7 +211,7 @@ func (e *DefaultAgentExecutor) getDefaultModel(provider string) string {
 	case providerAzureOpenAI:
 		return "gpt-4o"
 	case providerGoogle, providerGemini:
-		return "gemini-2.5-flash"
+		return "gemini-3.6-flash"
 	default:
 		return ""
 	}
