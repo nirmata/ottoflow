@@ -8,12 +8,14 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/go-logr/logr v1.4.4
 	github.com/google/cel-go v0.31.0
+	github.com/google/go-cmp v0.7.0
 	github.com/google/go-containerregistry v0.21.9
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/kyverno/pkg/certmanager v0.0.10
 	github.com/kyverno/pkg/tls v0.0.9
 	github.com/kyverno/sdk v0.0.0-20260728145918-7ad4d9dcec7e
+	github.com/mark3labs/mcp-go v0.46.0
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
@@ -27,7 +29,7 @@ require (
 	golang.org/x/time v0.15.0
 	k8s.io/api v0.36.3
 	k8s.io/apiextensions-apiserver v0.36.3
-	k8s.io/apimachinery v0.36.3
+	k8s.io/apimachinery v0.36.4
 	k8s.io/apiserver v0.36.3
 	k8s.io/client-go v0.36.3
 	k8s.io/klog/v2 v2.140.0
@@ -113,7 +115,6 @@ require (
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
@@ -130,7 +131,6 @@ require (
 	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/kyverno/api v0.0.1-alpha.2.0.20260129144402-7b64bcf2b1f7 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mark3labs/mcp-go v0.46.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
@@ -191,7 +191,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/component-base v0.36.3 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
-	k8s.io/streaming v0.36.3 // indirect
+	k8s.io/streaming v0.36.4 // indirect
 	mvdan.cc/sh/v3 v3.11.0 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
