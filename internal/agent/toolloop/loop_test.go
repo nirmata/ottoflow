@@ -84,6 +84,14 @@ func (p fakePart) AsFunctionCalls() ([]gollm.FunctionCall, bool) {
 	return p.r.calls, true
 }
 
+// emptyCandidatesResponse simulates gollm's Anthropic streaming client, which
+// yields a trailing response carrying only usage metadata and no
+// text/functionCall once a stream ends (see anthropic.go's SendStreaming).
+type emptyCandidatesResponse struct{ usage any }
+
+func (r emptyCandidatesResponse) UsageMetadata() any            { return r.usage }
+func (r emptyCandidatesResponse) Candidates() []gollm.Candidate { return nil }
+
 // fakeTool is a minimal tools.Tool that records invocations and delegates to runFunc.
 type fakeTool struct {
 	name    string
@@ -245,6 +253,41 @@ func TestRun_SendStreamingError_Propagates(t *testing.T) {
 	_, _, err := Run(context.Background(), chat, []any{"go"}, nil, Options{})
 	if !errors.Is(err, sendErr) {
 		t.Errorf("error = %v, want it to wrap %v", err, sendErr)
+	}
+}
+
+// trailingUsageChat scripts a single SendStreaming call that yields text
+// followed by a trailing usage-only response with zero candidates, matching
+// gollm's Anthropic streaming client's behavior at the end of every stream.
+type trailingUsageChat struct{}
+
+func (c *trailingUsageChat) Send(ctx context.Context, contents ...any) (gollm.ChatResponse, error) {
+	return nil, errors.New("trailingUsageChat.Send not implemented")
+}
+
+func (c *trailingUsageChat) SendStreaming(ctx context.Context, contents ...any) (gollm.ChatResponseIterator, error) {
+	return gollm.ChatResponseIterator(func(yield func(gollm.ChatResponse, error) bool) {
+		if !yield(fakeResponse{text: "the answer"}, nil) {
+			return
+		}
+		yield(emptyCandidatesResponse{usage: map[string]any{"input_tokens": 10, "output_tokens": 5}}, nil)
+	}), nil
+}
+
+func (c *trailingUsageChat) SetFunctionDefinitions(defs []*gollm.FunctionDefinition) error { return nil }
+func (c *trailingUsageChat) IsRetryableError(err error) bool                               { return false }
+func (c *trailingUsageChat) Initialize(messages []*api.Message) error                      { return nil }
+
+func TestRun_TrailingUsageOnlyResponse_SkippedNotFatal(t *testing.T) {
+	text, usage, err := Run(context.Background(), &trailingUsageChat{}, []any{"hello"}, nil, Options{})
+	if err != nil {
+		t.Fatalf("Run returned error: %v, want the trailing zero-candidate usage response to be skipped", err)
+	}
+	if text != "the answer" {
+		t.Errorf("text = %q, want %q", text, "the answer")
+	}
+	if usage == nil {
+		t.Error("expected usage metadata from the trailing response to be captured, got nil")
 	}
 }
 

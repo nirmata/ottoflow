@@ -77,7 +77,12 @@ func Run(ctx context.Context, chat gollm.Chat, initialContent []any, toolset map
 			}
 			candidates := response.Candidates()
 			if len(candidates) == 0 {
-				return "", usage, fmt.Errorf("chat response had no candidates")
+				// Some providers (e.g. gollm's Anthropic streaming client) emit a
+				// trailing response that carries only usage metadata and no
+				// content once the stream ends. That's not a broken response --
+				// a genuinely empty/blocked model reply surfaces as streamErr
+				// above, not as a content-less-but-successful event here.
+				continue
 			}
 			for _, part := range candidates[0].Parts() {
 				if t, ok := part.AsText(); ok {
