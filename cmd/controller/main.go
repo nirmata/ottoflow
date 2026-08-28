@@ -431,10 +431,16 @@ func main() {
 	hookPathAgent := "/validate-ottoflow-nirmata-io-v1alpha1-agent"
 	hookPathMCPServer := "/validate-ottoflow-nirmata-io-v1alpha1-mcpserver"
 	mgr.GetWebhookServer().Register(hookPathWorkflow, &ctrlwebhook.Admission{
-		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{Client: mgr.GetClient()}),
+		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{
+			Client:     mgr.GetClient(),
+			Authorizer: clientset.AuthorizationV1().SubjectAccessReviews(),
+		}),
 	})
 	mgr.GetWebhookServer().Register(hookPathWorkflowRun, &ctrlwebhook.Admission{
-		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowRunValidator{}),
+		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowRunValidator{
+			Client:     mgr.GetClient(),
+			Authorizer: clientset.AuthorizationV1().SubjectAccessReviews(),
+		}),
 	})
 	mgr.GetWebhookServer().Register(hookPathAgent, &ctrlwebhook.Admission{
 		Handler: admission.WithValidator(scheme, &ottowebhook.AgentValidator{}),

@@ -65,7 +65,7 @@ Exactly one cluster source should be set when `clusterRef` is present.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `image` | string | No | Override the runner image. |
-| `serviceAccountName` | string | No | Service account for the runner Job. |
+| `serviceAccountName` | string | No | Service account for the runner Job. Requires authorization — see [Running as another ServiceAccount](#running-as-another-serviceaccount). |
 | `env` | []EnvVar | No | Extra environment variables for the runner container. For credentials (e.g. Nirmata LLM), use `valueFrom.secretKeyRef` to reference a Secret; do not use plain `value`. |
 | `resources` | ResourceRequirements | No | Container resource requests and limits. |
 | `volumes` | []Volume | No | Extra pod volumes, including CSI/projected/Secret volumes. |
@@ -126,3 +126,42 @@ Exactly one cluster source should be set when `clusterRef` is present.
 | `message` | string | Additional runner status information. |
 | `startTime` | string (date-time) | When runner Job execution started. |
 | `completionTime` | string (date-time) | When runner Job execution completed. |
+
+## Running as another ServiceAccount
+
+The runner Job is launched with the token of the ServiceAccount it runs as, so
+`spec.execution.job.serviceAccountName` hands the workflow that account's
+permissions. Admission therefore checks that whoever submitted the WorkflowRun
+is allowed to run as it, with a `SubjectAccessReview` for `use` on that
+ServiceAccount. A run naming an account the submitter is not allowed to use is
+rejected:
+
+```text
+WorkflowRun "nightly": "system:serviceaccount:team-a:submitter" may not use
+serviceaccount "privileged-sa" in namespace "team-a"
+```
+
+Grant it by naming the accounts a subject may borrow:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: use-build-runner
+  namespace: team-a
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["build-runner"]
+    verbs: ["use"]
+```
+
+then bind it to the users or ServiceAccounts that submit those runs.
+
+A Workflow can declare the account instead, under `spec.execution.job`, and the
+same check runs when the Workflow is admitted — that is where the account is
+chosen. Runs created from it, including cron runs the scheduler creates, inherit
+the account and are not reviewed again.
+
+Runs that set no `serviceAccountName` are unaffected: they get the dedicated
+least-privilege runner account, and no review is issued.

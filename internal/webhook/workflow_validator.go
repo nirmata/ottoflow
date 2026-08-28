@@ -24,6 +24,10 @@ import (
 // WorkflowValidator validates Workflow resources at admission time.
 type WorkflowValidator struct {
 	Client client.Client
+	// Authorizer decides whether the author may run workflows as the
+	// ServiceAccount this Workflow declares. A nil Authorizer rejects every
+	// Workflow that declares one.
+	Authorizer SubjectAccessReviewer
 }
 
 // ValidateCreate implements admission.Validator.
@@ -42,7 +46,13 @@ func (v *WorkflowValidator) ValidateDelete(ctx context.Context, w *ottoflowv1alp
 }
 
 func (v *WorkflowValidator) validate(ctx context.Context, w *ottoflowv1alpha1.Workflow) (admission.Warnings, error) {
-	if w == nil || len(w.Spec.Steps) == 0 {
+	if w == nil {
+		return nil, nil
+	}
+	if err := v.authorizeWorkflowServiceAccount(ctx, w); err != nil {
+		return nil, err
+	}
+	if len(w.Spec.Steps) == 0 {
 		return nil, nil
 	}
 	if _, err := executor.BuildDAG(w.Spec.Steps); err != nil {
