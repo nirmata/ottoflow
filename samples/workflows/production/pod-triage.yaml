@@ -127,4 +127,6 @@ spec:
 
   outputs:
     - name: triageSummary
-      expression: variables.summary
+      # publishTriage runs only when collectPods found pods, so variables.summary
+      # is absent for an empty namespace; guard it so the output resolves cleanly.
+      expression: 'has(variables.summary) ? variables.summary : "No pods found to triage."'
