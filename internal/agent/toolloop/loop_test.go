@@ -274,9 +274,11 @@ func (c *trailingUsageChat) SendStreaming(ctx context.Context, contents ...any) 
 	}), nil
 }
 
-func (c *trailingUsageChat) SetFunctionDefinitions(defs []*gollm.FunctionDefinition) error { return nil }
-func (c *trailingUsageChat) IsRetryableError(err error) bool                               { return false }
-func (c *trailingUsageChat) Initialize(messages []*api.Message) error                      { return nil }
+func (c *trailingUsageChat) SetFunctionDefinitions(defs []*gollm.FunctionDefinition) error {
+	return nil
+}
+func (c *trailingUsageChat) IsRetryableError(err error) bool          { return false }
+func (c *trailingUsageChat) Initialize(messages []*api.Message) error { return nil }
 
 func TestRun_TrailingUsageOnlyResponse_SkippedNotFatal(t *testing.T) {
 	text, usage, err := Run(context.Background(), &trailingUsageChat{}, []any{"hello"}, nil, Options{})
