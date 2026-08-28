@@ -19,6 +19,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/cobra v1.10.2
@@ -31,7 +32,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.36.3
 	k8s.io/apimachinery v0.36.4
 	k8s.io/apiserver v0.36.3
-	k8s.io/client-go v0.36.3
+	k8s.io/client-go v0.36.4
 	k8s.io/klog/v2 v2.140.0
 	k8s.io/metrics v0.36.3
 	k8s.io/utils v0.0.0-20260210185600-b8788abfbbc2
@@ -146,7 +147,6 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
