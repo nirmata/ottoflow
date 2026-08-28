@@ -5,7 +5,9 @@
 
 ## Problem
 
-OttoFlow agent steps run LLM-driven tool loops that execute Model Context Protocol (MCP) tools. For stdio-transport MCP servers this launches commands such as `uvx` or `npx` that fetch and execute code at runtime — code whose selection is driven by the LLM, not pinned by the workflow author. The tool-call surface is untrusted; the loop that calls the model and parses the next action is trusted machinery and is out of scope here.
+OttoFlow agent steps run LLM-driven tool loops that call Model Context Protocol (MCP) tools. The workflow author fixes what can run: each stdio server's command (e.g. `uvx <package>`) is set in `MCPServer.spec.transport.command`, an agent's callable tools are an allowlist (`Agent.spec.mcpTools`, enforced at dispatch), and direct `MCPToolCall` steps name the server and tool with no LLM involvement. The LLM does not choose which package or binary runs — only which allowlisted tool to call and the arguments to pass.
+
+The execution is still untrusted for two reasons: (a) supply chain — an author-configured command without a version pin (`uvx pkg` vs `uvx pkg==1.2.3`) can fetch and run different, mutable code on each pod start; and (b) untrusted inputs — an allowlisted tool runs with arguments that may be LLM-generated or CEL-derived from upstream context, so a tool that mishandles those inputs is a live injection surface. The loop that calls the model and parses the next action is trusted machinery and is out of scope here.
 
 That untrusted execution runs today with limited isolation. Three attack surfaces matter, in rough order of practical risk:
 
