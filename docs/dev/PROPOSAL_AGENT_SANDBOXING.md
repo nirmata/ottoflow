@@ -28,8 +28,11 @@ credentials. A compromised or malicious tool could attempt a kernel exploit to b
 container and affect the node or co-located workloads.
 
 **Scope note**: default `ko`-built images are static and ship no Python/Node runtime, so
-`uvx`/`npx`-based stdio tools already require a custom `executorImage` today. The threat applies
-wherever such tools are enabled.
+`uvx`/`npx`-based stdio tools require an image carrying those runtimes. The knob differs by path:
+for `AgentRef` (agent-executor) it is the agent-executor image (`agentExecutorImage` / the Agent
+`executorImage` field); for direct `MCPToolCall` (runner Job) it is the runner image
+(`RunnerImage`, or a per-run `spec.execution.job.image` override) — `executorImage` does not
+affect the runner Job. The threat applies wherever such tools are enabled.
 
 ## Options Considered
 
@@ -45,7 +48,10 @@ subprocess). Minimal, reversible change — no data-plane or API contract change
 widely-deployed runtime (gVisor powers Cloud Run / App Engine gen1); no new control plane.  
 **Cons**: Requires a `RuntimeClass` (e.g. `gvisor`/`kata`) installed on the nodes — an operator
 prerequisite. gVisor adds syscall/IO overhead and has edge-case incompatibilities (`io_uring`
-off by default, partial iptables) — not fatal to stdio pipes + HTTPS egress, but real. Node
+off by default, partial iptables) — not fatal to stdio pipes + HTTPS egress, but real. Also note
+`uvx`/`npx` fetch and install packages at startup — an IO-heavy path gVisor slows; combined with
+the existing lazy-connect-on-first-use behavior (present precisely because `uvx` startup is
+slow), sandboxing may raise first-tool-call latency and should be measured. Node
 isolation only, not intra-pod (see Isolation Scope below).  
 **Decision**: Recommended as Phase 1 — highest-value, lowest-cost step.
 
@@ -77,9 +83,11 @@ snapshot/restore, warm pools) beneath the agent-executor boundary.
 memory.  
 **Cons**: Agent Substrate is v0.0.0 / not production-ready / API "almost guaranteed to change."
 Does not compose with `AgentRef` as-is — the exec URL is hardcoded
-(`https://{svc}.{ns}.svc:8443/api/exec/...`, `internal/workflow/executor/exec_client.go`) and the
-client trusts only the controller-generated CA it appends to the system pool, so targeting a
-Substrate actor requires an in-namespace Service+cert shim or code changes. Snapshot/restore
+(`https://{svc}.{ns}.svc:8443/api/exec/...`, `internal/workflow/executor/exec_client.go`) and
+reaching an arbitrary endpoint is blocked by that hardcoding, not by CA exclusivity — the client
+appends the controller-generated CA to the system cert pool (trusting system roots plus that CA).
+Targeting a Substrate actor therefore requires an in-namespace Service (with a certificate the
+client trusts) or code changes. Snapshot/restore
 resets live TCP sockets (connected sockets return `ECONNRESET`; apps must reconnect), reducing
 the persistent-memory benefit for a session with live MCP/LLM connections. Warm-start and
 persistent-memory benefits are marginal here — the agent-executor is a lean, stateless Go binary
@@ -103,6 +111,15 @@ zero-core-change path to experiment with a Substrate-hosted actor that speaks A2
 - Do NOT add a per-Agent CRD field in Phase 1: in shared-service mode one Deployment serves all
   Agents, so a per-Agent runtime class would be dead config. Per-execution runtime selection
   belongs with Phase 2 (`executionMode`).
+- Add a `--workflow-runner-runtime-class` arg to the controller Deployment template
+  (`charts/ottoflow/templates/deployment.yaml`), mirroring the existing `--workflow-runner-*`
+  args, so the value reaches `RunnerConfig` (`cmd/controller/main.go`) and the runner-Job
+  builder. Without this template wiring the controller flag stays at its zero value and runner
+  Jobs are created unsandboxed.
+- A global runner runtime class applies gVisor to every runner Job — including runs that spawn
+  no untrusted code (pure ResourceQuery / CEL / Mutate / Prometheus). Phase 1 keeps the global
+  setting for simplicity; a per-workflow/per-run opt-in (via `spec.execution.job`) is a possible
+  refinement to scope the overhead, called out as a trade-off.
 
 ## Isolation Scope
 
@@ -122,6 +139,8 @@ not a complete isolation solution — stated explicitly to avoid overclaiming.
 | `charts/ottoflow/templates/agent-executor-deployment.yaml` | Template `runtimeClassName` onto the PodSpec |
 | `internal/workflow/controller/workflowrun_controller.go` | Set `runtimeClassName` on the runner Job PodSpec from runner config |
 | `cmd/controller/main.go` | Plumb the value from controller flags into `RunnerConfig` |
+| `charts/ottoflow/templates/deployment.yaml` | Add `--workflow-runner-runtime-class` arg so the runner runtime class reaches `RunnerConfig` |
+| user-facing install/operator docs (e.g. under `docs/`) | Document the gVisor/Kata `RuntimeClass` node prerequisite |
 | `docs/dev/DESIGN.md` | On graduation, fold into the existing agent-sandbox section |
 
 ## Testing & Verification
