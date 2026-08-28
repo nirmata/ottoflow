@@ -5,165 +5,102 @@
 
 ## Problem
 
-OttoFlow agent steps run LLM-driven tool loops that execute Model Context Protocol (MCP)
-tools. For stdio-transport MCP servers this launches commands such as `uvx` or `npx` that fetch
-and execute code at runtime — code whose selection is driven by the LLM, not pinned by the
-workflow author. Today that execution has no kernel-level isolation:
+OttoFlow agent steps run LLM-driven tool loops that execute Model Context Protocol (MCP) tools. For stdio-transport MCP servers this launches commands such as `uvx` or `npx` that fetch and execute code at runtime — code whose selection is driven by the LLM, not pinned by the workflow author. The tool-call surface is untrusted; the loop that calls the model and parses the next action is trusted machinery and is out of scope here.
 
-1. **Cluster mode, `AgentRef` steps**: POST to the shared agent-executor Service, and stdio MCP
-   subprocesses spawn inside the agent-executor pod (`cmd/agent-executor/main.go`,
-   `internal/agent/mcp_client_impl.go`).
-2. **Direct `MCPToolCall` steps**: spawn stdio MCP subprocesses inside the runner Job
-   (`internal/workflow/executor/executor.go`).
-3. **Shared kernel boundary**: both the agent-executor pod
-   (`charts/ottoflow/templates/agent-executor-deployment.yaml`) and the runner Job
-   (`internal/workflow/controller/workflowrun_controller.go`) run under restricted Pod Security
-   Standards (non-root, `seccompProfile: RuntimeDefault`, all capabilities dropped) but share the
-   host kernel and carry no `runtimeClassName`. Restricted-PSS is syscall/privilege hardening,
-   not a sandbox boundary.
+That untrusted execution runs today with limited isolation. Three attack surfaces matter, in rough order of practical risk:
 
-Blast radius: untrusted, runtime-fetched code runs in a pod that also holds the pod's
-ServiceAccount token, the agent-executor TLS key, and (via the `X-LLM-Env` header) forwarded LLM
-credentials. A compromised or malicious tool could attempt a kernel exploit to break out of the
-container and affect the node or co-located workloads.
+- **(A) Reaching other workloads.** A hostile tool can attempt to talk to other pods/services in the cluster, or to external endpoints.
+- **(B) Credential blast radius.** The pod that runs the tool also holds credentials the tool can read and reuse to move laterally.
+- **(C) Container escape.** A hostile tool could try to exploit a kernel bug to break out of the container to the node.
 
-**Scope note**: default `ko`-built images are static and ship no Python/Node runtime, so
-`uvx`/`npx`-based stdio tools require an image carrying those runtimes. The knob differs by path:
-for `AgentRef` (agent-executor) it is the agent-executor image (`agentExecutorImage` / the Agent
-`executorImage` field); for direct `MCPToolCall` (runner Job) it is the runner image
-(`RunnerImage`, or a per-run `spec.execution.job.image` override) — `executorImage` does not
-affect the runner Job. The threat applies wherever such tools are enabled.
+Where untrusted code runs today (both paths run under restricted Pod Security Standards only, with no `runtimeClassName`):
+
+1. `AgentRef` steps POST to the shared agent-executor Service; stdio MCP subprocesses spawn in the agent-executor pod (`cmd/agent-executor/main.go`, `internal/agent/mcp_client_impl.go`).
+2. Direct `MCPToolCall` steps spawn stdio MCP subprocesses in the runner Job (`internal/workflow/executor/executor.go`).
+
+The **agent-executor pod is the weak link for surface (B)**: it runs under a broadly-scoped ServiceAccount, mounts its SA token, holds the agent-executor TLS key, and receives forwarded LLM credentials — all co-resident with the untrusted tool.
+
+## Current Controls
+
+OttoFlow already ships partial mitigations; this proposal builds on them rather than starting from zero.
+
+- **Least-privilege runner identity** — each run's runner Job uses a dedicated per-Workflow ServiceAccount (not the controller's); its secret access is get-by-name only (no list), with a narrow write scope (`charts/ottoflow/templates/clusterrole.yaml`, `internal/workflow/controller/workflowrun_controller.go`).
+- **Secret-read denylist** — CEL `resource.*`, `resourceQuery`, and `mutate` steps are blocked from reading core Secret objects (`internal/workflow/executor/resource_denylist.go`).
+- **Outbound egress guard** — CEL `http.*` and A2A calls are blocked from dialing loopback, link-local, and cloud-metadata addresses (`internal/workflow/executor/egress_guard.go`). Gap: it does not cover MCP stdio subprocesses (which make their own syscalls), and does not restrict reaching other in-cluster workloads by IP.
+- **NetworkPolicy** — a chart NetworkPolicy exists (`charts/ottoflow/templates/networkpolicy.yaml`), but it selects only the controller pod; the agent-executor and runner pods are **not** covered, and its egress is broad.
+
+Remaining gaps: the agent-executor ServiceAccount is broader than it needs to be; SA tokens are mounted in both execution pods; the pods running untrusted code have no NetworkPolicy; there is no per-execution or per-step isolation.
 
 ## Options Considered
 
-### Option A: Native `runtimeClassName` (gVisor / Kata) (recommended — Phase 1)
+The layers below are independent and can land incrementally; each targets a specific surface.
 
-Run the agent-executor pod and the runner Job under a sandboxed container runtime by setting
-`runtimeClassName` on their PodSpecs, gated by a Helm value and plumbed through controller
-runner config (default off — see Rollout & Backward Compatibility).
+### Layer 1: Network isolation (surface A) (recommended — cheapest)
 
-**Pros**: Kernel/node isolation for all processes in the pod, including fork/exec'd
-`uvx`/`npx` subprocesses (a pod-level `runtimeClassName` applies to every container and
-subprocess). Minimal, reversible change — no data-plane or API contract change. Uses a mature,
-widely-deployed runtime (gVisor powers Cloud Run / App Engine gen1); no new control plane.  
-**Cons**: Requires a `RuntimeClass` (e.g. `gvisor`/`kata`) installed on the nodes — an operator
-prerequisite. gVisor adds syscall/IO overhead and has edge-case incompatibilities (`io_uring`
-off by default, partial iptables) — not fatal to stdio pipes + HTTPS egress, but real. Also note
-`uvx`/`npx` fetch and install packages at startup — an IO-heavy path gVisor slows; combined with
-the existing lazy-connect-on-first-use behavior (present precisely because `uvx` startup is
-slow), sandboxing may raise first-tool-call latency and should be measured. Node
-isolation only, not intra-pod (see Isolation Scope below).  
-**Decision**: Recommended as Phase 1 — highest-value, lowest-cost step.
+Extend the existing NetworkPolicy `podSelector` to cover the agent-executor and runner pods, and replace broad egress with a default-deny plus an explicit allowlist (API server, DNS, and the LLM/MCP endpoints actually needed).
+
+**Pros**: Reuses a committed pattern; directly limits a hostile tool's reach to other workloads; no new dependency.  
+**Cons**: Egress allowlists need care for legitimate `uvx`/`npx` package fetches and MCP/LLM endpoints; does not stop a tool that only uses the paths it is allowed.  
+**Decision**: Recommended first — low cost, addresses the highest-practical-risk surface.
 
 ---
 
-### Option B: `kubernetes-sigs/agent-sandbox` (`executionMode: sandbox`) (recommended — Phase 2)
+### Layer 2: Credential blast radius (surface B) (recommended — structural)
 
-Adopt the SIG-track agent-sandbox API already named as a future enhancement in
-`docs/dev/DESIGN.md`. Provides gVisor/Kata backends, per-execution Sandbox pods, and a
-`SandboxWarmPool` for warm starts.
+Two complementary moves:
 
-**Pros**: Standards-track, stable-API path (unlike a v0.0.0 project). Per-execution isolation
-closes the intra-pod gap — the untrusted tool no longer co-resides with long-lived shared
-credentials. Warm pool addresses cold-start; already anticipated by OttoFlow's `executionMode`
-design.  
-**Cons**: Larger change — new execution mode, per-execution pod lifecycle, controller work.
-Still maturing.  
-**Decision**: Recommended as Phase 2 — the fuller isolation story; extends the documented
-direction.
+- **Tighten the agent-executor identity** to least-privilege (scope down its secret access; stop mounting the SA token where it is not needed).
+- **Per-execution isolation** via `kubernetes-sigs/agent-sandbox` (`executionMode: sandbox`, already noted in `docs/dev/DESIGN.md`): run untrusted tool execution in its own short-lived pod so it is not co-resident with long-lived shared credentials. Optionally pair with short-lived per-step identities (a separate, not-yet-implemented proposal).
+
+**Pros**: Directly shrinks what a hostile tool can read and reuse — the highest-value structural change.  
+**Cons**: Per-execution pods are a larger change (new lifecycle, controller work); agent-sandbox is still maturing.  
+**Decision**: Recommended as the primary structural win; the identity tightening is a cheap immediate step.
 
 ---
 
-### Option C: Agent Substrate under the exec / A2A seam (deferred)
+### Layer 3: Container escape (surface C) (complementary hardening)
 
-Host agent execution as Agent Substrate "actors" (per-actor gVisor/micro-VM sandboxes,
-snapshot/restore, warm pools) beneath the agent-executor boundary.
+Set `runtimeClassName` (gVisor/Kata) on the agent-executor and runner pods, gated by a Helm value (default off) and plumbed through controller runner config (including a `--workflow-runner-runtime-class` arg on the controller Deployment).
 
-**Pros**: Per-actor sandboxing plus warm-restore-from-snapshot and optional persistent actor
-memory.  
-**Cons**: Agent Substrate is v0.0.0 / not production-ready / API "almost guaranteed to change."
-Does not compose with `AgentRef` as-is — the exec URL is hardcoded
-(`https://{svc}.{ns}.svc:8443/api/exec/...`, `internal/workflow/executor/exec_client.go`) and
-reaching an arbitrary endpoint is blocked by that hardcoding, not by CA exclusivity — the client
-appends the controller-generated CA to the system cert pool (trusting system roots plus that CA).
-Targeting a Substrate actor therefore requires an in-namespace Service (with a certificate the
-client trusts) or code changes. Snapshot/restore
-resets live TCP sockets (connected sockets return `ECONNRESET`; apps must reconnect), reducing
-the persistent-memory benefit for a session with live MCP/LLM connections. Warm-start and
-persistent-memory benefits are marginal here — the agent-executor is a lean, stateless Go binary
-(`ExecRequest.Context` is intentionally never populated, `exec_client.go`).  
-**Decision**: Deferred — revisit when the API stabilizes. Note: OttoFlow's existing
-`ExternalAgentRef` step already calls any external A2A endpoint
-(`internal/workflow/executor/external_agent_executor.go`, `a2a_url.go`), providing a
-zero-core-change path to experiment with a Substrate-hosted actor that speaks A2A.
-
----
-
-## Implementation (Option A)
-
-- Add a Helm value (e.g. `agentExecutor.runtimeClassName` and a runner equivalent) — unset by
-  default, preserving current behavior.
-- Template `runtimeClassName` onto the agent-executor Deployment PodSpec
-  (`charts/ottoflow/templates/agent-executor-deployment.yaml`).
-- Plumb a runtime-class setting into the controller's runner-Job builder so the runner Job
-  PodSpec (`internal/workflow/controller/workflowrun_controller.go`) sets `runtimeClassName`
-  when configured.
-- Do NOT add a per-Agent CRD field in Phase 1: in shared-service mode one Deployment serves all
-  Agents, so a per-Agent runtime class would be dead config. Per-execution runtime selection
-  belongs with Phase 2 (`executionMode`).
-- Add a `--workflow-runner-runtime-class` arg to the controller Deployment template
-  (`charts/ottoflow/templates/deployment.yaml`), mirroring the existing `--workflow-runner-*`
-  args, so the value reaches `RunnerConfig` (`cmd/controller/main.go`) and the runner-Job
-  builder. Without this template wiring the controller flag stays at its zero value and runner
-  Jobs are created unsandboxed.
-- A global runner runtime class applies gVisor to every runner Job — including runs that spawn
-  no untrusted code (pure ResourceQuery / CEL / Mutate / Prometheus). Phase 1 keeps the global
-  setting for simplicity; a per-workflow/per-run opt-in (via `spec.execution.job`) is a possible
-  refinement to scope the overhead, called out as a trade-off.
+**Pros**: Contains kernel/container escape for all in-pod processes, including `uvx`/`npx` subprocesses; small, reversible, mature runtime (gVisor powers Cloud Run / App Engine gen1).  
+**Cons**: Node prerequisite (a gVisor/Kata `RuntimeClass`); syscall/IO overhead — `uvx`/`npx` fetch and install packages at startup, the IO-heavy path gVisor slows, which interacts with the existing lazy-connect timeout and should be measured; a global runner setting taxes every runner Job (a per-workflow opt-in via `spec.execution.job` is a possible refinement).  
+**Decision**: Worth doing, but as complementary hardening for a narrow surface — **not** the highest-value change.
 
 ## Isolation Scope
 
-gVisor via `runtimeClassName` provides node/kernel isolation: it contains a container breakout
-so untrusted code cannot exploit the host kernel to reach the node or other workloads. It does
-NOT provide intra-pod isolation: an untrusted tool still shares its pod with the ServiceAccount
-token, the TLS key, and forwarded LLM credentials, and can read them. Closing that residual gap
-requires per-execution isolation (Option B) combined with per-step identity (see
-`docs/dev/PROPOSAL_PER_STEP_SA.md`). Phase 1 is a real and worthwhile reduction in blast radius,
-not a complete isolation solution — stated explicitly to avoid overclaiming.
+No single layer is sufficient; the value is in combining them.
+
+- gVisor / `runtimeClassName` contains kernel/container escape only. It does **not** stop a tool from reading credentials in its own pod (surface B) or reaching other workloads (surface A) — it is node/kernel isolation, not intra-pod, not network.
+- Per-execution pods + identity tightening (Layer 2) are what shrink the credential blast radius.
+- NetworkPolicy + egress restrictions (Layer 1) are what limit cross-workload reach.
 
 ## Files to Change
 
 | File | Change |
 |---|---|
-| `charts/ottoflow/values.yaml` | Add `runtimeClassName` value(s), default unset |
-| `charts/ottoflow/templates/agent-executor-deployment.yaml` | Template `runtimeClassName` onto the PodSpec |
-| `internal/workflow/controller/workflowrun_controller.go` | Set `runtimeClassName` on the runner Job PodSpec from runner config |
-| `cmd/controller/main.go` | Plumb the value from controller flags into `RunnerConfig` |
-| `charts/ottoflow/templates/deployment.yaml` | Add `--workflow-runner-runtime-class` arg so the runner runtime class reaches `RunnerConfig` |
-| user-facing install/operator docs (e.g. under `docs/`) | Document the gVisor/Kata `RuntimeClass` node prerequisite |
+| `charts/ottoflow/templates/networkpolicy.yaml` | Extend `podSelector` to the agent-executor + runner pods; tighten egress |
+| `charts/ottoflow/templates/agent-executor-clusterrole.yaml` | Scope down the agent-executor ServiceAccount |
+| `charts/ottoflow/templates/agent-executor-deployment.yaml` | Add `runtimeClassName` (Layer 3); reconsider the SA token mount |
+| `internal/workflow/controller/workflowrun_controller.go` | Set `runtimeClassName` on the runner Job PodSpec |
+| `charts/ottoflow/templates/deployment.yaml` | Add `--workflow-runner-runtime-class` arg so the value reaches `RunnerConfig` |
+| `charts/ottoflow/values.yaml` | New values (network, runtime class), defaults preserving current behavior |
 | `docs/dev/DESIGN.md` | On graduation, fold into the existing agent-sandbox section |
 
 ## Testing & Verification
 
-- Helm template render test asserting `runtimeClassName` appears when the value is set and is
-  absent by default.
-- Controller unit test on the runner-Job builder asserting `runtimeClassName` passthrough.
-- Manual / real-cluster verification (kind e2e has no `runsc`): confirm
-  `kubectl get pod -o jsonpath='{.spec.runtimeClassName}'` and that an MCP stdio tool call still
-  succeeds under gVisor.
-- `make lint test`; `make manifests generate` only if an API type is added (none in Phase 1).
+- Helm render tests for the NetworkPolicy selector/egress and the `runtimeClassName` passthrough (present when set, absent by default).
+- Controller unit test asserting `runtimeClassName` reaches the runner Job PodSpec.
+- Manual / real-cluster checks (kind e2e has no `runsc`): a workflow with an MCP stdio tool call still succeeds under the tightened NetworkPolicy and under gVisor, and the agent-executor still functions with reduced SA scope.
+- `make lint test`; `make manifests generate` only if an API type is added.
 
 ## Rollout & Backward Compatibility
 
-- Default off — existing deployments unchanged.
-- Operator prerequisite: install a `gvisor`/`kata` `RuntimeClass` on the nodes (documented).
-- Rollback: unset the value; no data-plane or state change.
+- All layers default off / current-behavior-preserving; opt-in per layer.
+- Node prerequisite for Layer 3: a gVisor/Kata `RuntimeClass` (documented for operators).
+- Each layer is independently reversible.
 
 ## Future Work
 
-- Phase 2: `agent-sandbox` `executionMode: sandbox` with `SandboxWarmPool` (per-execution
-  isolation + warm start).
-- Combine with per-step ServiceAccount identity (`docs/dev/PROPOSAL_PER_STEP_SA.md`) to
-  minimize credentials reachable from a sandboxed execution.
-- Agent Substrate: revisit when its API stabilizes; the `ExternalAgentRef`→A2A path is the
-  low-risk interop experiment in the meantime.
+- Per-step, short-lived minimal ServiceAccounts (not yet implemented).
+- Extending the egress guard to cover MCP stdio subprocesses.
+- Agent Substrate: revisit when its API stabilizes; the `ExternalAgentRef`→A2A path is a low-risk interop experiment in the meantime.
