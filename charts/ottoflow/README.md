@@ -280,8 +280,6 @@ helm upgrade ottoflow ./charts/ottoflow -n ottoflow --set webhook.enabled=false
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `crds.install` | Install CRDs | `true` |
-| `crds.mode` | CRD installation mode | `install` |
 
 ### Namespace Parameters
 
@@ -378,10 +376,8 @@ networkPolicy:
 
 ### Skip CRD Installation
 
-```yaml
-crds:
-  install: false
-  mode: skip
+```bash
+helm install ottoflow ./charts/ottoflow --skip-crds
 ```
 
 ## Upgrading
@@ -501,12 +497,11 @@ make sync-crds
 
 ### Skip CRD Installation
 
-If CRDs are managed separately (e.g., via GitOps or another tool), you can skip CRD installation:
+If CRDs are managed separately (e.g., via GitOps or another tool), skip them with
+Helm's own flag:
 
-```yaml
-crds:
-  install: false
-  mode: skip
+```bash
+helm install ottoflow ./charts/ottoflow --skip-crds
 ```
 
 ### Manual CRD Installation
@@ -520,10 +515,14 @@ kubectl apply -f config/crd/bases/
 # Or from chart (after syncing)
 kubectl apply -f charts/ottoflow/crds/
 
-# Then install chart with CRDs disabled
+# Then install the chart without them
 helm install ottoflow ./charts/ottoflow --namespace ottoflow --create-namespace \
-  --set crds.install=false
+  --skip-crds
 ```
+
+CRDs live in `crds/`, which Helm installs before any template and does not
+template itself, so no chart value can gate them. `--skip-crds` is Helm's own
+flag and the only way to skip them.
 
 ## Uninstallation
 
