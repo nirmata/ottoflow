@@ -508,14 +508,6 @@ networkPolicy:
       - protocol: TCP
         port: 4317
 
-# CRD installation
-crds:
-  # Specifies whether CRDs should be installed
-  install: true
-  # CRD installation mode: "install" (default) or "skip"
-  # Use "skip" if CRDs are managed outside of Helm
-  mode: install
-
 # Namespace configuration
 namespace:
   # Namespace name (if not set, uses Release.Namespace from helm -n)
@@ -526,4 +518,3 @@ commonLabels: {}
 commonAnnotations: {}
 
 # Additional resources (for advanced users)
-additionalResources: []

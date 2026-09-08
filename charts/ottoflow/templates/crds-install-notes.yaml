@@ -1,9 +1,0 @@
-{{- if .Values.crds.install }}
-{{- if eq .Values.crds.mode "install" }}
----
-# Note: CRDs are installed from the crds/ directory
-# CRDs in the crds/ directory are installed before any templates
-# They are not upgraded by Helm - manual upgrade may be required
-# To skip CRD installation, set crds.install: false or crds.mode: skip
-{{- end }}
-{{- end }}
