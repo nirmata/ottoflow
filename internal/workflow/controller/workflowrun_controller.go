@@ -281,6 +281,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 
 	podList := &corev1.PodList{}
 	if err := r.List(ctx, podList, client.InNamespace(workflowRun.Namespace), client.MatchingLabels{"job-name": jobName}); err == nil {
+		if handled, hErr := r.handleStuckRunnerPods(ctx, req, workflowRun, job, podList); handled {
+			return ctrl.Result{}, hErr
+		}
 		if len(podList.Items) > 0 {
 			if workflowRun.Status.Execution == nil {
 				workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}

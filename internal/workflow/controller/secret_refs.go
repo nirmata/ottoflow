@@ -58,7 +58,7 @@ type resolvedSecretRef struct {
 	// Kubernetes' contract for an optional SecretKeyRef is that a missing Secret or missing key
 	// leaves the variable UNSET rather than failing the pod, so an optional ref must not be
 	// projected as a mandatory volume item (that wedges the runner pod in FailedMount, which
-	// detectStuckRunnerPod now turns into a terminally Failed run) and must not make
+	// handleStuckRunnerPod turns into a terminally Failed run) and must not make
 	// resolveEnvValue error at execution time. buildSecretMounts groups optional refs into
 	// their own Secret volume with SecretVolumeSource.Optional=true — which the kubelet honours
 	// for a missing ITEM KEY as well as a missing Secret (k8s.io/kubernetes secret volume
@@ -611,8 +611,8 @@ const generatedSecretVolumePrefix = "ottoflow-secret-"
 // generatedSecretVolumeOriginsAnnotation names the runner Job annotation buildWorkflowRunnerJob
 // writes the marshaled origins map to — minted volume name (e.g. "ottoflow-secret-0") to the
 // resolvedSecretRef.Origin that produced it, as returned by buildSecretMounts below.
-// detectStuckRunnerPod / handleStuckRunnerPod reads it back to name the originating workflow
-// field in a FailedMount diagnosis (see secretVolumeAttribution).
+// handleStuckRunnerPod (stuck_runner_pod.go) reads it back to name the originating workflow
+// field in a stuck-pod diagnosis (see secretVolumeAttribution).
 const generatedSecretVolumeOriginsAnnotation = "ottoflow.nirmata.io/secret-volume-origins"
 
 // maxSecretVolumeOriginsAnnotationBytes caps the secret-volume-origins annotation.
