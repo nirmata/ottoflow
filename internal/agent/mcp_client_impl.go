@@ -10,6 +10,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,11 +19,11 @@ import (
 
 	"github.com/GoogleCloudPlatform/kubectl-ai/pkg/mcp"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 )
 
 // realMCPClient wraps kubectl-ai MCP client to implement our MCPClient interface
@@ -139,8 +140,13 @@ func parseToolResult(result string) (interface{}, error) {
 	return result, nil
 }
 
-// buildMCPClientConfig converts MCPServer CRD to kubectl-ai mcp.ClientConfig
-func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServer *ottoflowv1alpha1.MCPServer) (mcp.ClientConfig, error) {
+// buildMCPClientConfig converts MCPServer CRD to kubectl-ai mcp.ClientConfig.
+//
+// useAPISecretAccess selects how the Secrets behind spec.env[].valueFrom.secretKeyRef and
+// spec.auth are read: true does a live client.Client.Get; false reads the files the
+// controller mounted into the pod (see internal/secretmount) and never touches the Secret
+// API. The in-cluster workflow-runner Job passes false.
+func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServer *ottoflowv1alpha1.MCPServer, useAPISecretAccess bool) (mcp.ClientConfig, error) {
 	cfg := mcp.ClientConfig{
 		Name: mcpServer.Name,
 	}
@@ -165,7 +171,19 @@ func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServe
 		}
 		// Resolve env from MCPServer spec
 		for _, ev := range mcpServer.Spec.Env {
-			cfg.Env = append(cfg.Env, fmt.Sprintf("%s=%s", ev.Name, resolveEnvValue(ctx, k8sClient, mcpServer.Namespace, &ev)))
+			val, present, err := resolveEnvValue(ctx, k8sClient, mcpServer.Namespace, &ev, useAPISecretAccess)
+			if err != nil {
+				return cfg, fmt.Errorf("MCPServer %s/%s env %q: %w", mcpServer.Namespace, mcpServer.Name, ev.Name, err)
+			}
+			if !present {
+				// Optional SecretKeyRef whose Secret/key is absent: Kubernetes leaves such a
+				// variable UNSET rather than setting it to "". An empty credential would only
+				// fail later, opaquely, inside the MCP server. Omit it.
+				klog.V(2).Infof("MCPServer %s/%s: optional env %q has no value; leaving it unset",
+					mcpServer.Namespace, mcpServer.Name, ev.Name)
+				continue
+			}
+			cfg.Env = append(cfg.Env, fmt.Sprintf("%s=%s", ev.Name, val))
 		}
 	case "http", "sse":
 		if transport.Address == "" {
@@ -181,7 +199,7 @@ func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServe
 		cfg.Headers = transport.Headers
 		// Resolve auth
 		if mcpServer.Spec.Auth != nil {
-			authCfg, oauthCfg, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+			authCfg, oauthCfg, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, useAPISecretAccess)
 			if err != nil {
 				return cfg, err
 			}
@@ -195,25 +213,41 @@ func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServe
 	return cfg, nil
 }
 
-func resolveEnvValue(ctx context.Context, k8sClient client.Client, namespace string, ev *corev1.EnvVar) string {
+// resolveEnvValue returns ev's value, resolving it from a Secret when ev.ValueFrom.SecretKeyRef
+// is set. A resolution failure is returned as an error, like every other Secret read in this
+// file: silently substituting "" would launch the stdio MCP server with an empty credential,
+// and that surfaces only later as an opaque upstream 401 instead of an actionable error here.
+//
+// The second return value reports whether the variable has a value at all. It is false only
+// for an OPTIONAL SecretKeyRef (SecretKeySelector.Optional) whose Secret or key is absent:
+// Kubernetes' contract for that case is that the variable is left unset, not set to the empty
+// string, so the caller omits it rather than delivering an empty credential. A NON-optional
+// ref that cannot be resolved is still an error, never a silent omission.
+func resolveEnvValue(ctx context.Context, k8sClient client.Client, namespace string, ev *corev1.EnvVar, useAPISecretAccess bool) (string, bool, error) {
 	if ev.Value != "" {
-		return ev.Value
+		return ev.Value, true, nil
 	}
 	if ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil {
-		secret := &corev1.Secret{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: ev.ValueFrom.SecretKeyRef.Name, Namespace: namespace}, secret); err != nil {
-			klog.V(2).InfoS("Failed to resolve secret for env", "name", ev.Name, "error", err)
-			return ""
+		sel := ev.ValueFrom.SecretKeyRef
+		v, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, namespace, sel.Name, sel.Key)
+		if err != nil {
+			// Optional means "leave the variable unset when the value simply isn't there"
+			// (Kubernetes' SecretKeyRef contract) — NOT "swallow every failure". A broken
+			// runtime (a malformed OTTOFLOW_SECRET_MOUNTS, an unreadable mounted file, an API
+			// error other than NotFound) must surface even for an optional ref, or a real
+			// misconfiguration silently degrades into a missing env var.
+			if sel.Optional != nil && *sel.Optional && errors.Is(err, secretmount.ErrNotFound) {
+				return "", false, nil
+			}
+			return "", false, fmt.Errorf("resolving env %q: %w", ev.Name, err)
 		}
-		if v, ok := secret.Data[ev.ValueFrom.SecretKeyRef.Key]; ok {
-			return string(v)
-		}
+		return string(v), true, nil
 	}
-	return ""
+	return "", true, nil
 }
 
 // resolveAuthConfigs returns AuthConfig and OAuthConfig for kubectl-ai MCP client
-func resolveAuthConfigs(ctx context.Context, k8sClient client.Client, mcpServer *ottoflowv1alpha1.MCPServer) (*mcp.AuthConfig, *mcp.OAuthConfig, error) {
+func resolveAuthConfigs(ctx context.Context, k8sClient client.Client, mcpServer *ottoflowv1alpha1.MCPServer, useAPISecretAccess bool) (*mcp.AuthConfig, *mcp.OAuthConfig, error) {
 	auth := mcpServer.Spec.Auth
 	if auth == nil {
 		return nil, nil, nil
@@ -232,17 +266,13 @@ func resolveAuthConfigs(ctx context.Context, k8sClient client.Client, mcpServer 
 		if auth.SecretRef == nil {
 			return nil, nil, fmt.Errorf("secretRef is required for %s auth", auth.Type)
 		}
-		secret := &corev1.Secret{}
 		ns := auth.SecretRef.Namespace
 		if ns == "" {
 			ns = mcpServer.Namespace
 		}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: auth.SecretRef.Name, Namespace: ns}, secret); err != nil {
+		token, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, auth.SecretRef.Name, auth.SecretRef.Key)
+		if err != nil {
 			return nil, nil, fmt.Errorf("failed to get auth secret: %w", err)
-		}
-		token, ok := secret.Data[auth.SecretRef.Key]
-		if !ok {
-			return nil, nil, fmt.Errorf("key %s not found in secret", auth.SecretRef.Key)
 		}
 		ac.Token = string(token)
 		if auth.Type == "apiKey" {
@@ -252,22 +282,22 @@ func resolveAuthConfigs(ctx context.Context, k8sClient client.Client, mcpServer 
 		if auth.SecretRef == nil {
 			return nil, nil, fmt.Errorf("secretRef is required for basic auth")
 		}
-		secret := &corev1.Secret{}
 		ns := auth.SecretRef.Namespace
 		if ns == "" {
 			ns = mcpServer.Namespace
 		}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: auth.SecretRef.Name, Namespace: ns}, secret); err != nil {
-			return nil, nil, fmt.Errorf("failed to get auth secret: %w", err)
+		username, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, auth.SecretRef.Name, "username")
+		if err != nil {
+			return nil, nil, fmt.Errorf("basic auth: resolving username: %w", err)
 		}
-		if username, ok := secret.Data["username"]; ok {
-			ac.Username = string(username)
+		password, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, auth.SecretRef.Name, "password")
+		if err != nil {
+			return nil, nil, fmt.Errorf("basic auth: resolving password: %w", err)
 		}
-		if password, ok := secret.Data["password"]; ok {
-			ac.Password = string(password)
-		}
+		ac.Username = string(username)
+		ac.Password = string(password)
 		if ac.Username == "" || ac.Password == "" {
-			return nil, nil, fmt.Errorf("secret for basic auth must contain username and password keys")
+			return nil, nil, fmt.Errorf("secret for basic auth must contain non-empty username and password keys")
 		}
 	case "oauth2":
 		if auth.OAuth2 == nil {
@@ -279,33 +309,31 @@ func resolveAuthConfigs(ctx context.Context, k8sClient client.Client, mcpServer 
 			Scopes:   oauth2.Scopes,
 		}
 		if oauth2.ClientCredentialsRef != nil {
-			secret := &corev1.Secret{}
 			ns := oauth2.ClientCredentialsRef.Namespace
 			if ns == "" {
 				ns = mcpServer.Namespace
 			}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: oauth2.ClientCredentialsRef.Name, Namespace: ns}, secret); err != nil {
-				return nil, nil, fmt.Errorf("failed to get OAuth2 credentials secret: %w", err)
+			clientID, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, oauth2.ClientCredentialsRef.Name, "client_id")
+			if err != nil {
+				return nil, nil, fmt.Errorf("oauth2 clientCredentialsRef: resolving client_id: %w", err)
 			}
-			if id, ok := secret.Data["client_id"]; ok {
-				oauthCfg.ClientID = string(id)
+			clientSecret, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, oauth2.ClientCredentialsRef.Name, "client_secret")
+			if err != nil {
+				return nil, nil, fmt.Errorf("oauth2 clientCredentialsRef: resolving client_secret: %w", err)
 			}
-			if secret, ok := secret.Data["client_secret"]; ok {
-				oauthCfg.ClientSecret = string(secret)
-			}
+			oauthCfg.ClientID = string(clientID)
+			oauthCfg.ClientSecret = string(clientSecret)
 		} else if oauth2.ClientID != "" && oauth2.ClientSecretRef != nil {
 			oauthCfg.ClientID = oauth2.ClientID
-			secret := &corev1.Secret{}
 			ns := oauth2.ClientSecretRef.Namespace
 			if ns == "" {
 				ns = mcpServer.Namespace
 			}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: oauth2.ClientSecretRef.Name, Namespace: ns}, secret); err != nil {
+			v, err := secretmount.Resolve(ctx, k8sClient, useAPISecretAccess, ns, oauth2.ClientSecretRef.Name, oauth2.ClientSecretRef.Key)
+			if err != nil {
 				return nil, nil, fmt.Errorf("failed to get OAuth2 client secret: %w", err)
 			}
-			if v, ok := secret.Data[oauth2.ClientSecretRef.Key]; ok {
-				oauthCfg.ClientSecret = string(v)
-			}
+			oauthCfg.ClientSecret = string(v)
 		}
 		if oauthCfg.ClientID == "" || oauthCfg.ClientSecret == "" {
 			return nil, nil, fmt.Errorf("oauth2 requires client_id and client_secret")

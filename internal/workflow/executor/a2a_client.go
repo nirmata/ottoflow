@@ -20,11 +20,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 )
 
 // testA2AHTTPClient overrides the HTTP client built by newA2AClient (tests only; nil in production).
@@ -105,11 +104,17 @@ type a2aClient struct {
 }
 
 // newA2AClient builds an a2aClient for the given step, resolving auth and CA secrets as needed.
+//
+// localExecutionMode distinguishes the CLI (true, has full API access) from the in-cluster
+// workflow-runner Job (false): when it is false the CA bundle and bearer token Secrets are
+// read from the files the controller mounted into the pod (internal/secretmount) and the
+// Secret API is never called.
 func newA2AClient(
 	ctx context.Context,
 	step *ottoflowv1alpha1.StepExternalAgentRef,
 	k8sClient client.Client,
 	namespace string,
+	localExecutionMode bool,
 ) (*a2aClient, error) {
 	parsedURL, err := ValidateExternalAgentTransport(step)
 	if err != nil {
@@ -133,16 +138,9 @@ func newA2AClient(
 		if caNamespace == "" {
 			caNamespace = namespace
 		}
-		var secret corev1.Secret
-		if err := k8sClient.Get(ctx, types.NamespacedName{
-			Name:      step.CASecretRef.Name,
-			Namespace: caNamespace,
-		}, &secret); err != nil {
-			return nil, fmt.Errorf("loading CA secret %s/%s: %w", caNamespace, step.CASecretRef.Name, err)
-		}
-		caBundle, ok := secret.Data["ca.crt"]
-		if !ok {
-			return nil, fmt.Errorf("CA secret %s/%s does not contain key 'ca.crt'", caNamespace, step.CASecretRef.Name)
+		caBundle, err := caBundleFromSecretRef(ctx, k8sClient, caNamespace, step.CASecretRef.Name, localExecutionMode)
+		if err != nil {
+			return nil, err
 		}
 		pool, _ := x509.SystemCertPool()
 		if pool == nil {
@@ -175,7 +173,7 @@ func newA2AClient(
 	// http+auth.secretRef, so this scheme gate is defense-in-depth: a bearer token must
 	// never ride a cleartext transport.
 	if parsedURL.Scheme == "https" && step.Auth != nil && step.Auth.SecretRef != nil {
-		token, err := getSecretValue(ctx, step.Auth.SecretRef, namespace, k8sClient)
+		token, err := getSecretValue(ctx, step.Auth.SecretRef, namespace, k8sClient, localExecutionMode)
 		if err != nil {
 			return nil, fmt.Errorf("loading bearer token from secret: %w", err)
 		}
@@ -429,22 +427,31 @@ func isPauseState(s string) bool {
 	return s == a2aTaskStateInputRequired || s == a2aTaskStateAuthRequired
 }
 
-// getSecretValue retrieves a single key value from a Kubernetes Secret.
-func getSecretValue(ctx context.Context, ref *ottoflowv1alpha1.SecretReference, namespace string, k8sClient client.Client) (string, error) {
+// caBundleFromSecretRef returns the "ca.crt" bytes for a CASecretRef. When localExecutionMode
+// is true (the CLI), it reads the live Secret via the API. When false (the in-cluster
+// workflow-runner Job), it reads the controller-mounted file via internal/secretmount instead,
+// and never touches the Secret API.
+func caBundleFromSecretRef(ctx context.Context, k8sClient client.Client, caNamespace, caName string, localExecutionMode bool) ([]byte, error) {
+	caBundle, err := secretmount.Resolve(ctx, k8sClient, localExecutionMode, caNamespace, caName, "ca.crt")
+	if err != nil {
+		return nil, fmt.Errorf("loading CA secret %s/%s: %w", caNamespace, caName, err)
+	}
+	return caBundle, nil
+}
+
+// getSecretValue retrieves a single key value for a bearer token. When localExecutionMode is
+// true (the CLI), it reads the live Secret via the API. When false (the in-cluster
+// workflow-runner Job), it reads the controller-mounted file via internal/secretmount instead,
+// and never touches the Secret API.
+func getSecretValue(ctx context.Context, ref *ottoflowv1alpha1.SecretReference, namespace string, k8sClient client.Client, localExecutionMode bool) (string, error) {
 	secretNamespace := ref.Namespace
 	if secretNamespace == "" {
 		secretNamespace = namespace
 	}
-	var secret corev1.Secret
-	if err := k8sClient.Get(ctx, types.NamespacedName{
-		Name:      ref.Name,
-		Namespace: secretNamespace,
-	}, &secret); err != nil {
+
+	value, err := secretmount.Resolve(ctx, k8sClient, localExecutionMode, secretNamespace, ref.Name, ref.Key)
+	if err != nil {
 		return "", fmt.Errorf("getting secret %s/%s: %w", secretNamespace, ref.Name, err)
-	}
-	value, ok := secret.Data[ref.Key]
-	if !ok {
-		return "", fmt.Errorf("secret %s/%s does not contain key %q", secretNamespace, ref.Name, ref.Key)
 	}
 	return strings.TrimSpace(string(value)), nil
 }

@@ -9,7 +9,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
+	"github.com/GoogleCloudPlatform/kubectl-ai/pkg/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -18,8 +24,10 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 )
 
 var _ = Describe("parseToolResult", func() {
@@ -92,7 +100,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				Transport: ottoflowv1alpha1.TransportConfig{Type: "stdio"},
 			},
 		}
-		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("command"))
 	})
@@ -107,7 +115,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				},
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Name).To(Equal("s"))
 		Expect(cfg.Command).To(Equal("/bin/echo"))
@@ -126,7 +134,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				Timeout: "30s",
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Timeout).To(Equal(30))
 	})
@@ -138,7 +146,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				Transport: ottoflowv1alpha1.TransportConfig{Type: "http"},
 			},
 		}
-		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("address"))
 	})
@@ -154,7 +162,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				},
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.URL).To(Equal("https://mcp.example.com"))
 		Expect(cfg.UseStreaming).To(BeFalse())
@@ -171,7 +179,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				},
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.UseStreaming).To(BeTrue())
 	})
@@ -183,7 +191,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				Transport: ottoflowv1alpha1.TransportConfig{Type: "grpc"},
 			},
 		}
-		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		_, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("unsupported"))
 	})
@@ -204,7 +212,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				},
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Auth).NotTo(BeNil())
 		Expect(cfg.Auth.Token).To(Equal("bearer-token"))
@@ -233,7 +241,7 @@ var _ = Describe("buildMCPClientConfig", func() {
 				},
 			},
 		}
-		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer)
+		cfg, err := buildMCPClientConfig(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cfg.Env).To(ContainElement("API_KEY=secret-key"))
 	})
@@ -255,7 +263,10 @@ var _ = Describe("resolveEnvValue", func() {
 
 	It("returns Value when set", func() {
 		ev := &corev1.EnvVar{Name: "FOO", Value: "bar"}
-		Expect(resolveEnvValue(ctx, k8sClient, "default", ev)).To(Equal("bar"))
+		val, present, err := resolveEnvValue(ctx, k8sClient, "default", ev, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeTrue())
+		Expect(val).To(Equal("bar"))
 	})
 
 	It("returns secret value when ValueFrom.SecretKeyRef is set", func() {
@@ -270,17 +281,46 @@ var _ = Describe("resolveEnvValue", func() {
 				SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "s1"}, Key: "token"},
 			},
 		}
-		Expect(resolveEnvValue(ctx, k8sClient, "default", ev)).To(Equal("secret-val"))
+		val, present, err := resolveEnvValue(ctx, k8sClient, "default", ev, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeTrue())
+		Expect(val).To(Equal("secret-val"))
 	})
 
-	It("returns empty when secret not found", func() {
+	// A missing credential must propagate an error rather than silently resolving to "":
+	// launching the stdio MCP server with an empty credential surfaces only later as an
+	// opaque upstream 401.
+	It("returns an error when the secret is not found", func() {
 		ev := &corev1.EnvVar{
 			Name: "TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "missing"}, Key: "token"},
 			},
 		}
-		Expect(resolveEnvValue(ctx, k8sClient, "default", ev)).To(Equal(""))
+		val, present, err := resolveEnvValue(ctx, k8sClient, "default", ev, true)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("TOKEN"))
+		Expect(val).To(Equal(""))
+		// A NON-optional ref that cannot be resolved must stay an error, never a silent omission.
+		Expect(present).To(BeFalse())
+	})
+
+	It("leaves an OPTIONAL env unset when the secret is not found", func() {
+		optional := true
+		ev := &corev1.EnvVar{
+			Name: "TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "missing"},
+					Key:                  "token",
+					Optional:             &optional,
+				},
+			},
+		}
+		val, present, err := resolveEnvValue(ctx, k8sClient, "default", ev, true)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeFalse())
+		Expect(val).To(Equal(""))
 	})
 })
 
@@ -304,7 +344,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec:       ottoflowv1alpha1.MCPServerSpec{Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"}},
 		}
-		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ac).To(BeNil())
 		Expect(oauth).To(BeNil())
@@ -318,7 +358,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				Auth:      &ottoflowv1alpha1.AuthConfig{Type: "bearer"},
 			},
 		}
-		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("secretRef"))
 	})
@@ -339,7 +379,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(oauth).To(BeNil())
 		Expect(ac).NotTo(BeNil())
@@ -363,7 +403,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		ac, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		ac, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ac.Type).To(Equal("api-key"))
 		Expect(ac.Token).To(Equal("my-api-key"))
@@ -386,9 +426,11 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("username and password"))
+		// The error names the specific failing key and carries the underlying cause.
+		Expect(err.Error()).To(ContainSubstring("resolving password"))
+		Expect(err.Error()).To(ContainSubstring(`key "password" not found`))
 	})
 
 	It("resolves basic auth from secret", func() {
@@ -407,7 +449,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		ac, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		ac, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ac.Username).To(Equal("u"))
 		Expect(ac.Password).To(Equal("p"))
@@ -421,7 +463,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				Auth:      &ottoflowv1alpha1.AuthConfig{Type: "oauth2"},
 			},
 		}
-		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("oauth2 config"))
 	})
@@ -446,7 +488,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		ac, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(ac).NotTo(BeNil())
 		Expect(oauth).NotTo(BeNil())
@@ -478,7 +520,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		_, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, oauth, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(oauth).NotTo(BeNil())
 		Expect(oauth.ClientID).To(Equal("my-client-id"))
@@ -501,7 +543,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("not found in secret"))
 	})
@@ -518,7 +560,7 @@ var _ = Describe("resolveAuthConfigs", func() {
 				},
 			},
 		}
-		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer)
+		_, _, err := resolveAuthConfigs(ctx, k8sClient, mcpServer, true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("failed to get auth secret"))
 	})
@@ -540,7 +582,7 @@ var _ = Describe("DefaultMCPClientFactory CreateClient", func() {
 	})
 
 	It("returns error for unsupported transport type", func() {
-		f := NewDefaultMCPClientFactory(k8sClient)
+		f := NewDefaultMCPClientFactory(k8sClient, true)
 		mcpServer := &ottoflowv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec: ottoflowv1alpha1.MCPServerSpec{
@@ -550,5 +592,278 @@ var _ = Describe("DefaultMCPClientFactory CreateClient", func() {
 		_, err := f.CreateClient(ctx, mcpServer)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("unsupported"))
+	})
+})
+
+// noAPIClient returns a fake client whose Get fails the spec if it is ever invoked, so a
+// spec can prove that the mounted-file path (useAPISecretAccess=false) never falls back to a
+// live API read.
+func noAPIClient(scheme *runtime.Scheme) client.Client {
+	return fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			Fail("unexpected API Get for " + key.String() + ": useAPISecretAccess=false must not touch the Kubernetes API")
+			return nil
+		},
+	}).Build()
+}
+
+// mountValues writes each value to its own file under a per-spec temp dir and points
+// OTTOFLOW_SECRET_MOUNTS at them for the rest of the spec. Map keys are secretmount.Key(...).
+func mountValues(values map[string]string) {
+	dir := GinkgoT().TempDir()
+	mounts := secretmount.Mounts{}
+	i := 0
+	for k, v := range values {
+		path := filepath.Join(dir, fmt.Sprintf("mount-%d", i))
+		i++
+		Expect(os.WriteFile(path, []byte(v), 0o600)).To(Succeed())
+		mounts[k] = path
+	}
+	raw, err := json.Marshal(mounts)
+	Expect(err).NotTo(HaveOccurred())
+	GinkgoT().Setenv(secretmount.EnvVar, string(raw))
+}
+
+// capturingBuilder records the mcp.ClientConfig the factory hands to Build.
+type capturingBuilder struct {
+	cfg mcp.ClientConfig
+}
+
+func (b *capturingBuilder) Build(_ context.Context, _ string, _ time.Duration, cfg interface{}) (MCPClient, error) {
+	b.cfg = cfg.(mcp.ClientConfig)
+	return &mockMCPClientForBuildSessionTools{}, nil
+}
+
+func secretEnv(name, secretName, key string, optional *bool) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: name,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  key,
+				Optional:             optional,
+			},
+		},
+	}
+}
+
+var _ = Describe("mounted-file secret access (useAPISecretAccess=false)", func() {
+	var (
+		ctx    context.Context
+		scheme *runtime.Scheme
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		scheme = runtime.NewScheme()
+		utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
+		utilruntime.Must(corev1.AddToScheme(scheme))
+		// secretmount.Load() memoizes OTTOFLOW_SECRET_MOUNTS for the process lifetime (it
+		// never changes in the real runner process); each spec below sets it to a different
+		// value, so reset the memoization before every case.
+		secretmount.ResetForTest()
+	})
+
+	It("resolveEnvValue reads the mounted file and never calls the API", func() {
+		mountValues(map[string]string{secretmount.Key("default", "s1", "token"): "mounted-value"})
+
+		ev := secretEnv("TOKEN", "s1", "token", nil)
+		val, present, err := resolveEnvValue(ctx, noAPIClient(scheme), "default", &ev, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeTrue())
+		Expect(val).To(Equal("mounted-value"))
+	})
+
+	// An unmounted required credential must propagate an error without calling the API:
+	// the runner has no live fallback, and an empty credential would only fail later inside
+	// the MCP server.
+	It("resolveEnvValue returns an error when the key is not mounted, without calling the API", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{}")
+		ev := secretEnv("TOKEN", "s1", "token", nil)
+		val, present, err := resolveEnvValue(ctx, noAPIClient(scheme), "default", &ev, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+		Expect(val).To(Equal(""))
+		Expect(present).To(BeFalse())
+	})
+
+	It("resolveEnvValue leaves an OPTIONAL env unset when its key is not mounted, without calling the API", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{}")
+		optional := true
+		ev := secretEnv("TOKEN", "s1", "token", &optional)
+		val, present, err := resolveEnvValue(ctx, noAPIClient(scheme), "default", &ev, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(present).To(BeFalse())
+		Expect(val).To(Equal(""))
+	})
+
+	// Optional means "unset when absent", not "swallow every failure": a broken mount map is
+	// a broken runtime and must surface even for an optional ref.
+	It("resolveEnvValue surfaces a malformed OTTOFLOW_SECRET_MOUNTS even for an OPTIONAL env", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{not json")
+		optional := true
+		ev := secretEnv("TOKEN", "s1", "token", &optional)
+		_, _, err := resolveEnvValue(ctx, noAPIClient(scheme), "default", &ev, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(secretmount.EnvVar))
+	})
+
+	It("buildMCPClientConfig delivers a mounted env credential and omits an unmounted optional one", func() {
+		mountValues(map[string]string{secretmount.Key("default", "creds", "api_key"): "mounted-key"})
+		optional := true
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "stdio", Command: []string{"echo"}},
+				Env: []corev1.EnvVar{
+					{Name: "PLAIN", Value: "literal"},
+					secretEnv("API_KEY", "creds", "api_key", nil),
+					secretEnv("MAYBE", "creds", "absent", &optional),
+				},
+			},
+		}
+		cfg, err := buildMCPClientConfig(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cfg.Env).To(ConsistOf("PLAIN=literal", "API_KEY=mounted-key"))
+	})
+
+	It("buildMCPClientConfig fails the whole config when a required env credential is not mounted", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{}")
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "stdio", Command: []string{"echo"}},
+				Env:       []corev1.EnvVar{secretEnv("API_KEY", "creds", "api_key", nil)},
+			},
+		}
+		_, err := buildMCPClientConfig(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(`MCPServer default/s env "API_KEY"`))
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+	})
+
+	It("resolveAuthConfigs resolves bearer auth from the mounted file and never calls the API", func() {
+		mountValues(map[string]string{secretmount.Key("default", "auth", "token"): "mounted-bearer"})
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
+				Auth: &ottoflowv1alpha1.AuthConfig{
+					Type:      "bearer",
+					SecretRef: &ottoflowv1alpha1.SecretReference{Name: "auth", Key: "token"},
+				},
+			},
+		}
+		ac, oauth, err := resolveAuthConfigs(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(oauth).To(BeNil())
+		Expect(ac).NotTo(BeNil())
+		Expect(ac.Token).To(Equal("mounted-bearer"))
+	})
+
+	It("resolveAuthConfigs errors when the auth secret is not mounted, without calling the API", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{}")
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
+				Auth: &ottoflowv1alpha1.AuthConfig{
+					Type:      "bearer",
+					SecretRef: &ottoflowv1alpha1.SecretReference{Name: "auth", Key: "token"},
+				},
+			},
+		}
+		_, _, err := resolveAuthConfigs(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("failed to get auth secret"))
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+	})
+
+	It("resolveAuthConfigs resolves basic auth from mounted username and password files", func() {
+		mountValues(map[string]string{
+			secretmount.Key("team-a", "basic", "username"): "u",
+			secretmount.Key("team-a", "basic", "password"): "p",
+		})
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
+				Auth: &ottoflowv1alpha1.AuthConfig{
+					Type: "basic",
+					// An explicit namespace on the ref must be honoured when looking up the mount.
+					SecretRef: &ottoflowv1alpha1.SecretReference{Name: "basic", Namespace: "team-a", Key: "unused"},
+				},
+			},
+		}
+		ac, _, err := resolveAuthConfigs(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(ac.Username).To(Equal("u"))
+		Expect(ac.Password).To(Equal("p"))
+	})
+
+	It("resolveAuthConfigs resolves oauth2 clientCredentialsRef from mounted client_id and client_secret files", func() {
+		mountValues(map[string]string{
+			secretmount.Key("default", "oauth", "client_id"):     "cid",
+			secretmount.Key("default", "oauth", "client_secret"): "csec",
+		})
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
+				Auth: &ottoflowv1alpha1.AuthConfig{
+					Type: "oauth2",
+					OAuth2: &ottoflowv1alpha1.OAuth2Config{
+						TokenURL:             "https://auth.example.com/token",
+						ClientCredentialsRef: &ottoflowv1alpha1.NamespacedSecretRef{Name: "oauth"},
+					},
+				},
+			},
+		}
+		_, oauth, err := resolveAuthConfigs(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(oauth).NotTo(BeNil())
+		Expect(oauth.ClientID).To(Equal("cid"))
+		Expect(oauth.ClientSecret).To(Equal("csec"))
+	})
+
+	It("resolveAuthConfigs resolves oauth2 clientSecretRef from the mounted file", func() {
+		mountValues(map[string]string{secretmount.Key("default", "oauth-secret", "secret"): "my-client-secret"})
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
+				Auth: &ottoflowv1alpha1.AuthConfig{
+					Type: "oauth2",
+					OAuth2: &ottoflowv1alpha1.OAuth2Config{
+						TokenURL:        "https://auth.example.com/token",
+						ClientID:        "my-client-id",
+						ClientSecretRef: &ottoflowv1alpha1.SecretReference{Name: "oauth-secret", Key: "secret"},
+					},
+				},
+			},
+		}
+		_, oauth, err := resolveAuthConfigs(ctx, noAPIClient(scheme), mcpServer, false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(oauth).NotTo(BeNil())
+		Expect(oauth.ClientID).To(Equal("my-client-id"))
+		Expect(oauth.ClientSecret).To(Equal("my-client-secret"))
+	})
+
+	// The factory is the seam the runner's MCP manager goes through, so the flag must reach
+	// buildMCPClientConfig from there, not only when the helpers are called directly.
+	It("a factory built with useAPISecretAccess=false hands the builder a config resolved from the mounts", func() {
+		mountValues(map[string]string{secretmount.Key("default", "creds", "api_key"): "mounted-key"})
+		builder := &capturingBuilder{}
+		f := NewDefaultMCPClientFactoryWithBuilder(noAPIClient(scheme), builder, false)
+		mcpServer := &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "stdio", Command: []string{"echo"}},
+				Env:       []corev1.EnvVar{secretEnv("API_KEY", "creds", "api_key", nil)},
+			},
+		}
+		_, err := f.CreateClient(ctx, mcpServer)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(builder.cfg.Env).To(ConsistOf("API_KEY=mounted-key"))
 	})
 })

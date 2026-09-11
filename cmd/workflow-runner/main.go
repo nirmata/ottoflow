@@ -195,7 +195,9 @@ func mustGetTargetClients(
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	prometheusURL, jobName, podName string,
 ) (client.Client, metricsclientset.Interface, kubernetes.Interface, workflowexecutor.PrometheusClient) {
-	targetRestConfig, err := cluster.RestConfigForClusterRef(ctx, controlClient, workflowRun)
+	// localExecutionMode=false: the in-cluster runner reads a kubeConfigSecretRef from the
+	// file the controller mounted, never through the Secret API.
+	targetRestConfig, err := cluster.RestConfigForClusterRef(ctx, controlClient, workflowRun, false)
 	if err != nil {
 		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
 			fmt.Sprintf("Failed to resolve target cluster: %v", err))

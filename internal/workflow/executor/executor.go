@@ -56,8 +56,11 @@ type mcpManagerImpl struct {
 
 // NewMCPManager creates a new MCP manager with idle-client eviction running in the background.
 // Callers must call Close() when the manager is no longer needed to stop the eviction goroutine.
-func NewMCPManager(k8sClient client.Client) (MCPManager, error) {
-	factory := agent.NewDefaultMCPClientFactory(k8sClient)
+// localExecutionMode selects how MCP env/auth Secrets are resolved: true (CLI local mode) does
+// a live client.Client.Get; false (the in-cluster workflow-runner Job) reads from the files the
+// controller mounted into the pod (internal/secretmount) and never calls the Secret API.
+func NewMCPManager(k8sClient client.Client, localExecutionMode bool) (MCPManager, error) {
+	factory := agent.NewDefaultMCPClientFactory(k8sClient, localExecutionMode)
 	manager := agent.NewMCPClientManager(k8sClient, factory)
 	// Start background eviction of idle MCP clients (stdio-backed servers spawn child processes).
 	// The goroutine is stopped when Close() is called on the returned manager.
@@ -253,7 +256,7 @@ func NewWorkflowExecutorWithClientsAndAgentExecutor(
 
 	if mcpManager == nil {
 		var err error
-		mcpManager, err = NewMCPManager(controlClient)
+		mcpManager, err = NewMCPManager(controlClient, localExecutionMode)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create MCP manager: %w", err)
 		}

@@ -9,7 +9,8 @@ that can be found in the LICENSE.md file.
 // Secret keys into the workflow-runner Job by reference — see
 // internal/workflow/controller/secret_refs.go) and the runner process code that needs
 // those values at execution time (internal/workflow/cluster, internal/workflow/executor,
-// internal/agent). The runner Job holds no Secret RBAC at all, so every value it needs is
+// internal/agent). The in-cluster runner Job never reads Secrets through the API and so
+// needs no Secret RBAC: every value it needs is
 // either a plain pod env var (kubelet-resolved SecretKeyRef — used for the well-known LLM
 // credentials Secret and any user-supplied spec.execution.job.env entry, never for MCP env
 // creds; see buildSecretMounts) or a file under a path recorded in this map (kubeconfig, A2A

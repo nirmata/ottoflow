@@ -207,7 +207,7 @@ var _ = Describe("DefaultMCPClientFactory CreateClient with builder", func() {
 	It("createStdioClient path uses builder and returns client", func() {
 		mockClient := &mockMCPClientForBuildSessionTools{}
 		builder := &mockRealMCPClientBuilder{client: mockClient}
-		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder)
+		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder, true)
 		mcpServer := &ottoflowv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "stdio-srv", Namespace: "default"},
 			Spec: ottoflowv1alpha1.MCPServerSpec{
@@ -225,7 +225,7 @@ var _ = Describe("DefaultMCPClientFactory CreateClient with builder", func() {
 	It("createHTTPClient path uses builder and returns client", func() {
 		mockClient := &mockMCPClientForBuildSessionTools{}
 		builder := &mockRealMCPClientBuilder{client: mockClient}
-		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder)
+		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder, true)
 		mcpServer := &ottoflowv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "http-srv", Namespace: "default"},
 			Spec: ottoflowv1alpha1.MCPServerSpec{
@@ -242,7 +242,7 @@ var _ = Describe("DefaultMCPClientFactory CreateClient with builder", func() {
 
 	It("createRealMCPClient returns builder error when Build fails", func() {
 		builder := &mockRealMCPClientBuilder{err: errors.New("build failed")}
-		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder)
+		f := NewDefaultMCPClientFactoryWithBuilder(k8sClient, builder, true)
 		mcpServer := &ottoflowv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec: ottoflowv1alpha1.MCPServerSpec{
@@ -271,7 +271,7 @@ var _ = Describe("DefaultMCPClientFactory CreateClient without builder (real cli
 	})
 
 	It("creates realMCPClient for stdio transport when builder not set", func() {
-		f := NewDefaultMCPClientFactory(k8sClient)
+		f := NewDefaultMCPClientFactory(k8sClient, true)
 		mcpServer := &ottoflowv1alpha1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
 			Spec: ottoflowv1alpha1.MCPServerSpec{
@@ -285,65 +285,6 @@ var _ = Describe("DefaultMCPClientFactory CreateClient without builder (real cli
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c).NotTo(BeNil())
 		_ = c.Close()
-	})
-})
-
-var _ = Describe("DefaultMCPClientFactory resolveAuth", func() {
-	var (
-		ctx       context.Context
-		scheme    *runtime.Scheme
-		k8sClient client.Client
-	)
-
-	BeforeEach(func() {
-		ctx = context.Background()
-		scheme = runtime.NewScheme()
-		utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
-		utilruntime.Must(corev1.AddToScheme(scheme))
-		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
-	})
-
-	It("returns nil when auth is nil", func() {
-		f := NewDefaultMCPClientFactory(k8sClient)
-		mcpServer := &ottoflowv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-			Spec:       ottoflowv1alpha1.MCPServerSpec{Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"}},
-		}
-		creds, err := f.resolveAuth(ctx, mcpServer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(creds).To(BeNil())
-	})
-
-	It("returns error for bearer auth without secretRef", func() {
-		f := NewDefaultMCPClientFactory(k8sClient)
-		mcpServer := &ottoflowv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-			Spec: ottoflowv1alpha1.MCPServerSpec{
-				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
-				Auth:      &ottoflowv1alpha1.AuthConfig{Type: "bearer"},
-			},
-		}
-		_, err := f.resolveAuth(ctx, mcpServer)
-		Expect(err).To(HaveOccurred())
-	})
-
-	It("resolves bearer token from secret", func() {
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "t", Namespace: "default"},
-			Data:       map[string][]byte{"token": []byte("bearer-val")},
-		}
-		k8sClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-		f := NewDefaultMCPClientFactory(k8sClient)
-		mcpServer := &ottoflowv1alpha1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-			Spec: ottoflowv1alpha1.MCPServerSpec{
-				Transport: ottoflowv1alpha1.TransportConfig{Type: "http", Address: "https://x"},
-				Auth:      &ottoflowv1alpha1.AuthConfig{Type: "bearer", SecretRef: &ottoflowv1alpha1.SecretReference{Name: "t", Key: "token"}},
-			},
-		}
-		creds, err := f.resolveAuth(ctx, mcpServer)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(creds["token"]).To(Equal("bearer-val"))
 	})
 })
 

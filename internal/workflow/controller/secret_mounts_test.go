@@ -509,7 +509,7 @@ func TestBuildWorkflowRunnerJob_SecretVolumeOriginsAnnotation(t *testing.T) {
 // a Secret VOLUME with a KeyToPath item and an OTTOFLOW_SECRET_MOUNTS entry, and NEVER as a
 // container EnvVar with a SecretKeyRef: a volume is resolved by the kubelet under node
 // credentials (no RBAC on the runner ServiceAccount needed); a SecretKeyRef env var would
-// require the runner's own Secret RBAC, which OttoFlow deliberately never grants (see
+// require the runner's own Secret RBAC, which the runner is designed to run without (see
 // docs/user/rbac-secret-access.md).
 //
 // Revert -> red: emit a SecretKeyRef EnvVar for a collected ref instead of routing it through
