@@ -155,7 +155,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Error(err, "referenced Workflow not found; failing run", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, err.Error())
+			setRunFailed(workflowRun, err.Error(), "")
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -201,7 +201,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), "")
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -213,7 +213,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err), "")
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -222,7 +222,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		sourceNamespace := runnerSecretSourceNamespace(r.RunnerConfig, workflowNamespace)
 		if err := r.ensureRunnerSecrets(ctx, workflowRun, createdJob, sourceNamespace); err != nil {
 			logger.Error(err, "failed to ensure runner secrets", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), "")
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -237,7 +237,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				}
 			} else {
 				logger.Error(err, "failed to create runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "job", jobKey)
-				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err))
+				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err), "")
 				if err := r.Status().Update(ctx, workflowRun); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -1201,9 +1201,16 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 // It deliberately does NOT touch Execution, CompletionTime, or step statuses — call sites set those
 // as needed. It must NOT be used on the transient-retry path (retryTransientFailure), which keeps
 // PendingCallback so the recreated runner can consume the delivered callback outputs.
-func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string) {
+//
+// reason is the classified cause recorded in Status.FailureReason. "" leaves the field unset,
+// which is correct for any failure without a well-known classification; every current caller
+// reports such a failure, so every call passes "".
+//
+//nolint:unparam // every current caller passes "" for reason; see the note above.
+func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string, reason ottoflowv1alpha1.WorkflowRunFailureReason) {
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
 	workflowRun.Status.Message = message
+	workflowRun.Status.FailureReason = reason
 	workflowRun.Status.PendingCallback = nil
 }
 
@@ -1219,7 +1226,7 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	default:
 		msg = fmt.Sprintf("Runner Job %s failed", jobName)
 	}
-	setRunFailed(workflowRun, msg)
+	setRunFailed(workflowRun, msg, "")
 	workflowRun.Status.CompletionTime = &now
 	if workflowRun.Status.Execution == nil {
 		workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}
@@ -1336,7 +1343,7 @@ func (r *WorkflowRunReconciler) reconcilePendingCallback(ctx context.Context, re
 		ss.Error = "callback timeout: no callback received within the configured timeout"
 		ss.Message = ss.Error
 		workflowRun.Status.StepStatuses[cb.StepName] = ss
-		setRunFailed(workflowRun, fmt.Sprintf("Step %q timed out waiting for callback", cb.StepName))
+		setRunFailed(workflowRun, fmt.Sprintf("Step %q timed out waiting for callback", cb.StepName), "")
 		if err := r.Status().Update(ctx, workflowRun); err != nil {
 			return ctrl.Result{}, false, err
 		}

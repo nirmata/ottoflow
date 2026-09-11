@@ -235,7 +235,7 @@ func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *otto
 		wr := &list.Items[i]
 		if wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending ||
 			wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseRunning {
-			setRunFailed(wr, "Replaced by newer cron trigger execution")
+			setRunFailed(wr, "Replaced by newer cron trigger execution", "")
 			if err := s.client.Status().Update(ctx, wr); err != nil {
 				return fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)
 			}
