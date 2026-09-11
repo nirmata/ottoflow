@@ -85,6 +85,7 @@ Exactly one cluster source should be set when `clusterRef` is present.
 |-------|------|-------------|
 | `phase` | string | One of: `Pending`, `Running`, `Succeeded`, `Failed`. |
 | `message` | string | Additional information about the workflow status. |
+| `failureReason` | string | One of: `SecretAccessDenied`, `RunnerRefUnresolved`. Classifies a `Failed` run's cause when it matches one of these well-known reasons. Empty means either the run has not failed or it failed for a cause outside this set — absence is not itself a claim that nothing went wrong. |
 | `startTime` | string (date-time) | When the workflow execution started. |
 | `completionTime` | string (date-time) | When the workflow execution completed. |
 | `outputs` | object | Workflow-level outputs (from Workflow spec), evaluated at completion. |

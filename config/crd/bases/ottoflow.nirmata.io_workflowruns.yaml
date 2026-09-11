@@ -3445,6 +3445,21 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              failureReason:
+                allOf:
+                - enum:
+                  - SecretAccessDenied
+                  - RunnerRefUnresolved
+                - enum:
+                  - SecretAccessDenied
+                  - RunnerRefUnresolved
+                description: |-
+                  FailureReason classifies why a Failed WorkflowRun failed, for the subset of causes that
+                  have a well-known classification below. Empty means EITHER the run has not failed OR it
+                  failed for a cause that is not one of the classified reasons — absence is not itself a
+                  claim that nothing went wrong, so consumers must treat an unrecognised value the same as
+                  an empty one, not as an error.
+                type: string
               message:
                 description: Message provides additional information about the workflow
                   status

@@ -298,6 +298,15 @@ type WorkflowRunStatus struct {
 	// +optional
 	Message string `json:"message,omitempty"`
 
+	// FailureReason classifies why a Failed WorkflowRun failed, for the subset of causes that
+	// have a well-known classification below. Empty means EITHER the run has not failed OR it
+	// failed for a cause that is not one of the classified reasons — absence is not itself a
+	// claim that nothing went wrong, so consumers must treat an unrecognised value the same as
+	// an empty one, not as an error.
+	// +kubebuilder:validation:Enum=SecretAccessDenied;RunnerRefUnresolved
+	// +optional
+	FailureReason WorkflowRunFailureReason `json:"failureReason,omitempty"`
+
 	// RestartRequired indicates that the workflow needs to be restarted.
 	// Deprecated: The executor guard that consumed this field has been superseded by
 	// per-step checkpointing (see WorkflowRunExecutionSpec.Checkpointing). This field
@@ -446,6 +455,32 @@ const (
 
 	// WorkflowRunPhaseFailed indicates the workflow failed
 	WorkflowRunPhaseFailed WorkflowRunPhase = "Failed"
+)
+
+// WorkflowRunFailureReason classifies a subset of well-known WorkflowRun failure causes, for
+// programmatic consumers (alerting, dashboards) that need to distinguish these specific causes
+// from every other failure without parsing Status.Message. Not every Failed run gets one — see
+// WorkflowRunStatus.FailureReason's doc comment.
+// +kubebuilder:validation:Enum=SecretAccessDenied;RunnerRefUnresolved
+type WorkflowRunFailureReason string
+
+const (
+	// WorkflowRunFailureReasonSecretAccessDenied indicates a Secret operation the controller
+	// ServiceAccount had to perform returned Forbidden. This is usually a read (e.g. the
+	// well-known LLM credentials Secret, or a spec.execution.job.volumes Secret in the runner
+	// namespace needing `get`), but also covers a denied `create`: copying a Secret referenced
+	// from another namespace into the runner namespace needs `create` there, which a Role
+	// granting only `get` does not satisfy. See docs/user/rbac-secret-access.md for the Role
+	// to grant in either case.
+	WorkflowRunFailureReasonSecretAccessDenied WorkflowRunFailureReason = "SecretAccessDenied"
+
+	// WorkflowRunFailureReasonRunnerRefUnresolved indicates the runner pod could not start
+	// because the kubelet could not resolve a Secret or ConfigMap (or one of their keys)
+	// referenced by the pod. This is NOT an RBAC failure: Secret/ConfigMap volumes are resolved
+	// by the kubelet using node credentials, not by any Role granted to the controller or
+	// runner ServiceAccount, so no RBAC change affects it — the referenced object must exist in
+	// the pod's own namespace.
+	WorkflowRunFailureReasonRunnerRefUnresolved WorkflowRunFailureReason = "RunnerRefUnresolved"
 )
 
 // StepStatus represents the status of a workflow step
