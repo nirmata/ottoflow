@@ -338,7 +338,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_WithAgentExecutorCaller(t *tes
 			AgentExecutorCallerRole: "agent-executor-caller",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CreatesCallerBinding_WhenMainB
 			AgentExecutorCallerRole: "agent-executor-caller",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_RecreateForbidden_ReturnsTermi
 			RunnerClusterRole:    "ottoflow-new-role",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +912,7 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 		ImagePullSecrets:      "pull1,pull2",
 		PodLabelsPartOf:       "my-app",
 	}}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1161,7 +1161,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_UpdatesExistingCRB(t *testing.
 		Scheme:       unitTestScheme,
 		RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
 	}
-	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err := r.ensureRunnerAccess(ctx, wr, nil, job.Spec.Template.Spec.ServiceAccountName, false); err != nil {
 		t.Fatal(err)
 	}
@@ -1199,7 +1199,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CRBExistsNotManaged_ReturnsErr
 		Scheme:       unitTestScheme,
 		RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
 	}
-	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	err := r.ensureRunnerAccess(ctx, wr, nil, job.Spec.Template.Spec.ServiceAccountName, false)
 	if err == nil {
 		t.Fatal("expected error when CRB exists but is not managed")
@@ -2638,7 +2638,7 @@ func TestBuildWorkflowRunnerJob_InjectsWellKnownLLMCredentials(t *testing.T) {
 			LLMCredentialsSecret: "ottoflow-llm-credentials",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatalf("buildWorkflowRunnerJob: %v", err)
 	}
@@ -2690,7 +2690,7 @@ func TestBuildWorkflowRunnerJob_ExplicitEnvWinsOverWellKnownSecret(t *testing.T)
 			LLMCredentialsSecret: "ottoflow-llm-credentials",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatalf("buildWorkflowRunnerJob: %v", err)
 	}

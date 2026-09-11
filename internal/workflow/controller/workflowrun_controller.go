@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -38,6 +39,7 @@ import (
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/logging"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 	executor "github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
@@ -64,6 +66,9 @@ type RunnerConfig struct {
 	// --workflow-runner-llm-credentials-secret / WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET) or overridden per-run
 	// via spec.execution.llmCredentialsSecret.
 	LLMCredentialsSecret string
+	// SecretRefAllowedNamespaces is the operator allowlist validateSecretRefPolicy checks a
+	// cross-namespace secret ref's namespace against. Empty (the default) means same-namespace only.
+	SecretRefAllowedNamespaces map[string]struct{}
 }
 
 // transientBuildError marks errors from optional pre-build steps (e.g. reading the well-known
@@ -188,7 +193,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 
 		warnCheckpointForEach(ctx, workflow, workflowRun)
 
-		createdJob, err := r.buildWorkflowRunnerJob(ctx, workflowRun)
+		createdJob, err := r.buildWorkflowRunnerJob(ctx, workflowRun, workflow)
 		if err != nil {
 			var te *transientBuildError
 			if errors.As(err, &te) {
@@ -719,6 +724,21 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 		if vol.Secret == nil {
 			continue
 		}
+		// NEVER copy a volume buildSecretMounts minted for one of the workflow's own Secret
+		// references (see generatedSecretVolumePrefix). collectSecretRefs resolves those refs
+		// against the RUN's namespace and validateSecretRefPolicy default-denies any that
+		// resolve elsewhere, so a minted volume always names a Secret that is required to live
+		// in the runner namespace. Copying it from sourceNamespace on a miss would defeat that
+		// policy exactly where it matters most: for a cross-namespace WorkflowRun
+		// (workflowRef.namespace != the run's namespace) sourceNamespace is the WORKFLOW's
+		// namespace, so a same-namespace-looking ref to a Secret that does not exist in the run
+		// namespace would silently pull that Secret — with EVERY key in it, not just the
+		// referenced one — out of another namespace and into one the run's author can read.
+		// A genuinely missing Secret must instead surface as the FailedMount that
+		// detectStuckRunnerPod reports, naming the reference to fix.
+		if strings.HasPrefix(vol.Name, generatedSecretVolumePrefix) {
+			continue
+		}
 		secretName := vol.Secret.SecretName
 		if secretName == "" {
 			continue
@@ -775,7 +795,7 @@ func runnerArgs(cfg RunnerConfig) []string {
 	return args
 }
 
-func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun) (*batchv1.Job, error) {
+func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, workflow *ottoflowv1alpha1.Workflow) (*batchv1.Job, error) {
 	runnerImage := r.RunnerConfig.RunnerImage
 	if runnerImage == "" {
 		runnerImage = "ghcr.io/nirmata/ottoflow/workflow-runner:latest"
@@ -848,6 +868,15 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 
 	// Optionally mount agent-executor CA so the runner can verify internal TLS (secret must exist in run namespace).
 	if caSecret := r.RunnerConfig.AgentExecutorCASecret; caSecret != "" {
+		const agentExecutorCAVolumeName = "agent-executor-ca"
+		for _, v := range volumes {
+			if v.Name == agentExecutorCAVolumeName {
+				return nil, fmt.Errorf(
+					"cannot mount the agent-executor CA: a volume named %q already exists on the "+
+						"runner Job pod spec (likely from spec.execution.job.volumes); rename that "+
+						"volume to resolve the conflict", agentExecutorCAVolumeName)
+			}
+		}
 		volumes = append(volumes, corev1.Volume{
 			Name: "agent-executor-ca",
 			VolumeSource: corev1.VolumeSource{
@@ -864,6 +893,24 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		})
 	}
 
+	secretRefs, err := collectSecretRefs(ctx, r.Client, workflow, workflowRun)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSecretRefPolicy(secretRefs, workflowRun.Namespace, r.RunnerConfig); err != nil {
+		return nil, err
+	}
+	existingVolumeNames := make(map[string]struct{}, len(volumes))
+	for _, v := range volumes {
+		existingVolumeNames[v.Name] = struct{}{}
+	}
+	secretVolumes, secretVolumeMounts, secretMountsJSON, secretVolumeOrigins, err := buildSecretMounts(secretRefs, workflowRun.Namespace, existingVolumeNames)
+	if err != nil {
+		return nil, err
+	}
+	volumes = append(volumes, secretVolumes...)
+	volumeMounts = append(volumeMounts, secretVolumeMounts...)
+
 	jobName := workflowRunnerJobName(workflowRun.Name)
 	runnerEnv := []corev1.EnvVar{
 		{Name: "WORKFLOW_RUN_NAME", Value: workflowRun.Name},
@@ -875,6 +922,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
+	}
+	if secretMountsJSON != "" {
+		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: secretmount.EnvVar, Value: secretMountsJSON})
 	}
 	if r.RunnerConfig.PrometheusURL != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: "PROMETHEUS_URL", Value: r.RunnerConfig.PrometheusURL})
@@ -982,6 +1032,12 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				},
 			},
 		},
+	}
+	if b, jsonErr := json.Marshal(secretVolumeOrigins); jsonErr == nil && len(secretVolumeOrigins) > 0 && len(b) <= maxSecretVolumeOriginsAnnotationBytes {
+		if job.Annotations == nil {
+			job.Annotations = map[string]string{}
+		}
+		job.Annotations[generatedSecretVolumeOriginsAnnotation] = string(b)
 	}
 	if err := ctrl.SetControllerReference(workflowRun, job, r.Scheme); err != nil {
 		return nil, err

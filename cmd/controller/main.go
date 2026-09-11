@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -82,6 +83,7 @@ func main() {
 	var workflowRunnerPodLabelsPartOf string
 	var workflowRunnerTTLSecondsAfterFinished int
 	var workflowRunnerLLMCredentialsSecret string
+	var secretRefAllowedNamespacesFlag string
 	var webhookTriggerAddr string
 	var mcpAddr string
 	var mcpCallerNamespace string
@@ -140,6 +142,17 @@ func main() {
 		llmCredSecret,
 		"Secret name in the WorkflowRun namespace for LLM credential injection. "+
 			"Empty (default) disables injection. Override per run via spec.execution.llmCredentialsSecret.")
+	flag.StringVar(&secretRefAllowedNamespacesFlag, "secret-ref-allowed-namespaces",
+		os.Getenv("SECRET_REF_ALLOWED_NAMESPACES"),
+		"Comma-separated namespaces the cross-namespace-secret-reference POLICY check allows in "+
+			"addition to the WorkflowRun's own namespace. Applies only to a Secret ref that does NOT "+
+			"need to be mounted into the runner Job - i.e. an agentRef step's MCP tool credentials, "+
+			"which the agent-executor pod resolves with its own RBAC. It does NOT enable "+
+			"cross-namespace mounting for a workflowRun's kubeconfig, a step's externalAgentRef "+
+			"CA/auth, or a directly-called MCPServer's auth: a native Secret volume can only ever "+
+			"reach a Secret in the runner pod's own namespace, so those three are always rejected "+
+			"cross-namespace (at admission time, and again if reached anyway) regardless of this "+
+			"flag. Empty (default) means same-namespace only.")
 
 	flag.StringVar(&webhookTriggerAddr, "webhook-trigger-addr", "",
 		"Address for the webhook trigger HTTP server (empty disables). "+
@@ -352,20 +365,28 @@ func main() {
 		}
 	}
 
+	secretRefAllowedNamespaces := make(map[string]struct{})
+	for _, ns := range strings.Split(secretRefAllowedNamespacesFlag, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			secretRefAllowedNamespaces[ns] = struct{}{}
+		}
+	}
+
 	runnerConfig := workflowcontroller.RunnerConfig{
-		RunnerImage:             workflowRunnerImage,
-		RunnerServiceAccount:    workflowRunnerServiceAccount,
-		RunnerClusterRole:       workflowRunnerClusterRole,
-		AgentExecutorCallerRole: agentExecutorCallerClusterRole,
-		AgentExecutorCASecret:   workflowRunnerAgentExecutorCASecret,
-		AgentExecutorNamespace:  agentExecutorNamespace,
-		SecretSourceNamespace:   secretSourceNamespace,
-		PrometheusURL:           prometheusURL,
-		ImagePullSecrets:        workflowRunnerImagePullSecrets,
-		ImagePullPolicy:         workflowRunnerImagePullPolicy,
-		PodLabelsPartOf:         workflowRunnerPodLabelsPartOf,
-		TTLSecondsAfterFinished: int32(workflowRunnerTTLSecondsAfterFinished),
-		LLMCredentialsSecret:    workflowRunnerLLMCredentialsSecret,
+		RunnerImage:                workflowRunnerImage,
+		RunnerServiceAccount:       workflowRunnerServiceAccount,
+		RunnerClusterRole:          workflowRunnerClusterRole,
+		AgentExecutorCallerRole:    agentExecutorCallerClusterRole,
+		AgentExecutorCASecret:      workflowRunnerAgentExecutorCASecret,
+		AgentExecutorNamespace:     agentExecutorNamespace,
+		SecretSourceNamespace:      secretSourceNamespace,
+		PrometheusURL:              prometheusURL,
+		ImagePullSecrets:           workflowRunnerImagePullSecrets,
+		ImagePullPolicy:            workflowRunnerImagePullPolicy,
+		PodLabelsPartOf:            workflowRunnerPodLabelsPartOf,
+		TTLSecondsAfterFinished:    int32(workflowRunnerTTLSecondsAfterFinished),
+		LLMCredentialsSecret:       workflowRunnerLLMCredentialsSecret,
+		SecretRefAllowedNamespaces: secretRefAllowedNamespaces,
 	}
 
 	// Create shared CEL compilation cache; expressions are compiled when
