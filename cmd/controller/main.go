@@ -18,6 +18,7 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/klog/v2/textlogger"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -234,6 +236,16 @@ func main() {
 	// make run creates the namespace and passes --namespace.
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,
+		// Never cache Secrets or ServiceAccounts. A cache-backed Get builds a cluster-wide
+		// list+watch informer for the type, so a cached Secret Get would require cluster-wide
+		// `secrets list, watch` RBAC no matter how narrow the Get itself looks. With caching
+		// disabled every Get is a live API read authorized as `get` on that one object, which
+		// is what makes it possible for the chart's ClusterRoles to grant no Secret access at all.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}, &corev1.ServiceAccount{}},
+			},
+		},
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
 			SecureServing: secureMetrics,
@@ -411,6 +423,7 @@ func main() {
 	}
 	if err = (&workflowcontroller.WorkflowRunReconciler{
 		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
 		Scheme:              mgr.GetScheme(),
 		MetricsClient:       metricsClient,
 		CustomMetricsClient: customMetricsClient,

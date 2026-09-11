@@ -1857,7 +1857,7 @@ No RBAC changes were required: the controller `ClusterRole` already held `secret
 ### Key Constraints
 
 - **Allowlist-filtered**: only keys matching `LLMEnvAllowlist` are injected — `NIRMATA_LLM_TOKEN`, `NIRMATA_LLM_APIKEY`, `NIRMATA_LLM_SERVICEACCOUNT_TOKEN`, `NIRMATA_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and a handful of related model/URL variants. Keys not on the allowlist are silently skipped to prevent accidental leakage of non-LLM secrets stored in the same Secret.
-- **Fail-silent**: a missing or inaccessible Secret is not an error. The Job is created as normal with no injected env vars.
+- **Fail-silent**: a missing Secret is not an error. The Job is created as normal with no injected env vars. An inaccessible (Forbidden) Secret is handled by the preflight described under "Secret RBAC preflight for Nirmata-provider agent steps" below: benign unless the run demonstrably needs the credentials.
 - **Explicit-wins precedence**: any env var already declared in `spec.execution.job.env` on the WorkflowRun overrides an injected value from the well-known Secret.
 - **Deterministic Job spec**: injected keys are sorted alphabetically before appending to the env list, so the resulting Job spec is stable across reconciler runs regardless of Go map iteration order.
 
@@ -1870,6 +1870,216 @@ The Secret name is configurable:
 | `--workflow-runner-llm-credentials-secret` | `WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET` | `""` (disabled) |
 
 The flag/env var is empty by default, so automatic injection is disabled until it is set to a non-empty Secret name. The Helm chart exposes `workflowRunner.llmCredentialsSecret` with the same empty default. A per-run `spec.execution.llmCredentialsSecret` override is also available regardless of the cluster-wide setting. Shipped in v0.6.0.
+
+### Secret RBAC preflight for Nirmata-provider agent steps
+
+The "Fail-silent" constraint above has one exception: a denied read of the well-known LLM
+credentials Secret fails the WorkflowRun terminally when, and only when, the denied read would
+cost the run its credentials — an UNCONDITIONALLY reachable AgentRef targets an Agent whose
+`modelProvider` is `nirmata` (or unset, which the agent-executor treats the same way), and the
+run supplies none of `NIRMATA_LLM_TOKEN` / `NIRMATA_LLM_SERVICEACCOUNT_TOKEN` /
+`NIRMATA_LLM_APIKEY` itself via `spec.execution.job.env`. Every other case — no agent step, a
+non-Nirmata provider, explicit run-supplied credentials, or an agent step whose execution is not
+guaranteed (see "Conditional reachability" below) — is benign: injection is skipped, a
+`LLMCredentialsForbidden` Warning event is recorded (it is recorded in the terminal case as
+well), and the run proceeds.
+
+**Why:** without the preflight, a Forbidden read of the credentials Secret was wrapped in the same
+`transientBuildError` a transient API failure uses, so the reconcile requeued it with backoff
+indefinitely: the run never reached a terminal status and carried no message saying what was
+wrong. A denial is not transient — it is configuration to fix — so the controller now decides
+up front whether the denial matters. The predicate is deliberately conservative: it only ever
+produces a terminal failure in the one case where the run could not have succeeded anyway (an
+unconditionally reachable Nirmata-provider agent step is guaranteed to execute and to hard-fail
+the workflow if it errors, and no agent-executor call succeeds without a token). In every other
+case the denial is downgraded to a skipped injection plus a Warning event, and the run proceeds.
+
+**Conditional reachability:** a build-time walk over the step tree can prove a step is
+*reachable*, never that it is *guaranteed to run*. Three shapes make the difference: a step
+behind non-empty `matchConditions` can evaluate false and never run; a step with
+`failurePolicy: Continue` can fail outright and still let the workflow succeed; a step inside a
+`forEach` can iterate zero times, since `StepForEach.Items` is always a CEL expression string
+whose emptiness can never be proven ahead of execution. Crediting any of those as "needs
+credentials" would turn a run that can succeed without the credentials into a terminal
+build-time failure — exactly the over-reach this predicate must avoid. The predicate
+(`workflowNeedsNirmataLLMCredentials` / `agentStepWalker` in
+`internal/workflow/controller/secret_needs_creds.go`) therefore returns true only for a step that
+is UNCONDITIONALLY reachable: it skips entirely into any step whose own `matchConditions` /
+`failurePolicy` mean it may not run, and skips every `forEach` outright, regardless of the child
+step's own conditions. A build-time verdict is least trustworthy exactly where execution is
+conditional, so the walk declines to render one there.
+
+The check is based on the OUTER, referencing Step's own `matchConditions` / `failurePolicy`
+only — never on a StepTemplate body's copy of those same fields. A StepTemplate's own
+`matchConditions` / `failurePolicy` are inert at runtime: `executeStepTemplate`
+(`steptemplate_executor.go`) merges them into the instantiated step only when the outer step
+doesn't set its own, but `checkMatchConditions` and the `failurePolicy: Continue` handling in the
+workflow loop (`executor.go`) run once, before `executeStep` is ever called, against the original
+referencing Step — never against the instantiated/merged step `executeStepTemplate` builds.
+Treating the template's own fields as if they governed execution would exclude steps that in
+fact run unconditionally, widening the predicate's coverage gap for no reason.
+
+**SelfSubjectAccessReview gate on the injection read:** before `injectWellKnownLLMCredentials`
+issues its Secret `Get`, `canGetSecret` (`internal/workflow/controller/secret_access_review.go`)
+asks the API server, via a `SelfSubjectAccessReview`, whether the controller's own identity is
+currently allowed to `get` the exact resolved `{namespace, name}` the `Get` is about to use — the
+same `key` variable feeds both calls, so a per-run `llmCredentialsSecret` override naming a
+different namespace than the run's own cannot authorize one object while reading another. This
+classifies into three outcomes:
+
+- **allowed:** proceed to the `Get`. The review is a posture measure, not the security
+  control — the `Get`, and the API server behind it, remain authoritative; a grant revoked in the
+  window between the review and the `Get` is still decided correctly, because the `Get` itself
+  is what actually determines the outcome.
+- **denied:** the read is never attempted. The failure carries the same operator remediation a
+  `Get`-`Forbidden` denial has (Role name, Secret name, `rbac.secretAccess`, the `kubectl auth
+  can-i` command) — only the `(underlying error: ...)` clause differs, naming which check caught
+  it (`SecretReadNotAuthorizedFragment` for the gate, the API server's own 403 text for the
+  `Get`) — so an operator gets one consistent fix regardless of which check fired. Unlike the
+  allowed branch, this window is not self-correcting: a grant applied between the review and this
+  decision is not adjudicated here, because the `Get` — the only authoritative check left — is
+  never issued (`injectWellKnownLLMCredentials` returns as soon as the gate denies). The run sees
+  the stale `Forbidden` result until the next reconcile re-runs the gate. This is not a new class
+  of failure: the window is exactly one API round trip wide, and a `Get` issued at that same
+  instant with no gate in front of it would also have observed the pre-grant state and returned
+  `Forbidden`.
+- **inconclusive** (the review's `Create` call itself failed, or its own evaluation could not
+  decide): falls through to the `Get` **unconditionally**. No retry budget, no second wait
+  mechanism, no predicate walk. This is deliberate, not a shortcut: an authorization-webhook
+  outage that makes the review inconclusive makes the `Get` return an Internal Server Error
+  (the API server's `withAuthorization` filter answers an authorizer error with a 500 —
+  `k8s.io/apiserver/pkg/endpoints/filters/authorization.go`), which the existing `Get`-error
+  branch already turns into a `transientBuildError` — a requeue-and-retry. A transient authorizer
+  outage is therefore retried by code that already existed, whether or not the run needs the
+  credentials, with no new mechanism.
+
+The classification ladder mirrors `k8s.io/apiserver`'s own request-authorization order
+(`pkg/endpoints/filters/authorization.go withAuthorization`): an `Allowed` decision wins outright;
+otherwise a non-empty `EvaluationError` is treated as inconclusive (matching the filter's own
+"evaluation error → 500" branch); otherwise the request is denied. `Status.Denied` is deliberately
+**not** consulted as an independent signal: at that filter, an explicit `Deny` and a plain
+`NoOpinion` resolve to the identical 403, so `Denied` adds no decision weight the final arm
+lacks — while a fail-closed authorization-webhook outage sets `Denied=true` **alongside**
+`EvaluationError` (the webhook authorizer returns its `decisionOnError` together with the error,
+and the `SelfSubjectAccessReview` handler sets `Denied` from the decision and `EvaluationError`
+from the error), which must read as inconclusive, not as a confident denial (a
+`Denied`-first ladder would turn an authorizer outage into a spurious terminal
+`SecretAccessDenied`). A plain RBAC denial with no error is the zero value of
+`SubjectAccessReviewStatus` (`Allowed=false, Denied=false, EvaluationError=""`), which the final
+arm covers correctly — this is also why a fail-**open** authorizer outage (the Kubernetes
+default, `decisionOnError = NoOpinion`) reads as inconclusive rather than allowed: it sets
+`EvaluationError` too, just without `Denied`.
+
+`Spec.ResourceAttributes.Version` is set to `"v1"`, matching the Secret `Get`'s own implicit
+authorization attributes. Plain RBAC ignores this field entirely, so setting it costs nothing
+there — but it closes the door on an authorization webhook whose `matchConditions` key on the
+request's `apiVersion`, which could otherwise authorize a version the review never asked about and
+let the review and the read diverge on outcome.
+
+`Status.Reason` on a `SelfSubjectAccessReview` can name the exact RoleBinding, Role, and
+ServiceAccount that grant access (on an allow; a plain RBAC denial carries an empty reason, a
+denial with role-resolution errors carries the raw error text, and a webhook authorizer may
+return anything) — that is exactly the kind of server-influenced content that must never reach a
+tenant-visible message unvetted (see the
+Diagnostic Secret-rules addendum below for why an *analogous* addendum is safe: it sanitizes
+before echoing anything). The gate takes the simpler position and never echoes `Status.Reason` at
+all: the denial cause passed into the shared error path is a fixed, package-local sentinel
+(`errSecretReadNotAuthorized`), never anything built from the review's own response.
+
+`create selfsubjectaccessreviews.authorization.k8s.io` is granted cluster-wide to
+`system:authenticated` by the built-in `system:basic-user` ClusterRole — the same grant the
+`SelfSubjectRulesReview` diagnostic below already relies on — so every install can already issue
+this review; **no chart change is needed**.
+
+**Cost.** No memoisation; the added cost is exactly one extra `SelfSubjectAccessReview` per
+build attempt:
+
+| Outcome | Without the gate | With the gate | Δ |
+|---|---|---|---|
+| Allowed (common case) | 1 `Get` | 1 review + 1 `Get` | **+1 review** |
+| Denied | 1 `Get` (403) + predicate walk | 1 review + predicate walk | **0** — the review *replaces* the denied `Get` |
+| Inconclusive (then `Get` allowed) | 1 `Get` | 1 review + 1 `Get` | +1 review, no predicate walk |
+
+A run that is requeued many times before its Job is created pays the additive (allowed) case once
+per attempt, alongside the uncached Secret `Get` each attempt issues regardless of the gate — a
+small, bounded addition, not a new class of load.
+
+An admission-time review (advisory, warn-only, for apply-time feedback before the controller ever
+reconciles) was considered but deferred: it cannot reach cron- or event-triggered runs, which the
+controller creates itself with no human present to see a warning, so reconcile-time gating remains
+the only mechanism that reaches every run regardless of how it was created.
+
+**Reader consistency:** the predicate's Agent `Get` reads through the controller's direct
+(non-cached) reader, the same one `injectWellKnownLLMCredentials` uses for the Secret `Get` it
+gates. Reading the Agent through the shared/cached client instead would race a batch apply of
+Agent + Workflow + WorkflowRun together: a `NotFound` from a not-yet-synced informer cache would
+resolve as "no Nirmata credentials needed," silently defeating the preflight and letting the run
+reach the generic agent-executor failure this feature exists to eliminate.
+
+**Uncached Secret reads:** the manager's client is built with Secret and ServiceAccount caching
+disabled (`client.CacheOptions.DisableFor` in `cmd/controller/main.go`), so every Secret read the
+controller makes is a live API call: the WorkflowRun reconciler's reads go through the manager's
+direct API reader (`preferAPIReader`); `DisableFor` routes the remaining Secret `Get`s on the
+manager client (the cron trigger's `inputValuesFrom`, the webhook HMAC key) to the API server
+rather than the cache; and the certificate manager reads through a plain clientset, which is
+uncached by nature. A cache-backed `Get` of a typed object starts a cluster-wide list+watch
+informer for that type, so a cached Secret `Get` would require cluster-wide `secrets list, watch`
+RBAC no matter how narrow the individual `Get` looks. With caching disabled, each `Get` is a live
+API call authorized as `get` on that one object — which is what allows Secret access to be granted
+per Secret, per namespace (the shipped chart still grants the controller cluster-wide Secret
+access today; narrowing it is a separate change). The
+trade-off is latency: every Secret read is an API round trip rather than a cache hit.
+
+**Laziness:** the predicate walks the step tree, so `buildWorkflowRunnerJob` defers it into a
+`func() (bool, error)` closure that `injectWellKnownLLMCredentials` calls only from inside
+`handleDeniedLLMCredentialsRead` — reached on either of the two denial paths (the
+`SelfSubjectAccessReview` gate denying the read outright, or the `Get` itself coming back
+`Forbidden`) — never on the happy or inconclusive path, where the Secret read (or the gate's
+own fallthrough) simply proceeds and the answer would have gone unused. This keeps the added
+walk's cost off every run that isn't actually denied access.
+
+**`FailureReason` value contract:** `WorkflowRunStatus.FailureReason` (`api/v1alpha1/workflowrun_types.go`)
+classifies a Failed run's cause for programmatic consumers (alerting, dashboards) that need to
+distinguish specific causes without parsing `Status.Message`. It carries two values today —
+`SecretAccessDenied` (a Secret read or create the **controller ServiceAccount** performed returned
+Forbidden) and `RunnerRefUnresolved` (the kubelet could not resolve a Secret/ConfigMap or one of
+their keys referenced by the runner pod; the value is reserved in the API now so the enum is
+stable, and the detection that sets it lands in a separate change) — and is deliberately small
+and additive: a future cause gets a new value, existing values are never repurposed or removed.
+Empty is NOT itself a claim
+that the run succeeded or that nothing is classifiable about the failure — it means either the run
+has not failed, or it failed for a cause outside this set. `setRunFailed`
+(`internal/workflow/controller/workflowrun_controller.go`) writes the field on every terminal
+Failed transition, including an empty value, so a classification from an earlier attempt (e.g. a
+checkpoint retry that failed for a different reason on retry) can never survive stale. Consumers
+must treat an unrecognised value exactly like an empty one — the usual forward-compatibility
+posture for an enum-valued status field. The controller sets `SecretAccessDenied` from this
+preflight and from `ensureRunnerSecrets` (both of its Secret `Get`s and the cross-namespace
+copy's `Create`): every one of those wraps the sentinel `errSecretAccessDenied`, which
+`secretAccessDeniedReason` checks with `errors.Is`, so any further wrapping on the way to
+`setRunFailed` is harmless.
+
+**Diagnostic Secret-rules addendum (`SelfSubjectRulesReview`):** once a Secret read is denied —
+by either the `SelfSubjectAccessReview` gate above or the `Get`'s own `Forbidden` — and the run
+has already been decided to fail terminally, the controller separately asks the API server which
+Secret rules its own identity holds in the run's namespace and appends what it learns to the
+failure message (`internal/workflow/controller/secret_access_advice.go`). This is diagnosis
+only — distinct from the gate above, which decides whether the read is even attempted; this
+addendum never gates anything, runs strictly after the outcome is already decided, and the
+message carries no addendum at all whenever the lookup is skipped or inconclusive. On a
+gate-caught denial, `secretAccessAdvice`'s Arm A (a full grant match) becomes the concrete
+authorization-webhook or TOCTOU signal Arm A's own doc comment names: the review said denied, yet
+the rules lookup says the identity currently holds the grant. It exists because a Role that grants
+access to the wrong Secret name produces the exact same bare 403 as no Role at all; naming what is
+actually granted, versus what the read needs, tells the two apart. `resourceNames` in an RBAC rule
+has no wildcard support: an absent `resourceNames` list grants every name, but a literal `"*"`
+entry in that list grants access to a Secret literally named `*` and nothing else — verbs,
+apiGroups, and resources all honor `"*"` as a wildcard, so treating `resourceNames` the same way
+would misreport that Role as a full grant. The lookup is never issued for any namespace other than
+the run's own, so a Secret in the controller's install namespace never has that namespace's RBAC
+rules described in a tenant-visible status. And because the API server authorizes a read before
+it looks the object up, a 403 says nothing about whether the Secret exists — this addendum can
+only ever speak to permission; it is never evidence the Secret exists.
 
 ---
 

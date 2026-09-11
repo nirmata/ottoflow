@@ -2513,7 +2513,7 @@ func newTestReconcilerWithSecret(t *testing.T, secretData map[string][]byte, sec
 
 func TestInjectWellKnownLLMCredentials_SecretAbsent(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t, nil, "ottoflow-llm-credentials")
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2525,7 +2525,7 @@ func TestInjectWellKnownLLMCredentials_SecretAbsent(t *testing.T) {
 func TestInjectWellKnownLLMCredentials_FeatureDisabled(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t, map[string][]byte{testLLMTokenKey: []byte("tok")}, "")
 	r.RunnerConfig.LLMCredentialsSecret = "" // disable
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2539,7 +2539,7 @@ func TestInjectWellKnownLLMCredentials_SecretPresent(t *testing.T) {
 		map[string][]byte{testLLMTokenKey: []byte("tok")},
 		"ottoflow-llm-credentials",
 	)
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2568,7 +2568,7 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	)
 	// NIRMATA_LLM_TOKEN is already set explicitly in spec.execution.job.env
 	existing := map[string]struct{}{testLLMTokenKey: {}}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, existing)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, existing, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2598,7 +2598,7 @@ func TestInjectWellKnownLLMCredentials_NonAllowlistKeyFiltered(t *testing.T) {
 		},
 		"ottoflow-llm-credentials",
 	)
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2733,7 +2733,7 @@ func TestInjectWellKnownLLMCredentials_PerRunSecretOverridesDefault(t *testing.T
 			Name: customSecretName,
 		},
 	}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2757,7 +2757,7 @@ func TestInjectWellKnownLLMCredentials_PerRunSecretDisablesDefault(t *testing.T)
 			Name: "nonexistent-secret",
 		},
 	}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3069,4 +3069,17 @@ func TestWatchResource_LabelSelectorExclusion_WorkflowRunKind(t *testing.T) {
 	if parsed.Matches(ownWorkflowRun) {
 		t.Errorf("selector %q should exclude this Workflow's own runs (label ottoflow.nirmata.io/workflow=%s)", got, wf.Name)
 	}
+}
+
+func staticNeedsCreds(v bool) func() (bool, error) { return func() (bool, error) { return v, nil } }
+
+func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey) bool, errFor func(key client.ObjectKey) error) client.WithWatch {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok && (match == nil || match(key)) {
+				return errFor(key)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
 }

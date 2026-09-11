@@ -90,6 +90,8 @@ func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
 // WorkflowRunReconciler reconciles a WorkflowRun object
 type WorkflowRunReconciler struct {
 	client.Client
+	// APIReader is a direct (non-cached) reader used for Secret reads.
+	APIReader           client.Reader
 	Scheme              *runtime.Scheme
 	MetricsClient       metricsclientset.Interface
 	CustomMetricsClient executor.CustomMetricsClient
@@ -206,7 +208,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), "")
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -218,7 +220,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err), "")
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -227,7 +229,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		sourceNamespace := runnerSecretSourceNamespace(r.RunnerConfig, workflowNamespace)
 		if err := r.ensureRunnerSecrets(ctx, workflowRun, createdJob, sourceNamespace); err != nil {
 			logger.Error(err, "failed to ensure runner secrets", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), "")
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -636,6 +638,7 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 	ctx context.Context,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	existingEnvNames map[string]struct{},
+	needsCreds func() (bool, error),
 ) ([]corev1.EnvVar, error) {
 	secretName := r.RunnerConfig.LLMCredentialsSecret
 	secretNamespace := workflowRun.Namespace
@@ -653,12 +656,43 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 		return nil, nil
 	}
 
-	secret := &corev1.Secret{}
+	// Built once and reused for both the review below and the Get further down: the per-run
+	// override above can point this read at a namespace other than workflowRun.Namespace, so
+	// building the review's attributes from workflowRun.Namespace would authorize one object
+	// while the Get reads another.
 	key := types.NamespacedName{Namespace: secretNamespace, Name: secretName}
-	if err := r.Get(ctx, key, secret); err != nil {
+
+	allowed, reviewErr := canGetSecret(ctx, r.Client, key)
+	if reviewErr != nil {
+		// Inconclusive: fall through to the Get unconditionally. No needsCreds() call here —
+		// the Get is the authoritative answer, including its own retry behavior on a genuine
+		// authorizer outage (see canGetSecret's doc comment).
+		klog.V(2).InfoS("SelfSubjectAccessReview for well-known LLM credentials Secret was "+
+			"inconclusive; falling through to the authoritative read",
+			"namespace", key.Namespace, "secret", key.Name, "err", reviewErr)
+	} else if !allowed {
+		if err := r.handleDeniedLLMCredentialsRead(ctx, workflowRun, key, needsCreds, errSecretReadNotAuthorized); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.directReader().Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil // namespace hasn't created a well-known Secret; not an error
 		}
+		if apierrors.IsForbidden(err) {
+			if hErr := r.handleDeniedLLMCredentialsRead(ctx, workflowRun, key, needsCreds, err); hErr != nil {
+				return nil, hErr
+			}
+			return nil, nil
+		}
+		// Also the retry path for the inconclusive-plus-authorizer-outage case: when
+		// canGetSecret falls through because the review itself was inconclusive during a
+		// genuine authorization-webhook outage, this Get returns an Internal Server Error
+		// (measured), landing here rather than the Forbidden branch above — so an inconclusive
+		// review during an outage is retried, never treated as terminal.
 		return nil, &transientBuildError{err: fmt.Errorf("get well-known LLM credentials Secret %s: %w", key, err)}
 	}
 
@@ -671,21 +705,21 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 	var extras []corev1.EnvVar
 	var matched int
 	var skippedKeys []string
-	for key := range secret.Data {
-		if _, allowed := allowlist[key]; !allowed {
-			skippedKeys = append(skippedKeys, key)
+	for dataKey := range secret.Data {
+		if _, allowed := allowlist[dataKey]; !allowed {
+			skippedKeys = append(skippedKeys, dataKey)
 			continue // not a recognized LLM env var — skip
 		}
 		matched++
-		if _, exists := existingEnvNames[key]; exists {
+		if _, exists := existingEnvNames[dataKey]; exists {
 			continue // explicit spec.execution.job.env entry wins
 		}
 		extras = append(extras, corev1.EnvVar{
-			Name: key,
+			Name: dataKey,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  key,
+					Key:                  dataKey,
 				},
 			},
 		})
@@ -745,18 +779,24 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 		}
 		existing := &corev1.Secret{}
 		runnerKey := types.NamespacedName{Namespace: runnerNamespace, Name: secretName}
-		err := r.Get(ctx, runnerKey, existing)
+		err := r.directReader().Get(ctx, runnerKey, existing)
 		if err == nil {
 			continue // secret already exists in runner namespace
+		}
+		if apierrors.IsForbidden(err) {
+			return r.forbiddenSecretRoleError(ctx, runnerKey, workflowRun.Namespace, err)
 		}
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err)
 		}
 		sourceSecret := &corev1.Secret{}
 		sourceKey := types.NamespacedName{Namespace: sourceNamespace, Name: secretName}
-		if err := r.Get(ctx, sourceKey, sourceSecret); err != nil {
+		if err := r.directReader().Get(ctx, sourceKey, sourceSecret); err != nil {
 			if apierrors.IsNotFound(err) {
 				return fmt.Errorf("secret %q not found in runner namespace %q or source namespace %q", secretName, runnerNamespace, sourceNamespace)
+			}
+			if apierrors.IsForbidden(err) {
+				return r.forbiddenSecretRoleError(ctx, sourceKey, workflowRun.Namespace, err)
 			}
 			return fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err)
 		}
@@ -778,6 +818,9 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 		if err := r.Create(ctx, copySecret); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				continue // another reconciler or user created it
+			}
+			if apierrors.IsForbidden(err) {
+				return forbiddenSecretCopyError(sourceKey, runnerKey, err)
 			}
 			return fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err)
 		}
@@ -860,7 +903,15 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	for _, e := range podEnv {
 		existingEnvNames[e.Name] = struct{}{}
 	}
-	wellKnownEnv, err := r.injectWellKnownLLMCredentials(ctx, workflowRun, existingEnvNames)
+	llmSecretConfigured := r.RunnerConfig.LLMCredentialsSecret != "" ||
+		(workflowRun.Spec.Execution != nil && workflowRun.Spec.Execution.LLMCredentialsSecret != nil)
+	needsCreds := func() (bool, error) {
+		if !llmSecretConfigured || hasExplicitNirmataCreds(podEnv) {
+			return false, nil
+		}
+		return workflowNeedsNirmataLLMCredentials(ctx, r.Client, r.directReader(), workflow, workflowRun.Namespace)
+	}
+	wellKnownEnv, err := r.injectWellKnownLLMCredentials(ctx, workflowRun, existingEnvNames, needsCreds)
 	if err != nil {
 		return nil, err
 	}
@@ -1259,10 +1310,7 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 // PendingCallback so the recreated runner can consume the delivered callback outputs.
 //
 // reason is the classified cause recorded in Status.FailureReason. "" leaves the field unset,
-// which is correct for any failure without a well-known classification; every current caller
-// reports such a failure, so every call passes "".
-//
-//nolint:unparam // every current caller passes "" for reason; see the note above.
+// which is correct for any failure without a well-known classification.
 func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string, reason ottoflowv1alpha1.WorkflowRunFailureReason) {
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
 	workflowRun.Status.Message = message
