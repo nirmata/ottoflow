@@ -906,13 +906,23 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 			},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
+	// The workflow has an agent step so that the AgentExecutorCASecret wiring asserted below is
+	// exercised: the CA is mounted only into runners whose workflow reaches the agent-executor.
+	agentCRD := &ottoflowv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "agent1"},
+		Spec:       ottoflowv1alpha1.AgentSpec{Prompt: "do stuff", ModelProvider: "openai"},
+	}
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", AgentRef: &ottoflowv1alpha1.StepAgentRef{Name: "agent1"}}}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(agentCRD).Build()
 	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{
 		AgentExecutorCASecret: "ca-secret",
 		ImagePullSecrets:      "pull1,pull2",
 		PodLabelsPartOf:       "my-app",
 	}}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)
 	if err != nil {
 		t.Fatal(err)
 	}

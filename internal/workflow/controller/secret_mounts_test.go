@@ -254,6 +254,84 @@ func TestBuildWorkflowRunnerJob_AgentExecutorCAVolumeNameCollision(t *testing.T)
 	}
 }
 
+// TestBuildWorkflowRunnerJob_AgentExecutorCAMountedOnlyForAgentSteps pins the condition under
+// which buildWorkflowRunnerJob mounts the agent-executor CA: RunnerConfig.AgentExecutorCASecret
+// is set AND the workflow reaches an AgentRef step (workflowNeedsAgentExecutor, including through
+// a workflowRef sub-workflow). A runner without an agent step never calls the agent-executor, and
+// the volume names a Secret the run namespace must hold, so mounting it there would only make
+// ensureRunnerSecrets fail a run that has no use for the CA.
+func TestBuildWorkflowRunnerJob_AgentExecutorCAMountedOnlyForAgentSteps(t *testing.T) {
+	ns := defaultNamespace
+	agentCRD := &ottoflowv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "agent1"},
+		Spec:       ottoflowv1alpha1.AgentSpec{Prompt: "do stuff", ModelProvider: "openai"},
+	}
+	expressionsOnly := []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}
+	agentStep := []ottoflowv1alpha1.Step{{Name: "s1", AgentRef: &ottoflowv1alpha1.StepAgentRef{Name: "agent1"}}}
+	subWithAgent := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "sub", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: agentStep},
+	}
+	viaWorkflowRef := []ottoflowv1alpha1.Step{{Name: "s1", WorkflowRef: &ottoflowv1alpha1.StepWorkflowRef{Name: "sub"}}}
+
+	cases := []struct {
+		name      string
+		steps     []ottoflowv1alpha1.Step
+		caSecret  string
+		wantMount bool
+	}{
+		{name: "expressions only, CA configured: not mounted", steps: expressionsOnly, caSecret: "ca-secret", wantMount: false},
+		{name: "agentRef step, CA configured: mounted", steps: agentStep, caSecret: "ca-secret", wantMount: true},
+		{name: "agentRef only inside a workflowRef sub-workflow, CA configured: mounted", steps: viaWorkflowRef, caSecret: "ca-secret", wantMount: true},
+		{name: "agentRef step, CA not configured: not mounted", steps: agentStep, caSecret: "", wantMount: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: tc.steps},
+			}
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf, wr, agentCRD, subWithAgent).Build()
+			r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{AgentExecutorCASecret: tc.caSecret}}
+
+			job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)
+			if err != nil {
+				t.Fatalf("buildWorkflowRunnerJob: %v", err)
+			}
+			var vol *corev1.Volume
+			for i := range job.Spec.Template.Spec.Volumes {
+				if job.Spec.Template.Spec.Volumes[i].Name == "agent-executor-ca" {
+					vol = &job.Spec.Template.Spec.Volumes[i]
+				}
+			}
+			var mount *corev1.VolumeMount
+			for _, c := range job.Spec.Template.Spec.Containers {
+				for i := range c.VolumeMounts {
+					if c.VolumeMounts[i].MountPath == "/etc/ottoflow/agent-executor-ca" {
+						mount = &c.VolumeMounts[i]
+					}
+				}
+			}
+			if !tc.wantMount {
+				if vol != nil || mount != nil {
+					t.Fatalf("agent-executor CA must not be mounted: volume=%+v mount=%+v", vol, mount)
+				}
+				return
+			}
+			if vol == nil || vol.Secret == nil || vol.Secret.SecretName != tc.caSecret {
+				t.Fatalf("agent-executor-ca volume missing or not backed by Secret %q: %+v", tc.caSecret, vol)
+			}
+			if mount == nil || mount.Name != "agent-executor-ca" || !mount.ReadOnly {
+				t.Fatalf("read-only agent-executor-ca mount at /etc/ottoflow/agent-executor-ca missing: %+v", mount)
+			}
+		})
+	}
+}
+
 func TestBuildWorkflowRunnerJob_CrossNamespaceRefRejected(t *testing.T) {
 	ns := defaultNamespace
 	wf := &ottoflowv1alpha1.Workflow{

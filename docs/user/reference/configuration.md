@@ -102,7 +102,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-service-account` | `WORKFLOW_RUNNER_SERVICE_ACCOUNT` | (empty) → derived `{workflow}-runner` | Service account for the runner Job |
 | `--workflow-runner-cluster-role` | `WORKFLOW_RUNNER_CLUSTER_ROLE` | required (controller refuses to start if unset); the Helm chart sets `<fullname>-runner-role` (narrowed, runner-only role) | ClusterRole name for runner Job RBAC |
 | `--agent-executor-caller-cluster-role` | `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` | (empty) | ClusterRole for agent-executor caller RBAC; empty disables |
-| `--workflow-runner-agent-executor-ca-secret` | | (empty) | Secret name in run namespace for agent-executor CA (internal TLS); empty disables CA mount in runner |
+| `--workflow-runner-agent-executor-ca-secret` | | (empty) | Secret name in run namespace for agent-executor CA (internal TLS), mounted only into runner Jobs whose workflow has an agent step; empty disables CA mount in runner |
 | `--secret-source-namespace` | | (empty) | Namespace to copy runner Secret-backed volumes from when missing |
 | `--workflow-runner-image-pull-secrets` | `WORKFLOW_RUNNER_IMAGE_PULL_SECRETS` | (empty) | Comma-separated Secret names for runner pod `imagePullSecrets` |
 | `--workflow-runner-image-pull-policy` | `WORKFLOW_RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | Runner container `imagePullPolicy` |

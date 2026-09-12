@@ -35,9 +35,8 @@ const nirmataModelProvider = "nirmata"
 // executeAgentViaExecHTTP): MCPToolCall connects straight to its target MCPServer from the
 // runner pod and never goes through agent-executor, and ExternalAgentRef calls an external
 // A2A endpoint, not our own agent-executor. So AgentRef presence is exactly the condition
-// under which a runner Job needs the agent-executor CA mounted. Today buildWorkflowRunnerJob
-// mounts that CA whenever RunnerConfig.AgentExecutorCASecret is set, without consulting this
-// predicate, so its only callers are this package's tests.
+// under which a runner Job needs the agent-executor CA mounted: buildWorkflowRunnerJob mounts
+// that CA only when RunnerConfig.AgentExecutorCASecret is set and this predicate reports true.
 //
 // This intentionally does NOT reuse secretRefWalker/collectSecretRefs: that walk also fetches
 // every reachable MCPServer (and the Agent CRD behind each AgentRef, for its MCPTools) and is
@@ -48,8 +47,6 @@ const nirmataModelProvider = "nirmata"
 // memory plus StepTemplate/Workflow CRDs (the same two kinds collectSecretRefs fetches for the
 // same reason: expanding StepTemplateRef/WorkflowRef requires reading them), with the same
 // cycle (visitedKey) and depth (maxWorkflowRefDepth) guards collectSecretRefs uses.
-//
-//nolint:unparam // only tests call this today and each passes the same runNamespace; see above.
 func workflowNeedsAgentExecutor(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow, runNamespace string) (bool, error) {
 	// agentReader==c: requireNirmataProvider is false, so agentRefNeeds returns before ever
 	// touching agentReader (see its doc comment) — this walk never fetches an Agent.

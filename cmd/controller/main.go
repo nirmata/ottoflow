@@ -124,7 +124,8 @@ func main() {
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
 	flag.StringVar(&workflowRunnerAgentExecutorCASecret, "workflow-runner-agent-executor-ca-secret", "",
-		"Secret name in run namespace for agent-executor CA (internal TLS); empty disables CA mount (optional).")
+		"Secret name in run namespace for agent-executor CA (internal TLS), mounted only into runner Jobs "+
+			"whose workflow has an agent step; empty disables CA mount (optional).")
 	flag.StringVar(&secretSourceNamespace, "secret-source-namespace", "",
 		"Namespace to copy runner Secret-backed volumes from when missing (optional; default: workflow namespace).")
 	flag.StringVar(&workflowRunnerImagePullSecrets, "workflow-runner-image-pull-secrets",

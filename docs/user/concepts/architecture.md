@@ -153,7 +153,7 @@ After patching, the controller pod restarts with the new flag. All subsequent Wo
 
 - The agent-executor serves **HTTPS only** (port 8443, TLS 1.2+)
 - The controller provisions a self-signed CA and TLS certificate for the agent-executor Service using the internal cert controller (no cert-manager required)
-- Runner pods mount the agent-executor CA secret (configured via `--workflow-runner-agent-executor-ca-secret` on the controller) so they can verify the agent-executor's certificate
+- Runner pods for workflows that have an agent step mount the agent-executor CA secret (configured via `--workflow-runner-agent-executor-ca-secret` on the controller) so they can verify the agent-executor's certificate; a runner with no agent step never calls the agent-executor and does not mount it
 - Callers are authenticated via Kubernetes SubjectAccessReview: the agent-executor checks that the calling identity has `get` on `configmaps/agent-executor-caller` in the configured namespace
 - LLM credentials (e.g., `NIRMATA_LLM_TOKEN`) are injected into runner pods via Kubernetes Secret references in `WorkflowRun.spec.execution.job.env`; the runner forwards them to the agent-executor via the `X-LLM-Env` header (base64-encoded JSON)
 

@@ -50,7 +50,7 @@ type RunnerConfig struct {
 	RunnerServiceAccount    string // default: controller-manager
 	RunnerClusterRole       string // required; validated non-empty at controller startup (no default)
 	AgentExecutorCallerRole string // empty disables RBAC-based agent-executor auth
-	AgentExecutorCASecret   string // Secret name in run namespace for agent-executor CA (internal TLS); empty disables mount
+	AgentExecutorCASecret   string // Secret name in run namespace for agent-executor CA (internal TLS), mounted only into runners whose workflow has an agent step; empty disables mount
 	AgentExecutorNamespace  string // namespace where agent-executor is deployed; empty uses "ottoflow"
 	SecretSourceNamespace   string // empty uses workflow namespace
 	PrometheusURL           string // when set, passed to every runner Job (env-specific; not part of workflow spec)
@@ -920,31 +920,43 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	podEnv = append(podEnv, wellKnownEnv...)
 
-	// Optionally mount agent-executor CA so the runner can verify internal TLS (secret must exist in run namespace).
+	// Mount the agent-executor CA so the runner can verify internal TLS, but only for a workflow
+	// that reaches an AgentRef step (directly, or through ForEach, StepTemplateRef or
+	// WorkflowRef). AgentRef is the only step type that calls the agent-executor, so a runner
+	// without one never verifies its certificate and has no use for the CA. The volume names a
+	// Secret that must exist in the run namespace and that ensureRunnerSecrets reads before the
+	// Job is created, so mounting it into every runner would fail every run in a namespace that
+	// holds neither that Secret nor a grant to read it.
 	if caSecret := r.RunnerConfig.AgentExecutorCASecret; caSecret != "" {
-		const agentExecutorCAVolumeName = "agent-executor-ca"
-		for _, v := range volumes {
-			if v.Name == agentExecutorCAVolumeName {
-				return nil, fmt.Errorf(
-					"cannot mount the agent-executor CA: a volume named %q already exists on the "+
-						"runner Job pod spec (likely from spec.execution.job.volumes); rename that "+
-						"volume to resolve the conflict", agentExecutorCAVolumeName)
-			}
+		needsAgentExecutor, err := workflowNeedsAgentExecutor(ctx, r.Client, workflow, workflowRun.Namespace)
+		if err != nil {
+			return nil, err
 		}
-		volumes = append(volumes, corev1.Volume{
-			Name: "agent-executor-ca",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: caSecret,
-					Items:      []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}},
+		if needsAgentExecutor {
+			const agentExecutorCAVolumeName = "agent-executor-ca"
+			for _, v := range volumes {
+				if v.Name == agentExecutorCAVolumeName {
+					return nil, fmt.Errorf(
+						"cannot mount the agent-executor CA: a volume named %q already exists on the "+
+							"runner Job pod spec (likely from spec.execution.job.volumes); rename that "+
+							"volume to resolve the conflict", agentExecutorCAVolumeName)
+				}
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: agentExecutorCAVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: caSecret,
+						Items:      []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}},
+					},
 				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "agent-executor-ca",
-			MountPath: "/etc/ottoflow/agent-executor-ca",
-			ReadOnly:  true,
-		})
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      agentExecutorCAVolumeName,
+				MountPath: "/etc/ottoflow/agent-executor-ca",
+				ReadOnly:  true,
+			})
+		}
 	}
 
 	secretRefs, err := collectSecretRefs(ctx, r.Client, workflow, workflowRun)

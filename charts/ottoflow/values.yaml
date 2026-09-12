@@ -351,9 +351,12 @@ workflowRunner:
   # Set to a Secret name to enable cluster-level injection, or use spec.execution.llmCredentialsSecret per run.
   llmCredentialsSecret: ""
 
-  # When set, the runner Job pod gets a volume with this Secret (tls.crt as ca.crt at /etc/ottoflow/agent-executor-ca)
-  # so the runner can verify agent-executor TLS. Required when agentExecutor.tls.internal is enabled and runs use a different namespace.
-  # Secret must exist in each WorkflowRun namespace. Defaults to the same CA secret name as the controller when agent executor TLS is internal.
+  # When set, the runner Job pod of a workflow that has an agent step gets a volume with this Secret
+  # (tls.crt as ca.crt at /etc/ottoflow/agent-executor-ca) so the runner can verify agent-executor TLS. A runner
+  # whose workflow has no agent step never calls the agent-executor and does not mount it. Required when
+  # agentExecutor.tls.internal is enabled and agent workflows run in a different namespace. The Secret must exist
+  # in each namespace that runs such WorkflowRuns. Defaults to the same CA secret name as the controller when
+  # agent executor TLS is internal.
   agentExecutorCASecret: ""
 
 # serve-a2a exposure configuration.
