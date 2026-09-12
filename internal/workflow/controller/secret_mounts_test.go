@@ -258,8 +258,8 @@ func TestBuildWorkflowRunnerJob_AgentExecutorCAVolumeNameCollision(t *testing.T)
 // which buildWorkflowRunnerJob mounts the agent-executor CA: RunnerConfig.AgentExecutorCASecret
 // is set AND the workflow reaches an AgentRef step (workflowNeedsAgentExecutor, including through
 // a workflowRef sub-workflow). A runner without an agent step never calls the agent-executor, and
-// the volume names a Secret the run namespace must hold, so mounting it there would only make
-// ensureRunnerSecrets fail a run that has no use for the CA.
+// the volume names a ConfigMap ensureAgentExecutorCA publishes into the run namespace, so mounting
+// it there would only make a run that has no use for the CA depend on that publication.
 func TestBuildWorkflowRunnerJob_AgentExecutorCAMountedOnlyForAgentSteps(t *testing.T) {
 	ns := defaultNamespace
 	agentCRD := &ottoflowv1alpha1.Agent{
@@ -322,8 +322,14 @@ func TestBuildWorkflowRunnerJob_AgentExecutorCAMountedOnlyForAgentSteps(t *testi
 				}
 				return
 			}
-			if vol == nil || vol.Secret == nil || vol.Secret.SecretName != tc.caSecret {
-				t.Fatalf("agent-executor-ca volume missing or not backed by Secret %q: %+v", tc.caSecret, vol)
+			if vol == nil || vol.ConfigMap == nil || vol.ConfigMap.Name != tc.caSecret {
+				t.Fatalf("agent-executor-ca volume missing or not backed by ConfigMap %q: %+v", tc.caSecret, vol)
+			}
+			if vol.Secret != nil {
+				t.Fatalf("agent-executor-ca volume must not be Secret-backed: %+v", vol)
+			}
+			if len(vol.ConfigMap.Items) != 1 || vol.ConfigMap.Items[0].Key != "ca.crt" || vol.ConfigMap.Items[0].Path != "ca.crt" {
+				t.Fatalf("agent-executor-ca volume must project ca.crt -> ca.crt: %+v", vol.ConfigMap.Items)
 			}
 			if mount == nil || mount.Name != "agent-executor-ca" || !mount.ReadOnly {
 				t.Fatalf("read-only agent-executor-ca mount at /etc/ottoflow/agent-executor-ca missing: %+v", mount)

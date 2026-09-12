@@ -937,7 +937,7 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 	}
 	var foundCA bool
 	for _, v := range job.Spec.Template.Spec.Volumes {
-		if v.Name == "agent-executor-ca" && v.Secret != nil && v.Secret.SecretName == "ca-secret" {
+		if v.Name == "agent-executor-ca" && v.ConfigMap != nil && v.ConfigMap.Name == "ca-secret" {
 			foundCA = true
 			break
 		}

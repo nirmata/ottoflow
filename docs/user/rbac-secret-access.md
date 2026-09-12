@@ -367,6 +367,53 @@ them by name (so it needs no `list`/`watch` Secret informer).
 > (it defaults to the install namespace) unless you also add an equivalent Role in the namespace
 > you point it at.
 
+## The agent-executor CA reaches tenant namespaces as a ConfigMap, not a Secret
+
+A runner Job whose workflow has an agent step verifies the agent-executor's TLS certificate
+against the internal CA. That CA is one of the four cert Secrets above, it lives only in the
+install namespace, and no Secret access is granted anywhere else — so the runner never reads that
+Secret and the controller never copies it. Instead, before it creates the runner Job, the
+controller publishes the CA **certificate only** (`tls.crt`; never `tls.key`) as a ConfigMap in
+the WorkflowRun's namespace, named after the CA Secret
+(`--workflow-runner-agent-executor-ca-secret`, chart value `workflowRunner.agentExecutorCASecret`,
+default `<agent-executor>.<install-namespace>.svc.tls-ca`), and mounts that ConfigMap into the
+runner Job as `ca.crt`. A certificate is public material; a ConfigMap needs none of the Secret
+RBAC this document is about, and the controller's ClusterRole already lets it create, read and
+update ConfigMaps. Nothing has to be created or granted in the tenant namespace. A workflow
+without an agent step gets neither the ConfigMap nor the mount.
+
+The ConfigMap is labelled `app.kubernetes.io/part-of: ottoflow` and has no owner: it is shared by
+every run in the namespace and stays until the namespace goes. The controller rewrites it
+whenever the certificate it holds differs from the current CA, so a CA rotation reaches a
+namespace on its next run with an agent step (a runner already running at that moment keeps the
+CA it loaded at start-up). A ConfigMap of that name **without** the label is neither trusted nor
+overwritten: the run fails with a message naming it, so that nobody with `configmaps create` in a
+tenant namespace can hand the runners there a CA of their choosing. Rename or delete such a
+ConfigMap to let the controller publish the CA under that name.
+
+> **Secret copies left by earlier releases.** Earlier releases delivered the CA to a tenant
+> namespace by copying the **whole** CA Secret into it — `tls.crt` and `tls.key`, the CA's
+> private key. The controller neither reads nor deletes those copies now: it holds no `secrets
+> delete` outside the install namespace and this document grants it none, so they stay until
+> removed. Each copy carries an owner reference to the WorkflowRun whose reconcile created it
+> and is garbage-collected with that run; until then anyone who can read Secrets in that
+> namespace can read the private key. Find them — every row outside the install namespace is a
+> leftover:
+>
+> ```bash
+> kubectl get secrets --all-namespaces \
+>   --field-selector metadata.name=<agent-executor-ca-secret-name> \
+>   -l app.kubernetes.io/part-of=ottoflow \
+>   -o custom-columns=NAMESPACE:.metadata.namespace,NAME:.metadata.name,AGE:.metadata.creationTimestamp
+> ```
+>
+> Delete them with your own identity (`kubectl delete secret <name> -n <tenant-namespace>`);
+> runners no longer depend on them. If such a copy sat in a namespace whose Secret readers you do
+> not trust, treat the CA as exposed and rotate it: delete the CA Secret in the install namespace
+> and restart the controller, which regenerates the CA and re-issues the agent-executor
+> certificate (see "Recovering a deleted cert Secret" above); the tenant ConfigMaps pick the new
+> CA up on their namespaces' next agent-step runs.
+
 ## No migration needed for the cert Secrets
 
 No released chart ever shipped the four cert Secrets as manifests, so there is no upgrade or

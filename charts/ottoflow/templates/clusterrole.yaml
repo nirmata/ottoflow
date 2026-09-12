@@ -76,7 +76,9 @@ rules:
       - get
       - patch
       - update
-  # ConfigMaps - workflow execution context (runner)
+  # ConfigMaps - workflow execution context (runner), and the agent-executor CA certificate the
+  # controller publishes (create/get/update) into each namespace that runs a workflow with an
+  # agent step, so runner Jobs there can verify agent-executor TLS without any Secret access.
   - apiGroups:
       - ""
     resources:
