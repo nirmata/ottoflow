@@ -5,3 +5,13 @@ controller:
     - --leader-elect
     # Copy agent-executor TLS CA from install ns when WorkflowRun is in another namespace (e.g. default).
     - --secret-source-namespace=ottoflow
+  # Serve Workflows as MCP tools on <release>-mcp.<namespace>.svc:8084/mcp. The hardening
+  # suite points an MCPServer at this endpoint with a bearer token read from a Secret, so a
+  # mcpToolCall step can be exercised end-to-end against a real, authenticating server.
+  # The container listens on 8085, not the chart default 8084: the controller's callback
+  # server already binds :8084 (cmd/controller/main.go), and a second listener there makes
+  # the leader exit with "address already in use". The Service keeps port 8084 and targets
+  # the named container port, so the endpoint above is unchanged.
+  mcp:
+    enabled: true
+    addr: ":8085"

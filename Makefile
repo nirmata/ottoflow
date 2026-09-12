@@ -165,7 +165,14 @@ test-e2e: ## Run e2e tests (expects a kube cluster; use test-e2e-kind to create 
 	# waits on cron fires give it no headroom. Well under the workflow's
 	# timeout-minutes, which also has to cover setup, so a real hang panics
 	# with a goroutine dump instead of the runner killing the job silently.
-	go test -tags e2e ./test/e2e/ -v -ginkgo.v -count=1 -timeout 20m
+	go test -tags e2e ./test/e2e/ -v -ginkgo.v -count=1 -timeout 20m -ginkgo.label-filter='!hardening'
+
+.PHONY: test-e2e-hardening
+test-e2e-hardening: ## Run only the hardening e2e specs (expects a kube cluster; see test-e2e).
+	# Excluded from test-e2e because they assert the break-by-default Secret posture and
+	# need their own budget: the PR-gating e2e job is sized for the functional suite, not
+	# for these.
+	go test -tags e2e ./test/e2e/ -v -ginkgo.v -count=1 -timeout 60m -ginkgo.label-filter='hardening'
 
 KIND_CLUSTER ?= kind
 .PHONY: test-e2e-kind
