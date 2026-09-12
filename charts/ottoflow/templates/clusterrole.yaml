@@ -89,19 +89,6 @@ rules:
       - patch
       - update
       - watch
-  # Secrets - cluster ref, agent auth, image pull (runner); internal cert (if used)
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
   # ServiceAccounts - bootstrap runner Job identity (create + get only)
   - apiGroups:
       - ""
@@ -251,6 +238,7 @@ rules:
       - {{ include "ottoflow.serveA2AClusterRole" . }}
 {{- end }}
 {{- if and .Values.rbac.coreClusterRole .Values.rbac.coreClusterRole.extraResources }}
+  {{- include "ottoflow.assertNoSecretsInExtraResources" (list .Values.rbac.coreClusterRole.extraResources "rbac.coreClusterRole.extraResources") }}
   {{- toYaml .Values.rbac.coreClusterRole.extraResources | nindent 2 }}
 {{- end }}
 ---
@@ -416,6 +404,7 @@ rules:
       - get
       - list
 {{- if and .Values.rbac.viewClusterRole .Values.rbac.viewClusterRole.extraResources }}
+  {{- include "ottoflow.assertNoSecretsInExtraResources" (list .Values.rbac.viewClusterRole.extraResources "rbac.viewClusterRole.extraResources") }}
   {{- toYaml .Values.rbac.viewClusterRole.extraResources | nindent 2 }}
 {{- end }}
 ---
@@ -467,15 +456,6 @@ rules:
       - patch
       - update
       - watch
-  # Secrets - cluster ref, agent auth, image pull
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
-      - list
-      - watch
   # Jobs - ForEach and sub-step monitoring
   - apiGroups:
       - batch
@@ -513,6 +493,7 @@ rules:
     verbs:
       - create
 {{- if and .Values.rbac.runnerClusterRole .Values.rbac.runnerClusterRole.extraResources }}
+  {{- include "ottoflow.assertNoSecretsInExtraResources" (list .Values.rbac.runnerClusterRole.extraResources "rbac.runnerClusterRole.extraResources") }}
   {{- toYaml .Values.rbac.runnerClusterRole.extraResources | nindent 2 }}
 {{- end }}
 ---
@@ -546,6 +527,7 @@ metadata:
     rbac.ottoflow.io/aggregate-to-controller: "true"
     rbac.ottoflow.io/aggregate-instance: {{ include "ottoflow.fullname" . }}
 rules:
+  {{- include "ottoflow.assertNoSecretsInExtraResources" (list .Values.rbac.clusterRole.extraResources "rbac.clusterRole.extraResources") }}
   {{- toYaml .Values.rbac.clusterRole.extraResources | nindent 2 }}
 {{- end }}
 {{- end }}

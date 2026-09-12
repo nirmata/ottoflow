@@ -311,3 +311,48 @@ Workflow Runner image
 {{- end }}
 {{- end }}
 {{- end }}
+
+{{/*
+Webhook TLS pair secret name (kyverno/pkg format: serviceName.namespace.svc.tls-pair)
+ServiceName is the webhook Service (deployment.yaml sets WEBHOOK_SERVICE_NAME to this same value),
+so it matches the name the controller's in-process cert manager computes at runtime.
+*/}}
+{{- define "ottoflow.webhook.tlsSecretName" -}}
+{{- printf "%s-webhook.%s.svc.tls-pair" (include "ottoflow.fullname" .) (include "ottoflow.namespace" .) }}
+{{- end }}
+
+{{/*
+Webhook CA secret name (kyverno/pkg format: serviceName.namespace.svc.tls-ca)
+*/}}
+{{- define "ottoflow.webhook.caSecretName" -}}
+{{- printf "%s-webhook.%s.svc.tls-ca" (include "ottoflow.fullname" .) (include "ottoflow.namespace" .) }}
+{{- end }}
+
+{{/*
+ottoflow.assertNoSecretsInExtraResources fails the render when an extraResources list grants
+`secrets` (or a resource wildcard, which includes them). It is applied to all four extraResources
+lists, because every one of them reaches the controller's own identity:
+
+  - rbac.coreClusterRole, rbac.clusterRole and rbac.viewClusterRole render into ClusterRoles
+    labelled rbac.ottoflow.io/aggregate-to-controller, which the controller's aggregated
+    ClusterRole selects. A grant there lands on the controller ServiceAccount directly.
+  - rbac.runnerClusterRole (and rbac.viewClusterRole again) render into ClusterRoles labelled
+    rbac.ottoflow.io/aggregate-to-runner. The controller keeps `create`/`update` on
+    ClusterRoleBindings plus `bind` on the runner role (the roleRef-immutability migration
+    path), so a grant there is one it can bind to its own ServiceAccount.
+
+Either way a `secrets` entry silently re-opens the cluster-wide Secret access this chart removed,
+so the render fails instead. Grant Secret access ONLY through rbac.secretAccess.<component>
+(named, namespaced, get-only). Args: (list <rules> <valuesPath>).
+*/}}
+{{- define "ottoflow.assertNoSecretsInExtraResources" -}}
+{{- $rules := index . 0 -}}
+{{- $what := index . 1 -}}
+{{- range $rules }}
+{{- range .resources }}
+{{- if or (eq . "secrets") (eq . "*") }}
+{{- fail (printf "%s must not grant %q: every extraResources list reaches the controller's own identity - the core, view and additional lists aggregate onto its ClusterRole directly, the runner and view lists are ones it can bind to its own ServiceAccount (ClusterRoleBinding create/update + bind) - so a secrets grant here silently re-opens the cluster-wide Secret access this chart removed. Grant Secret access only via rbac.secretAccess.<component> (named, namespaced, get-only); see docs/user/rbac-secret-access.md." $what .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

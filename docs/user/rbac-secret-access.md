@@ -1,18 +1,5 @@
 # Granting Secret Access (Opt-In RBAC)
 
-> **Status of this page.** This page is landing ahead of some of the changes it documents. Not yet
-> in the chart: the `rbac.secretAccess` Helm values under "The Helm shortcut", the
-> certificate-manager Role under "What is granted automatically", and the refusal to render a
-> `secrets` grant in `rbac.*ClusterRole.extraResources`. Not yet in the controller: the
-> timer-driven certificate manager that needs no Secret `list`/`watch` (it lands together with
-> the chart change), and the fail-fast handling of a denied Secret read and the diagnostics for
-> it (the pre-read authorization check, `.status.failureReason`, and stuck-runner-pod detection)
-> described under "Features that break by default" and "Diagnose a denied Secret read". All of
-> these arrive in subsequent changes. Until the chart change lands, the shipped ClusterRoles still
-> grant the controller, runner and agent-executor cluster-wide access to Secrets, and where this
-> page and the chart or controller you are running disagree, the chart and controller are what is
-> actually enforced.
-
 OttoFlow ships with **tenant and cluster-wide Secret access starting at zero** for every
 component — the controller, the workflow-runner Jobs, and the agent-executor. No OttoFlow
 ServiceAccount can read a Secret in a tenant namespace, or across the cluster, out of the

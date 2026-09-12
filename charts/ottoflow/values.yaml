@@ -395,24 +395,70 @@ rbac:
     # Specifies whether leader election RBAC should be created
     create: true
 
+  # Opt-in named-Secret access (break-by-default).
+  # OttoFlow ships with ZERO cluster-wide Secret access for every component. Features that read a
+  # Secret — automatic LLM credential injection, webhook HMAC verification, cron inputValuesFrom,
+  # agent/MCP server credentials, external-agent auth — DO NOT WORK until an operator grants access
+  # to the specific Secrets they use. Each component takes a LIST of {namespace, secretNames}
+  # entries — one entry per TENANT namespace — so a multi-tenant release grants access for every
+  # tenant from one values file. For each entry the chart renders a Role+RoleBinding in that
+  # namespace granting `get` scoped to exactly those names (resourceNames) — never a blanket or
+  # cluster-wide grant. The binding subject is the component ServiceAccount in the install
+  # namespace.
+  # Both lists are empty by default (nothing is rendered). Each entry's namespace must ALREADY
+  # EXIST at install/upgrade time — Helm does not create tenant namespaces, and rendering a Role
+  # into a missing one fails the install. Do NOT target the install namespace: as blast-radius
+  # hygiene, workflow Secrets belong in a tenant namespace, not in the control-plane (install)
+  # namespace, so the chart refuses to render a get-Role there and steers you to a tenant
+  # namespace. One entry per namespace per component; duplicates are rejected.
+  # See docs/user/rbac-secret-access.md.
+  secretAccess:
+    # Secret names the controller ServiceAccount may `get`, per tenant namespace.
+    controller: []
+    # Example:
+    # controller:
+    #   - namespace: team-a
+    #     secretNames:
+    #       - ottoflow-llm-credentials
+    #       - my-webhook-hmac
+    #   - namespace: team-b
+    #     secretNames:
+    #       - ottoflow-llm-credentials
+    # Secret names the agent-executor ServiceAccount may `get`, per tenant namespace.
+    agentExecutor: []
+    # Example:
+    # agentExecutor:
+    #   - namespace: team-a
+    #     secretNames:
+    #       - openai-api-key
+    #       - my-mcp-server-token
+
   # Core ClusterRole - additional resources for core permissions
-  # Use this to add extra resources to the core ClusterRole
+  # Use this to add extra resources to the core ClusterRole. These rules aggregate into
+  # the controller's own ClusterRole, so they land on its ServiceAccount directly.
   coreClusterRole:
     extraResources: []
+    # A `secrets` (or `*`) resource here is REJECTED at render time: it would hand the
+    # controller the cluster-wide Secret access this chart removed. Grant Secret access via
+    # rbac.secretAccess.<component> instead.
     # Example:
     # extraResources:
     #   - apiGroups:
     #       - ""
     #     resources:
-    #       - secrets
+    #       - events
     #     verbs:
     #       - get
     #       - list
 
   # View ClusterRole - additional resources for view permissions
-  # Use this to add extra resources to the view ClusterRole
+  # Use this to add extra resources to the view ClusterRole. These rules aggregate into
+  # both the controller's ClusterRole and the runner role.
   viewClusterRole:
     extraResources: []
+    # A `secrets` (or `*`) resource here is REJECTED at render time: it would hand the
+    # controller (and every runner Job) the cluster-wide Secret access this chart removed.
+    # Grant Secret access via rbac.secretAccess.<component> instead.
     # Example:
     # extraResources:
     #   - apiGroups:
@@ -425,9 +471,13 @@ rbac:
     #       - watch
 
   # Additional ClusterRole - for custom resources and cluster-wide permissions
-  # Use this to add completely new rules to a separate aggregated ClusterRole
+  # Use this to add completely new rules to a separate ClusterRole that aggregates into
+  # the controller's own ClusterRole.
   clusterRole:
     extraResources: []
+    # A `secrets` (or `*`) resource here is REJECTED at render time: it would hand the
+    # controller the cluster-wide Secret access this chart removed. Grant Secret access via
+    # rbac.secretAccess.<component> instead.
     # Example:
     # extraResources:
     #   - apiGroups:
@@ -449,12 +499,16 @@ rbac:
   # "bind" as an alternative to holding every referenced permission).
   runnerClusterRole:
     extraResources: []
+    # A `secrets` (or `*`) resource here is REJECTED at render time: the controller can bind
+    # this role to its own ServiceAccount, so a Secret grant here would silently re-open the
+    # cluster-wide Secret access this chart removed. Grant Secret access via
+    # rbac.secretAccess.<component> instead.
     # Example:
     # extraResources:
     #   - apiGroups:
     #       - ""
     #     resources:
-    #       - secrets
+    #       - configmaps
     #     verbs:
     #       - update
     #       - patch
