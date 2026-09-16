@@ -153,7 +153,10 @@ type WorkflowRunJobSpec struct {
 	// +optional
 	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 
-	// Env provides additional environment variables for the runner container.
+	// Env provides additional environment variables for the runner container. The names the
+	// controller sets itself — WORKFLOW_RUN_NAME, WORKFLOW_RUN_NAMESPACE, JOB_NAME, POD_NAME,
+	// OTTOFLOW_SECRET_MOUNTS and AGENT_EXECUTOR_NAMESPACE — are reserved: a run that sets one of
+	// them fails before its runner Job is created.
 	// +optional
 	Env []corev1.EnvVar `json:"env,omitempty"`
 

@@ -1071,6 +1071,12 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			ttlSecondsAfterFinished = *jobSpec.Job.TTLSecondsAfterFinished
 		}
 		activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		// Reserved names are refused before the author's entries are merged, so the run fails at
+		// build time — before reconcileJobExecution creates anything for it — rather than letting
+		// a duplicate silently replace a controller-owned value (see reservedRunnerEnvNames).
+		if err := rejectReservedRunnerEnv(jobSpec.Job.Env); err != nil {
+			return nil, err
+		}
 		podEnv = append(podEnv, jobSpec.Job.Env...)
 		volumes = append(volumes, jobSpec.Job.Volumes...)
 		volumeMounts = append(volumeMounts, jobSpec.Job.VolumeMounts...)

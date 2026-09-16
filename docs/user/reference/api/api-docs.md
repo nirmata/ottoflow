@@ -1625,7 +1625,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `image` _string_ | Image overrides the default workflow-runner image. |  | Optional: \{\} <br /> |
 | `serviceAccountName` _string_ | ServiceAccountName overrides the default service account for the runner Job. |  | Optional: \{\} <br /> |
-| `env` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envvar-v1-core) array_ | Env provides additional environment variables for the runner container. |  | Optional: \{\} <br /> |
+| `env` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envvar-v1-core) array_ | Env provides additional environment variables for the runner container. The names the<br />controller sets itself — WORKFLOW_RUN_NAME, WORKFLOW_RUN_NAMESPACE, JOB_NAME, POD_NAME,<br />OTTOFLOW_SECRET_MOUNTS and AGENT_EXECUTOR_NAMESPACE — are reserved: a run that sets one of<br />them fails before its runner Job is created. |  | Optional: \{\} <br /> |
 | `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core)_ | Resources configures requests/limits for the runner container. |  | Optional: \{\} <br /> |
 | `volumes` _[Volume](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volume-v1-core) array_ | Volumes defines additional pod volumes for the runner Job. |  | Optional: \{\} <br /> |
 | `volumeMounts` _[VolumeMount](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volumemount-v1-core) array_ | VolumeMounts defines additional container volume mounts for the runner Job. |  | Optional: \{\} <br /> |
