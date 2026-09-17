@@ -1,0 +1,67 @@
+{{- if .Values.rbac.create }}
+# Namespaced Secret access for the controller's built-in TLS certificate manager (no external
+# cert-manager required). The controller (internal/certmanager) creates, fills, and rotates the
+# webhook and agent-executor CA/TLS Secrets in the install namespace. This is a namespaced Role
+# (install namespace only) — NOT a cluster-wide grant — and is the ONLY Secret access OttoFlow
+# grants by default; it never reaches tenant namespaces.
+#
+# Mirrors Kyverno's own cert-Secret RBAC exactly (charts/kyverno/templates/cleanup-controller/
+# role.yaml): the controller creates its four deterministically-named Secrets (kyverno tls
+# formula <service>.<ns>.svc.tls-ca / .tls-pair — the webhook CA+pair and the agent-executor
+# CA+pair) itself at runtime, so `create` cannot be scoped by resourceNames (the object doesn't
+# exist yet at authorization time) and is its own rule. Everything else — `get` (read back to
+# check fill state), `update` (write new/rotated material), `delete` (recreate a Secret an
+# operator hand-created as the wrong type, since Secret type is immutable) — is scoped by
+# resourceNames to exactly those four names.
+# Renewal is driven by a timer, not a Secret informer, so no `list`/`watch` on Secrets anywhere
+# (Kyverno's cleanup-controller includes them in its scoped rule, but resourceNames cannot scope
+# list/watch at all — see the note in docs/user/rbac-secret-access.md — so they would be
+# meaningless there; omitted here for a tighter grant). These names MUST equal what the
+# controller computes at runtime (WEBHOOK_SERVICE_NAME in deployment.yaml is set unconditionally
+# to match), or cert bootstrap fails Forbidden and the admission webhook never gets TLS.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "ottoflow.fullname" . }}-certmanager-role
+  namespace: {{ include "ottoflow.namespace" . }}
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - update
+      - delete
+    resourceNames:
+      - {{ include "ottoflow.webhook.caSecretName" . | quote }}
+      - {{ include "ottoflow.webhook.tlsSecretName" . | quote }}
+      - {{ include "ottoflow.agentExecutor.caSecretName" . | quote }}
+      - {{ include "ottoflow.agentExecutor.tlsSecretName" . | quote }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "ottoflow.fullname" . }}-certmanager-rolebinding
+  namespace: {{ include "ottoflow.namespace" . }}
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "ottoflow.fullname" . }}-certmanager-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "ottoflow.serviceAccountName" . }}
+    namespace: {{ include "ottoflow.namespace" . }}
+{{- end }}

@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -38,6 +39,7 @@ import (
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/logging"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 	executor "github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
@@ -48,13 +50,18 @@ type RunnerConfig struct {
 	RunnerServiceAccount    string // default: controller-manager
 	RunnerClusterRole       string // required; validated non-empty at controller startup (no default)
 	AgentExecutorCallerRole string // empty disables RBAC-based agent-executor auth
-	AgentExecutorCASecret   string // Secret name in run namespace for agent-executor CA (internal TLS); empty disables mount
-	AgentExecutorNamespace  string // namespace where agent-executor is deployed; empty uses "ottoflow"
-	SecretSourceNamespace   string // empty uses workflow namespace
-	PrometheusURL           string // when set, passed to every runner Job (env-specific; not part of workflow spec)
-	ImagePullSecrets        string // comma-separated Secret names for runner pod imagePullSecrets; empty disables
-	ImagePullPolicy         string // runner Job imagePullPolicy; empty defaults to IfNotPresent
-	PodLabelsPartOf         string // value for runner pod label app.kubernetes.io/part-of; empty uses "ottoflow"
+	// AgentExecutorCASecret names the certificate manager's agent-executor CA Secret in
+	// AgentExecutorNamespace. Its certificate (tls.crt, never tls.key) is published as a
+	// ConfigMap of the same name in each namespace that runs a workflow with an agent step, and
+	// that ConfigMap is what those runner Jobs mount (see ensureAgentExecutorCA). Empty disables
+	// the mount.
+	AgentExecutorCASecret  string
+	AgentExecutorNamespace string // namespace where agent-executor is deployed; empty uses "ottoflow"
+	SecretSourceNamespace  string // empty uses workflow namespace
+	PrometheusURL          string // when set, passed to every runner Job (env-specific; not part of workflow spec)
+	ImagePullSecrets       string // comma-separated Secret names for runner pod imagePullSecrets; empty disables
+	ImagePullPolicy        string // runner Job imagePullPolicy; empty defaults to IfNotPresent
+	PodLabelsPartOf        string // value for runner pod label app.kubernetes.io/part-of; empty uses "ottoflow"
 	// TTLSecondsAfterFinished: default for runner Job cleanup; 0 means use 3600. Workflow spec can override per run.
 	TTLSecondsAfterFinished int32
 	// LLMCredentialsSecret is the well-known Secret name resolved in the WorkflowRun's namespace for automatic
@@ -64,6 +71,9 @@ type RunnerConfig struct {
 	// --workflow-runner-llm-credentials-secret / WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET) or overridden per-run
 	// via spec.execution.llmCredentialsSecret.
 	LLMCredentialsSecret string
+	// SecretRefAllowedNamespaces is the operator allowlist validateSecretRefPolicy checks a
+	// cross-namespace secret ref's namespace against. Empty (the default) means same-namespace only.
+	SecretRefAllowedNamespaces map[string]struct{}
 }
 
 // transientBuildError marks errors from optional pre-build steps (e.g. reading the well-known
@@ -85,6 +95,8 @@ func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
 // WorkflowRunReconciler reconciles a WorkflowRun object
 type WorkflowRunReconciler struct {
 	client.Client
+	// APIReader is a direct (non-cached) reader used for Secret reads.
+	APIReader           client.Reader
 	Scheme              *runtime.Scheme
 	MetricsClient       metricsclientset.Interface
 	CustomMetricsClient executor.CustomMetricsClient
@@ -155,7 +167,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Error(err, "referenced Workflow not found; failing run", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, err.Error())
+			setRunFailed(workflowRun, err.Error(), "")
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -188,7 +200,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 
 		warnCheckpointForEach(ctx, workflow, workflowRun)
 
-		createdJob, err := r.buildWorkflowRunnerJob(ctx, workflowRun)
+		createdJob, err := r.buildWorkflowRunnerJob(ctx, workflowRun, workflow)
 		if err != nil {
 			var te *transientBuildError
 			if errors.As(err, &te) {
@@ -201,7 +213,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -213,7 +225,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner access: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -222,11 +234,14 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		sourceNamespace := runnerSecretSourceNamespace(r.RunnerConfig, workflowNamespace)
 		if err := r.ensureRunnerSecrets(ctx, workflowRun, createdJob, sourceNamespace); err != nil {
 			logger.Error(err, "failed to ensure runner secrets", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, err
+		}
+		if err := r.ensureAgentExecutorCA(ctx, workflowRun, createdJob); err != nil {
+			return ctrl.Result{}, r.handleAgentExecutorCAError(ctx, req, workflowRun, err)
 		}
 		if err := r.Create(ctx, createdJob); err != nil {
 			if apierrors.IsAlreadyExists(err) {
@@ -237,7 +252,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				}
 			} else {
 				logger.Error(err, "failed to create runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "job", jobKey)
-				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err))
+				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err), "")
 				if err := r.Status().Update(ctx, workflowRun); err != nil {
 					return ctrl.Result{}, err
 				}
@@ -274,6 +289,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 
 	podList := &corev1.PodList{}
 	if err := r.List(ctx, podList, client.InNamespace(workflowRun.Namespace), client.MatchingLabels{"job-name": jobName}); err == nil {
+		if handled, hErr := r.handleStuckRunnerPods(ctx, req, workflowRun, job, podList); handled {
+			return ctrl.Result{}, hErr
+		}
 		if len(podList.Items) > 0 {
 			if workflowRun.Status.Execution == nil {
 				workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}
@@ -631,6 +649,7 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 	ctx context.Context,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	existingEnvNames map[string]struct{},
+	needsCreds func() (bool, error),
 ) ([]corev1.EnvVar, error) {
 	secretName := r.RunnerConfig.LLMCredentialsSecret
 	secretNamespace := workflowRun.Namespace
@@ -648,12 +667,43 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 		return nil, nil
 	}
 
-	secret := &corev1.Secret{}
+	// Built once and reused for both the review below and the Get further down: the per-run
+	// override above can point this read at a namespace other than workflowRun.Namespace, so
+	// building the review's attributes from workflowRun.Namespace would authorize one object
+	// while the Get reads another.
 	key := types.NamespacedName{Namespace: secretNamespace, Name: secretName}
-	if err := r.Get(ctx, key, secret); err != nil {
+
+	allowed, reviewErr := canGetSecret(ctx, r.Client, key)
+	if reviewErr != nil {
+		// Inconclusive: fall through to the Get unconditionally. No needsCreds() call here —
+		// the Get is the authoritative answer, including its own retry behavior on a genuine
+		// authorizer outage (see canGetSecret's doc comment).
+		klog.V(2).InfoS("SelfSubjectAccessReview for well-known LLM credentials Secret was "+
+			"inconclusive; falling through to the authoritative read",
+			"namespace", key.Namespace, "secret", key.Name, "err", reviewErr)
+	} else if !allowed {
+		if err := r.handleDeniedLLMCredentialsRead(ctx, workflowRun, key, needsCreds, errSecretReadNotAuthorized); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	secret := &corev1.Secret{}
+	if err := r.directReader().Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil // namespace hasn't created a well-known Secret; not an error
 		}
+		if apierrors.IsForbidden(err) {
+			if hErr := r.handleDeniedLLMCredentialsRead(ctx, workflowRun, key, needsCreds, err); hErr != nil {
+				return nil, hErr
+			}
+			return nil, nil
+		}
+		// Also the retry path for the inconclusive-plus-authorizer-outage case: when
+		// canGetSecret falls through because the review itself was inconclusive during a
+		// genuine authorization-webhook outage, this Get returns an Internal Server Error
+		// (measured), landing here rather than the Forbidden branch above — so an inconclusive
+		// review during an outage is retried, never treated as terminal.
 		return nil, &transientBuildError{err: fmt.Errorf("get well-known LLM credentials Secret %s: %w", key, err)}
 	}
 
@@ -666,21 +716,21 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 	var extras []corev1.EnvVar
 	var matched int
 	var skippedKeys []string
-	for key := range secret.Data {
-		if _, allowed := allowlist[key]; !allowed {
-			skippedKeys = append(skippedKeys, key)
+	for dataKey := range secret.Data {
+		if _, allowed := allowlist[dataKey]; !allowed {
+			skippedKeys = append(skippedKeys, dataKey)
 			continue // not a recognized LLM env var — skip
 		}
 		matched++
-		if _, exists := existingEnvNames[key]; exists {
+		if _, exists := existingEnvNames[dataKey]; exists {
 			continue // explicit spec.execution.job.env entry wins
 		}
 		extras = append(extras, corev1.EnvVar{
-			Name: key,
+			Name: dataKey,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
-					Key:                  key,
+					Key:                  dataKey,
 				},
 			},
 		})
@@ -709,7 +759,9 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 // exists in the WorkflowRun's namespace. If a secret is missing there, it is copied from
 // sourceNamespace (e.g. the Workflow's namespace or the OttoFlow install namespace).
 // This allows Workflow podTemplates or WorkflowRun execution.job.volumes to reference
-// secrets that exist only in the ottoflow namespace (e.g. agent-executor TLS CA).
+// secrets that exist only in the ottoflow namespace. The agent-executor CA is not one of
+// them: its volume is ConfigMap-backed (vol.Secret == nil, skipped below), and
+// ensureAgentExecutorCA publishes that ConfigMap.
 func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, job *batchv1.Job, sourceNamespace string) error {
 	runnerNamespace := workflowRun.Namespace
 	if sourceNamespace == "" {
@@ -719,24 +771,45 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 		if vol.Secret == nil {
 			continue
 		}
+		// NEVER copy a volume buildSecretMounts minted for one of the workflow's own Secret
+		// references (see generatedSecretVolumePrefix). collectSecretRefs resolves those refs
+		// against the RUN's namespace and validateSecretRefPolicy default-denies any that
+		// resolve elsewhere, so a minted volume always names a Secret that is required to live
+		// in the runner namespace. Copying it from sourceNamespace on a miss would defeat that
+		// policy exactly where it matters most: for a cross-namespace WorkflowRun
+		// (workflowRef.namespace != the run's namespace) sourceNamespace is the WORKFLOW's
+		// namespace, so a same-namespace-looking ref to a Secret that does not exist in the run
+		// namespace would silently pull that Secret — with EVERY key in it, not just the
+		// referenced one — out of another namespace and into one the run's author can read.
+		// A genuinely missing Secret must instead surface as the FailedMount that
+		// detectStuckRunnerPod reports, naming the reference to fix.
+		if strings.HasPrefix(vol.Name, generatedSecretVolumePrefix) {
+			continue
+		}
 		secretName := vol.Secret.SecretName
 		if secretName == "" {
 			continue
 		}
 		existing := &corev1.Secret{}
 		runnerKey := types.NamespacedName{Namespace: runnerNamespace, Name: secretName}
-		err := r.Get(ctx, runnerKey, existing)
+		err := r.directReader().Get(ctx, runnerKey, existing)
 		if err == nil {
 			continue // secret already exists in runner namespace
+		}
+		if apierrors.IsForbidden(err) {
+			return r.forbiddenSecretRoleError(ctx, runnerKey, workflowRun.Namespace, err)
 		}
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err)
 		}
 		sourceSecret := &corev1.Secret{}
 		sourceKey := types.NamespacedName{Namespace: sourceNamespace, Name: secretName}
-		if err := r.Get(ctx, sourceKey, sourceSecret); err != nil {
+		if err := r.directReader().Get(ctx, sourceKey, sourceSecret); err != nil {
 			if apierrors.IsNotFound(err) {
 				return fmt.Errorf("secret %q not found in runner namespace %q or source namespace %q", secretName, runnerNamespace, sourceNamespace)
+			}
+			if apierrors.IsForbidden(err) {
+				return r.forbiddenSecretRoleError(ctx, sourceKey, workflowRun.Namespace, err)
 			}
 			return fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err)
 		}
@@ -759,10 +832,183 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			if apierrors.IsAlreadyExists(err) {
 				continue // another reconciler or user created it
 			}
+			if apierrors.IsForbidden(err) {
+				return forbiddenSecretCopyError(sourceKey, runnerKey, err)
+			}
 			return fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err)
 		}
 	}
 	return nil
+}
+
+// agentExecutorCAVolumeName is the runner Job volume that carries the agent-executor CA
+// certificate, mounted at agentExecutorCAMountPath; agentExecutorCAKey is both the ConfigMap key
+// and the file name the runner reads (internal/workflow/executor/exec_client.go,
+// agentExecutorCAPath).
+const (
+	agentExecutorCAVolumeName = "agent-executor-ca"
+	agentExecutorCAMountPath  = "/etc/ottoflow/agent-executor-ca"
+	agentExecutorCAKey        = "ca.crt"
+	// defaultAgentExecutorNamespace is where the agent-executor and its CA Secret live when
+	// RunnerConfig.AgentExecutorNamespace is empty.
+	defaultAgentExecutorNamespace = "ottoflow"
+	// ottoflowPartOf is the app.kubernetes.io/part-of label value that marks an object as
+	// OttoFlow-managed.
+	ottoflowPartOf = "ottoflow"
+)
+
+// agentExecutorCAConfigMapName returns the name of the ConfigMap the runner Job mounts as the
+// agent-executor CA, or "" when the Job has no such volume (the workflow has no agent step, or
+// the CA mount is disabled).
+func agentExecutorCAConfigMapName(job *batchv1.Job) string {
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == agentExecutorCAVolumeName && v.ConfigMap != nil {
+			return v.ConfigMap.Name
+		}
+	}
+	return ""
+}
+
+// ensureAgentExecutorCA publishes the agent-executor CA certificate into the WorkflowRun's
+// namespace as the ConfigMap the runner Job mounts (see buildWorkflowRunnerJob), so the runner
+// can verify the agent-executor's TLS certificate without any Secret existing, or being
+// readable, in that namespace. A Job with no agent-executor CA volume needs nothing.
+//
+// The certificate manager's CA Secret in the install namespace
+// (RunnerConfig.AgentExecutorNamespace) holds both tls.crt and tls.key. Only tls.crt is
+// published, under the key ca.crt: the certificate is public material, the private key never
+// leaves the install namespace, and a ConfigMap needs none of the Secret RBAC the chart
+// deliberately grants nowhere else. The controller already holds configmaps create, get and
+// update cluster-wide (charts/ottoflow/templates/clusterrole.yaml, the core ClusterRole).
+//
+// The ConfigMap is shared by every run in the namespace and carries no owner reference, so one
+// run's deletion cannot garbage-collect it from under the others. It is labelled
+// app.kubernetes.io/part-of=ottoflow, and a ConfigMap of that name WITHOUT the label is neither
+// trusted nor overwritten: anyone with configmaps create in the namespace could otherwise
+// pre-create it holding a CA of their choosing and have every runner there trust it. An owned
+// ConfigMap whose ca.crt differs from the current CA is updated, which is how a CA rotation (the
+// certificate manager renews the CA on its timer) reaches a namespace that already holds a
+// copy: the next run there with an agent step refreshes it before its Job is created. A runner
+// already running at that moment keeps the pool it loaded at start-up.
+//
+// Both reads use directReader(): the Secret because Secrets are never cached, the ConfigMap so
+// this one lookup does not start a cluster-wide ConfigMap informer.
+//
+// Errors that describe configuration the operator has to fix (a missing, empty or unreadable CA
+// Secret; a denied ConfigMap write; an unowned ConfigMap in the way) are returned as they are so
+// the caller fails the run with the message. Every other API error is wrapped in
+// transientBuildError so the caller requeues instead.
+func (r *WorkflowRunReconciler) ensureAgentExecutorCA(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, job *batchv1.Job) error {
+	name := agentExecutorCAConfigMapName(job)
+	if name == "" {
+		return nil
+	}
+	installNamespace := r.RunnerConfig.AgentExecutorNamespace
+	if installNamespace == "" {
+		installNamespace = defaultAgentExecutorNamespace
+	}
+
+	caKey := types.NamespacedName{Namespace: installNamespace, Name: name}
+	caSecret := &corev1.Secret{}
+	if err := r.directReader().Get(ctx, caKey, caSecret); err != nil {
+		switch {
+		case apierrors.IsForbidden(err):
+			return fmt.Errorf("reading the agent-executor CA Secret %s is Forbidden: the chart's certmanager Role "+
+				"grants the controller ServiceAccount get on this name in the install namespace, so check that the "+
+				"Role and its RoleBinding exist in namespace %q and that --agent-executor-namespace names the "+
+				"namespace the certificate manager writes to (underlying error: %w): %w",
+				caKey, installNamespace, err, errSecretAccessDenied)
+		case apierrors.IsNotFound(err):
+			return fmt.Errorf("agent-executor CA Secret %s not found: the controller's certificate manager creates "+
+				"it at startup in the namespace given by --agent-executor-namespace; if it was deleted, restart the "+
+				"controller to recreate it: %w", caKey, err)
+		default:
+			return &transientBuildError{err: fmt.Errorf("get agent-executor CA Secret %s: %w", caKey, err)}
+		}
+	}
+	crt := caSecret.Data[corev1.TLSCertKey]
+	if len(crt) == 0 {
+		return fmt.Errorf("agent-executor CA Secret %s has no %s: the controller's certificate manager fills it at "+
+			"startup; restart the controller to have it filled", caKey, corev1.TLSCertKey)
+	}
+	desired := map[string]string{agentExecutorCAKey: string(crt)}
+
+	const partOfLabel = "app.kubernetes.io/part-of"
+	cmKey := types.NamespacedName{Namespace: workflowRun.Namespace, Name: name}
+	existing := &corev1.ConfigMap{}
+	err := r.directReader().Get(ctx, cmKey, existing)
+	switch {
+	case apierrors.IsNotFound(err):
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: workflowRun.Namespace,
+				Labels:    map[string]string{partOfLabel: ottoflowPartOf},
+			},
+			Data: desired,
+		}
+		err = r.Create(ctx, cm)
+		switch {
+		case err == nil:
+			return nil
+		case apierrors.IsForbidden(err):
+			return fmt.Errorf("creating ConfigMap %s is Forbidden: the controller publishes the agent-executor CA "+
+				"certificate as this ConfigMap in every namespace that runs a workflow with an agent step and needs "+
+				"create, get and update on configmaps there (the chart's controller ClusterRole grants them by "+
+				"default): %w", cmKey, err)
+		case apierrors.IsAlreadyExists(err):
+			// Created by someone else between the Get and the Create. Reconcile whatever won, so an
+			// unowned ConfigMap is caught here exactly as it would have been by the Get.
+			if err := r.directReader().Get(ctx, cmKey, existing); err != nil {
+				return &transientBuildError{err: fmt.Errorf("get ConfigMap %s after AlreadyExists: %w", cmKey, err)}
+			}
+		default:
+			return &transientBuildError{err: fmt.Errorf("create ConfigMap %s: %w", cmKey, err)}
+		}
+	case err != nil:
+		return &transientBuildError{err: fmt.Errorf("get ConfigMap %s: %w", cmKey, err)}
+	}
+
+	if existing.Labels[partOfLabel] != ottoflowPartOf {
+		return fmt.Errorf("ConfigMap %s already exists but is not managed by OttoFlow (no %s=%s label), so it "+
+			"is neither trusted as the agent-executor CA nor overwritten; rename or delete it so the controller can "+
+			"publish the CA certificate under this name", cmKey, partOfLabel, ottoflowPartOf)
+	}
+	if existing.Data[agentExecutorCAKey] == desired[agentExecutorCAKey] {
+		return nil
+	}
+	existing.Data = desired
+	if err := r.Update(ctx, existing); err != nil {
+		if apierrors.IsForbidden(err) {
+			return fmt.Errorf("updating ConfigMap %s with the current agent-executor CA certificate is Forbidden: the "+
+				"controller needs update on configmaps in this namespace (the chart's controller ClusterRole grants "+
+				"it by default): %w", cmKey, err)
+		}
+		return &transientBuildError{err: fmt.Errorf("update ConfigMap %s: %w", cmKey, err)}
+	}
+	return nil
+}
+
+// handleAgentExecutorCAError turns an ensureAgentExecutorCA error into the error
+// reconcileJobExecution returns: a transientBuildError is unwrapped for controller-runtime to
+// requeue with backoff, and anything else fails the run terminally with the error's message
+// (failureReason SecretAccessDenied when the CA Secret read itself was Forbidden), the way the
+// other pre-Job steps in reconcileJobExecution fail.
+func (r *WorkflowRunReconciler) handleAgentExecutorCAError(ctx context.Context, req ctrl.Request, workflowRun *ottoflowv1alpha1.WorkflowRun, err error) error {
+	logger := log.FromContext(ctx)
+	var te *transientBuildError
+	if errors.As(err, &te) {
+		logger.Error(te.err, "transient error publishing the agent-executor CA, will requeue",
+			logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
+		return te.err
+	}
+	logger.Error(err, "failed to publish the agent-executor CA",
+		logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
+	setRunFailed(workflowRun, fmt.Sprintf("Failed to publish the agent-executor CA: %v", err), secretAccessDeniedReason(err))
+	if updateErr := r.Status().Update(ctx, workflowRun); updateErr != nil {
+		return updateErr
+	}
+	return err
 }
 
 // runnerArgs returns the command-line args for the workflow-runner container (e.g. --prometheus-url).
@@ -775,7 +1021,7 @@ func runnerArgs(cfg RunnerConfig) []string {
 	return args
 }
 
-func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun) (*batchv1.Job, error) {
+func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, workflow *ottoflowv1alpha1.Workflow) (*batchv1.Job, error) {
 	runnerImage := r.RunnerConfig.RunnerImage
 	if runnerImage == "" {
 		runnerImage = "ghcr.io/nirmata/ottoflow/workflow-runner:latest"
@@ -825,6 +1071,12 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			ttlSecondsAfterFinished = *jobSpec.Job.TTLSecondsAfterFinished
 		}
 		activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		// Reserved names are refused before the author's entries are merged, so the run fails at
+		// build time — before reconcileJobExecution creates anything for it — rather than letting
+		// a duplicate silently replace a controller-owned value (see reservedRunnerEnvNames).
+		if err := rejectReservedRunnerEnv(jobSpec.Job.Env); err != nil {
+			return nil, err
+		}
 		podEnv = append(podEnv, jobSpec.Job.Env...)
 		volumes = append(volumes, jobSpec.Job.Volumes...)
 		volumeMounts = append(volumeMounts, jobSpec.Job.VolumeMounts...)
@@ -840,29 +1092,75 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	for _, e := range podEnv {
 		existingEnvNames[e.Name] = struct{}{}
 	}
-	wellKnownEnv, err := r.injectWellKnownLLMCredentials(ctx, workflowRun, existingEnvNames)
+	llmSecretConfigured := r.RunnerConfig.LLMCredentialsSecret != "" ||
+		(workflowRun.Spec.Execution != nil && workflowRun.Spec.Execution.LLMCredentialsSecret != nil)
+	needsCreds := func() (bool, error) {
+		if !llmSecretConfigured || hasExplicitNirmataCreds(podEnv) {
+			return false, nil
+		}
+		return workflowNeedsNirmataLLMCredentials(ctx, r.Client, r.directReader(), workflow, workflowRun.Namespace)
+	}
+	wellKnownEnv, err := r.injectWellKnownLLMCredentials(ctx, workflowRun, existingEnvNames, needsCreds)
 	if err != nil {
 		return nil, err
 	}
 	podEnv = append(podEnv, wellKnownEnv...)
 
-	// Optionally mount agent-executor CA so the runner can verify internal TLS (secret must exist in run namespace).
+	// Mount the agent-executor CA so the runner can verify internal TLS, but only for a workflow
+	// that reaches an AgentRef step (directly, or through ForEach, StepTemplateRef or
+	// WorkflowRef). AgentRef is the only step type that calls the agent-executor, so a runner
+	// without one never verifies its certificate and has no use for the CA. The volume is a
+	// ConfigMap named after the CA Secret and holding only the certificate; ensureAgentExecutorCA
+	// publishes it into the run namespace before the Job is created, so no Secret has to exist,
+	// or be readable, there.
 	if caSecret := r.RunnerConfig.AgentExecutorCASecret; caSecret != "" {
-		volumes = append(volumes, corev1.Volume{
-			Name: "agent-executor-ca",
-			VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{
-					SecretName: caSecret,
-					Items:      []corev1.KeyToPath{{Key: "tls.crt", Path: "ca.crt"}},
+		needsAgentExecutor, err := workflowNeedsAgentExecutor(ctx, r.Client, workflow, workflowRun.Namespace)
+		if err != nil {
+			return nil, err
+		}
+		if needsAgentExecutor {
+			for _, v := range volumes {
+				if v.Name == agentExecutorCAVolumeName {
+					return nil, fmt.Errorf(
+						"cannot mount the agent-executor CA: a volume named %q already exists on the "+
+							"runner Job pod spec (likely from spec.execution.job.volumes); rename that "+
+							"volume to resolve the conflict", agentExecutorCAVolumeName)
+				}
+			}
+			volumes = append(volumes, corev1.Volume{
+				Name: agentExecutorCAVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: caSecret},
+						Items:                []corev1.KeyToPath{{Key: agentExecutorCAKey, Path: agentExecutorCAKey}},
+					},
 				},
-			},
-		})
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "agent-executor-ca",
-			MountPath: "/etc/ottoflow/agent-executor-ca",
-			ReadOnly:  true,
-		})
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      agentExecutorCAVolumeName,
+				MountPath: agentExecutorCAMountPath,
+				ReadOnly:  true,
+			})
+		}
 	}
+
+	secretRefs, err := collectSecretRefs(ctx, r.Client, workflow, workflowRun)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSecretRefPolicy(secretRefs, workflowRun.Namespace, r.RunnerConfig); err != nil {
+		return nil, err
+	}
+	existingVolumeNames := make(map[string]struct{}, len(volumes))
+	for _, v := range volumes {
+		existingVolumeNames[v.Name] = struct{}{}
+	}
+	secretVolumes, secretVolumeMounts, secretMountsJSON, secretVolumeOrigins, err := buildSecretMounts(secretRefs, workflowRun.Namespace, existingVolumeNames)
+	if err != nil {
+		return nil, err
+	}
+	volumes = append(volumes, secretVolumes...)
+	volumeMounts = append(volumeMounts, secretVolumeMounts...)
 
 	jobName := workflowRunnerJobName(workflowRun.Name)
 	runnerEnv := []corev1.EnvVar{
@@ -875,6 +1173,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
+	}
+	if secretMountsJSON != "" {
+		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: secretmount.EnvVar, Value: secretMountsJSON})
 	}
 	if r.RunnerConfig.PrometheusURL != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: "PROMETHEUS_URL", Value: r.RunnerConfig.PrometheusURL})
@@ -982,6 +1283,12 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				},
 			},
 		},
+	}
+	if b, jsonErr := json.Marshal(secretVolumeOrigins); jsonErr == nil && len(secretVolumeOrigins) > 0 && len(b) <= maxSecretVolumeOriginsAnnotationBytes {
+		if job.Annotations == nil {
+			job.Annotations = map[string]string{}
+		}
+		job.Annotations[generatedSecretVolumeOriginsAnnotation] = string(b)
 	}
 	if err := ctrl.SetControllerReference(workflowRun, job, r.Scheme); err != nil {
 		return nil, err
@@ -1201,9 +1508,13 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 // It deliberately does NOT touch Execution, CompletionTime, or step statuses — call sites set those
 // as needed. It must NOT be used on the transient-retry path (retryTransientFailure), which keeps
 // PendingCallback so the recreated runner can consume the delivered callback outputs.
-func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string) {
+//
+// reason is the classified cause recorded in Status.FailureReason. "" leaves the field unset,
+// which is correct for any failure without a well-known classification.
+func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string, reason ottoflowv1alpha1.WorkflowRunFailureReason) {
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
 	workflowRun.Status.Message = message
+	workflowRun.Status.FailureReason = reason
 	workflowRun.Status.PendingCallback = nil
 }
 
@@ -1219,7 +1530,7 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	default:
 		msg = fmt.Sprintf("Runner Job %s failed", jobName)
 	}
-	setRunFailed(workflowRun, msg)
+	setRunFailed(workflowRun, msg, "")
 	workflowRun.Status.CompletionTime = &now
 	if workflowRun.Status.Execution == nil {
 		workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}
@@ -1336,7 +1647,7 @@ func (r *WorkflowRunReconciler) reconcilePendingCallback(ctx context.Context, re
 		ss.Error = "callback timeout: no callback received within the configured timeout"
 		ss.Message = ss.Error
 		workflowRun.Status.StepStatuses[cb.StepName] = ss
-		setRunFailed(workflowRun, fmt.Sprintf("Step %q timed out waiting for callback", cb.StepName))
+		setRunFailed(workflowRun, fmt.Sprintf("Step %q timed out waiting for callback", cb.StepName), "")
 		if err := r.Status().Update(ctx, workflowRun); err != nil {
 			return ctrl.Result{}, false, err
 		}

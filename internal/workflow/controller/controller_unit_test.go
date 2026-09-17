@@ -338,7 +338,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_WithAgentExecutorCaller(t *tes
 			AgentExecutorCallerRole: "agent-executor-caller",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -402,7 +402,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CreatesCallerBinding_WhenMainB
 			AgentExecutorCallerRole: "agent-executor-caller",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -464,7 +464,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_RecreateForbidden_ReturnsTermi
 			RunnerClusterRole:    "ottoflow-new-role",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,13 +906,23 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 			},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
+	// The workflow has an agent step so that the AgentExecutorCASecret wiring asserted below is
+	// exercised: the CA is mounted only into runners whose workflow reaches the agent-executor.
+	agentCRD := &ottoflowv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "agent1"},
+		Spec:       ottoflowv1alpha1.AgentSpec{Prompt: "do stuff", ModelProvider: "openai"},
+	}
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", AgentRef: &ottoflowv1alpha1.StepAgentRef{Name: "agent1"}}}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(agentCRD).Build()
 	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{
 		AgentExecutorCASecret: "ca-secret",
 		ImagePullSecrets:      "pull1,pull2",
 		PodLabelsPartOf:       "my-app",
 	}}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -927,7 +937,7 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 	}
 	var foundCA bool
 	for _, v := range job.Spec.Template.Spec.Volumes {
-		if v.Name == "agent-executor-ca" && v.Secret != nil && v.Secret.SecretName == "ca-secret" {
+		if v.Name == "agent-executor-ca" && v.ConfigMap != nil && v.ConfigMap.Name == "ca-secret" {
 			foundCA = true
 			break
 		}
@@ -1161,7 +1171,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_UpdatesExistingCRB(t *testing.
 		Scheme:       unitTestScheme,
 		RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
 	}
-	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err := r.ensureRunnerAccess(ctx, wr, nil, job.Spec.Template.Spec.ServiceAccountName, false); err != nil {
 		t.Fatal(err)
 	}
@@ -1199,7 +1209,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CRBExistsNotManaged_ReturnsErr
 		Scheme:       unitTestScheme,
 		RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
 	}
-	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, _ := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	err := r.ensureRunnerAccess(ctx, wr, nil, job.Spec.Template.Spec.ServiceAccountName, false)
 	if err == nil {
 		t.Fatal("expected error when CRB exists but is not managed")
@@ -2513,7 +2523,7 @@ func newTestReconcilerWithSecret(t *testing.T, secretData map[string][]byte, sec
 
 func TestInjectWellKnownLLMCredentials_SecretAbsent(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t, nil, "ottoflow-llm-credentials")
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2525,7 +2535,7 @@ func TestInjectWellKnownLLMCredentials_SecretAbsent(t *testing.T) {
 func TestInjectWellKnownLLMCredentials_FeatureDisabled(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t, map[string][]byte{testLLMTokenKey: []byte("tok")}, "")
 	r.RunnerConfig.LLMCredentialsSecret = "" // disable
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, nil, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2539,7 +2549,7 @@ func TestInjectWellKnownLLMCredentials_SecretPresent(t *testing.T) {
 		map[string][]byte{testLLMTokenKey: []byte("tok")},
 		"ottoflow-llm-credentials",
 	)
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2568,7 +2578,7 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	)
 	// NIRMATA_LLM_TOKEN is already set explicitly in spec.execution.job.env
 	existing := map[string]struct{}{testLLMTokenKey: {}}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, existing)
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, existing, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2598,7 +2608,7 @@ func TestInjectWellKnownLLMCredentials_NonAllowlistKeyFiltered(t *testing.T) {
 		},
 		"ottoflow-llm-credentials",
 	)
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2638,7 +2648,7 @@ func TestBuildWorkflowRunnerJob_InjectsWellKnownLLMCredentials(t *testing.T) {
 			LLMCredentialsSecret: "ottoflow-llm-credentials",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatalf("buildWorkflowRunnerJob: %v", err)
 	}
@@ -2690,7 +2700,7 @@ func TestBuildWorkflowRunnerJob_ExplicitEnvWinsOverWellKnownSecret(t *testing.T)
 			LLMCredentialsSecret: "ottoflow-llm-credentials",
 		},
 	}
-	job, err := r.buildWorkflowRunnerJob(context.Background(), wr)
+	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
 	if err != nil {
 		t.Fatalf("buildWorkflowRunnerJob: %v", err)
 	}
@@ -2733,7 +2743,7 @@ func TestInjectWellKnownLLMCredentials_PerRunSecretOverridesDefault(t *testing.T
 			Name: customSecretName,
 		},
 	}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2757,7 +2767,7 @@ func TestInjectWellKnownLLMCredentials_PerRunSecretDisablesDefault(t *testing.T)
 			Name: "nonexistent-secret",
 		},
 	}
-	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{})
+	extras, err := r.injectWellKnownLLMCredentials(context.Background(), wr, map[string]struct{}{}, staticNeedsCreds(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3069,4 +3079,17 @@ func TestWatchResource_LabelSelectorExclusion_WorkflowRunKind(t *testing.T) {
 	if parsed.Matches(ownWorkflowRun) {
 		t.Errorf("selector %q should exclude this Workflow's own runs (label ottoflow.nirmata.io/workflow=%s)", got, wf.Name)
 	}
+}
+
+func staticNeedsCreds(v bool) func() (bool, error) { return func() (bool, error) { return v, nil } }
+
+func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey) bool, errFor func(key client.ObjectKey) error) client.WithWatch {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok && (match == nil || match(key)) {
+				return errFor(key)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
 }

@@ -12,11 +12,13 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +26,7 @@ import (
 	"k8s.io/klog/v2/textlogger"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	ctrlwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -82,6 +85,7 @@ func main() {
 	var workflowRunnerPodLabelsPartOf string
 	var workflowRunnerTTLSecondsAfterFinished int
 	var workflowRunnerLLMCredentialsSecret string
+	var secretRefAllowedNamespacesFlag string
 	var webhookTriggerAddr string
 	var mcpAddr string
 	var mcpCallerNamespace string
@@ -120,7 +124,9 @@ func main() {
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
 	flag.StringVar(&workflowRunnerAgentExecutorCASecret, "workflow-runner-agent-executor-ca-secret", "",
-		"Secret name in run namespace for agent-executor CA (internal TLS); empty disables CA mount (optional).")
+		"Name of the agent-executor CA Secret in --agent-executor-namespace (internal TLS). Its certificate is "+
+			"published as a ConfigMap of the same name in each namespace that runs a workflow with an agent step "+
+			"and mounted into those runner Jobs; empty disables the CA mount (optional).")
 	flag.StringVar(&secretSourceNamespace, "secret-source-namespace", "",
 		"Namespace to copy runner Secret-backed volumes from when missing (optional; default: workflow namespace).")
 	flag.StringVar(&workflowRunnerImagePullSecrets, "workflow-runner-image-pull-secrets",
@@ -140,6 +146,17 @@ func main() {
 		llmCredSecret,
 		"Secret name in the WorkflowRun namespace for LLM credential injection. "+
 			"Empty (default) disables injection. Override per run via spec.execution.llmCredentialsSecret.")
+	flag.StringVar(&secretRefAllowedNamespacesFlag, "secret-ref-allowed-namespaces",
+		os.Getenv("SECRET_REF_ALLOWED_NAMESPACES"),
+		"Comma-separated namespaces the cross-namespace-secret-reference POLICY check allows in "+
+			"addition to the WorkflowRun's own namespace. Applies only to a Secret ref that does NOT "+
+			"need to be mounted into the runner Job - i.e. an agentRef step's MCP tool credentials, "+
+			"which the agent-executor pod resolves with its own RBAC. It does NOT enable "+
+			"cross-namespace mounting for a workflowRun's kubeconfig, a step's externalAgentRef "+
+			"CA/auth, or a directly-called MCPServer's auth: a native Secret volume can only ever "+
+			"reach a Secret in the runner pod's own namespace, so those three are always rejected "+
+			"cross-namespace (at admission time, and again if reached anyway) regardless of this "+
+			"flag. Empty (default) means same-namespace only.")
 
 	flag.StringVar(&webhookTriggerAddr, "webhook-trigger-addr", "",
 		"Address for the webhook trigger HTTP server (empty disables). "+
@@ -221,6 +238,16 @@ func main() {
 	// make run creates the namespace and passes --namespace.
 	mgrOpts := ctrl.Options{
 		Scheme: scheme,
+		// Never cache Secrets or ServiceAccounts. A cache-backed Get builds a cluster-wide
+		// list+watch informer for the type, so a cached Secret Get would require cluster-wide
+		// `secrets list, watch` RBAC no matter how narrow the Get itself looks. With caching
+		// disabled every Get is a live API read authorized as `get` on that one object, which
+		// is what makes it possible for the chart's ClusterRoles to grant no Secret access at all.
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: []client.Object{&corev1.Secret{}, &corev1.ServiceAccount{}},
+			},
+		},
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
 			SecureServing: secureMetrics,
@@ -352,20 +379,28 @@ func main() {
 		}
 	}
 
+	secretRefAllowedNamespaces := make(map[string]struct{})
+	for _, ns := range strings.Split(secretRefAllowedNamespacesFlag, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			secretRefAllowedNamespaces[ns] = struct{}{}
+		}
+	}
+
 	runnerConfig := workflowcontroller.RunnerConfig{
-		RunnerImage:             workflowRunnerImage,
-		RunnerServiceAccount:    workflowRunnerServiceAccount,
-		RunnerClusterRole:       workflowRunnerClusterRole,
-		AgentExecutorCallerRole: agentExecutorCallerClusterRole,
-		AgentExecutorCASecret:   workflowRunnerAgentExecutorCASecret,
-		AgentExecutorNamespace:  agentExecutorNamespace,
-		SecretSourceNamespace:   secretSourceNamespace,
-		PrometheusURL:           prometheusURL,
-		ImagePullSecrets:        workflowRunnerImagePullSecrets,
-		ImagePullPolicy:         workflowRunnerImagePullPolicy,
-		PodLabelsPartOf:         workflowRunnerPodLabelsPartOf,
-		TTLSecondsAfterFinished: int32(workflowRunnerTTLSecondsAfterFinished),
-		LLMCredentialsSecret:    workflowRunnerLLMCredentialsSecret,
+		RunnerImage:                workflowRunnerImage,
+		RunnerServiceAccount:       workflowRunnerServiceAccount,
+		RunnerClusterRole:          workflowRunnerClusterRole,
+		AgentExecutorCallerRole:    agentExecutorCallerClusterRole,
+		AgentExecutorCASecret:      workflowRunnerAgentExecutorCASecret,
+		AgentExecutorNamespace:     agentExecutorNamespace,
+		SecretSourceNamespace:      secretSourceNamespace,
+		PrometheusURL:              prometheusURL,
+		ImagePullSecrets:           workflowRunnerImagePullSecrets,
+		ImagePullPolicy:            workflowRunnerImagePullPolicy,
+		PodLabelsPartOf:            workflowRunnerPodLabelsPartOf,
+		TTLSecondsAfterFinished:    int32(workflowRunnerTTLSecondsAfterFinished),
+		LLMCredentialsSecret:       workflowRunnerLLMCredentialsSecret,
+		SecretRefAllowedNamespaces: secretRefAllowedNamespaces,
 	}
 
 	// Create shared CEL compilation cache; expressions are compiled when
@@ -390,6 +425,7 @@ func main() {
 	}
 	if err = (&workflowcontroller.WorkflowRunReconciler{
 		Client:              mgr.GetClient(),
+		APIReader:           mgr.GetAPIReader(),
 		Scheme:              mgr.GetScheme(),
 		MetricsClient:       metricsClient,
 		CustomMetricsClient: customMetricsClient,

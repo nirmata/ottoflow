@@ -1589,6 +1589,27 @@ _Appears in:_
 | `lastTerminationReason` _string_ | LastTerminationReason records the container termination reason from the most<br />recent failed pod (e.g. OOMKilled, Evicted). Used by the controller to decide<br />whether to retry. |  | Optional: \{\} <br /> |
 
 
+#### WorkflowRunFailureReason
+
+_Underlying type:_ _string_
+
+WorkflowRunFailureReason classifies a subset of well-known WorkflowRun failure causes, for
+programmatic consumers (alerting, dashboards) that need to distinguish these specific causes
+from every other failure without parsing Status.Message. Not every Failed run gets one — see
+WorkflowRunStatus.FailureReason's doc comment.
+
+_Validation:_
+- Enum: [SecretAccessDenied RunnerRefUnresolved]
+
+_Appears in:_
+- [WorkflowRunStatus](#workflowrunstatus)
+
+| Field | Description |
+| --- | --- |
+| `SecretAccessDenied` | WorkflowRunFailureReasonSecretAccessDenied indicates a Secret operation the controller<br />ServiceAccount had to perform returned Forbidden. This is usually a read (e.g. the<br />well-known LLM credentials Secret, or a spec.execution.job.volumes Secret in the runner<br />namespace needing `get`), but also covers a denied `create`: copying a Secret referenced<br />from another namespace into the runner namespace needs `create` there, which a Role<br />granting only `get` does not satisfy. See docs/user/rbac-secret-access.md for the Role<br />to grant in either case.<br /> |
+| `RunnerRefUnresolved` | WorkflowRunFailureReasonRunnerRefUnresolved indicates the runner pod could not start<br />because the kubelet could not resolve a Secret or ConfigMap (or one of their keys)<br />referenced by the pod. This is NOT an RBAC failure: Secret/ConfigMap volumes are resolved<br />by the kubelet using node credentials, not by any Role granted to the controller or<br />runner ServiceAccount, so no RBAC change affects it — the referenced object must exist in<br />the pod's own namespace.<br /> |
+
+
 #### WorkflowRunJobSpec
 
 
@@ -1604,7 +1625,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `image` _string_ | Image overrides the default workflow-runner image. |  | Optional: \{\} <br /> |
 | `serviceAccountName` _string_ | ServiceAccountName overrides the default service account for the runner Job. |  | Optional: \{\} <br /> |
-| `env` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envvar-v1-core) array_ | Env provides additional environment variables for the runner container. |  | Optional: \{\} <br /> |
+| `env` _[EnvVar](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#envvar-v1-core) array_ | Env provides additional environment variables for the runner container. The names the<br />controller sets itself — WORKFLOW_RUN_NAME, WORKFLOW_RUN_NAMESPACE, JOB_NAME, POD_NAME,<br />OTTOFLOW_SECRET_MOUNTS and AGENT_EXECUTOR_NAMESPACE — are reserved: a run that sets one of<br />them fails before its runner Job is created. |  | Optional: \{\} <br /> |
 | `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core)_ | Resources configures requests/limits for the runner container. |  | Optional: \{\} <br /> |
 | `volumes` _[Volume](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volume-v1-core) array_ | Volumes defines additional pod volumes for the runner Job. |  | Optional: \{\} <br /> |
 | `volumeMounts` _[VolumeMount](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#volumemount-v1-core) array_ | VolumeMounts defines additional container volume mounts for the runner Job. |  | Optional: \{\} <br /> |
@@ -1675,6 +1696,7 @@ _Appears in:_
 | `startTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#time-v1-meta)_ | StartTime is when the workflow execution started |  | Optional: \{\} <br /> |
 | `completionTime` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#time-v1-meta)_ | CompletionTime is when the workflow execution completed |  | Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the workflow status |  | Optional: \{\} <br /> |
+| `failureReason` _[WorkflowRunFailureReason](#workflowrunfailurereason)_ | FailureReason classifies why a Failed WorkflowRun failed, for the subset of causes that<br />have a well-known classification below. Empty means EITHER the run has not failed OR it<br />failed for a cause that is not one of the classified reasons — absence is not itself a<br />claim that nothing went wrong, so consumers must treat an unrecognised value the same as<br />an empty one, not as an error. |  | Enum: [SecretAccessDenied RunnerRefUnresolved] <br />Optional: \{\} <br /> |
 | `restartRequired` _boolean_ | RestartRequired indicates that the workflow needs to be restarted.<br />Deprecated: The executor guard that consumed this field has been superseded by<br />per-step checkpointing (see WorkflowRunExecutionSpec.Checkpointing). This field<br />is no longer written by any component and will be removed in a future API version. |  | Optional: \{\} <br /> |
 | `trigger` _[TriggerInfo](#triggerinfo)_ | Trigger contains information about what triggered this WorkflowRun |  | Optional: \{\} <br /> |
 | `execution` _[WorkflowRunExecutionStatus](#workflowrunexecutionstatus)_ | Execution contains status for the runner Job that executes this WorkflowRun. |  | Optional: \{\} <br /> |

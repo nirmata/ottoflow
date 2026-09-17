@@ -102,7 +102,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-service-account` | `WORKFLOW_RUNNER_SERVICE_ACCOUNT` | (empty) → derived `{workflow}-runner` | Service account for the runner Job |
 | `--workflow-runner-cluster-role` | `WORKFLOW_RUNNER_CLUSTER_ROLE` | required (controller refuses to start if unset); the Helm chart sets `<fullname>-runner-role` (narrowed, runner-only role) | ClusterRole name for runner Job RBAC |
 | `--agent-executor-caller-cluster-role` | `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` | (empty) | ClusterRole for agent-executor caller RBAC; empty disables |
-| `--workflow-runner-agent-executor-ca-secret` | | (empty) | Secret name in run namespace for agent-executor CA (internal TLS); empty disables CA mount in runner |
+| `--workflow-runner-agent-executor-ca-secret` | | (empty) | Name of the agent-executor CA Secret in `--agent-executor-namespace` (internal TLS). Its certificate is published as a ConfigMap of the same name in each namespace that runs a workflow with an agent step and mounted into those runner Jobs; empty disables the CA mount |
 | `--secret-source-namespace` | | (empty) | Namespace to copy runner Secret-backed volumes from when missing |
 | `--workflow-runner-image-pull-secrets` | `WORKFLOW_RUNNER_IMAGE_PULL_SECRETS` | (empty) | Comma-separated Secret names for runner pod `imagePullSecrets` |
 | `--workflow-runner-image-pull-policy` | `WORKFLOW_RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | Runner container `imagePullPolicy` |
@@ -174,4 +174,4 @@ The **Helm chart** configures the controller with **flags only**; use `controlle
 | **Workflow runner pod** (optional) | **Nirmata:** Use a Secret with key `NIRMATA_LLM_TOKEN` (or legacy keys) and reference it in WorkflowRun `spec.execution.job.env` with `valueFrom.secretKeyRef`. **Prometheus:** set `--prometheus-url` on the controller; the controller passes it to every runner Job (no need to put it in the workflow). |
 | **CLI** | `NIRMATA_URL`, `NIRMATA_LLM_TOKEN` (or legacy `NIRMATA_LLM_SERVICEACCOUNT_TOKEN` / `NIRMATA_LLM_APIKEY`) — set as environment variables in your shell when using `ottoflow run` with agent steps. |
 
-The controller injects `WORKFLOW_RUN_NAME`, `WORKFLOW_RUN_NAMESPACE`, `JOB_NAME`, and `POD_NAME` into every runner pod; you do not set those yourself.
+The controller injects `WORKFLOW_RUN_NAME`, `WORKFLOW_RUN_NAMESPACE`, `JOB_NAME` and `POD_NAME` into every runner pod, plus `OTTOFLOW_SECRET_MOUNTS` (where the run's Secret references are mounted) and `AGENT_EXECUTOR_NAMESPACE` when they apply. These names are reserved: a WorkflowRun whose `spec.execution.job.env` sets one of them fails before its runner Job is created, with a message naming the variable to remove.

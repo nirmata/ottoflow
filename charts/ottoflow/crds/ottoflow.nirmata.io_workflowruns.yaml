@@ -1071,8 +1071,11 @@ spec:
                         format: int32
                         type: integer
                       env:
-                        description: Env provides additional environment variables
-                          for the runner container.
+                        description: |-
+                          Env provides additional environment variables for the runner container. The names the
+                          controller sets itself — WORKFLOW_RUN_NAME, WORKFLOW_RUN_NAMESPACE, JOB_NAME, POD_NAME,
+                          OTTOFLOW_SECRET_MOUNTS and AGENT_EXECUTOR_NAMESPACE — are reserved: a run that sets one of
+                          them fails before its runner Job is created.
                         items:
                           description: EnvVar represents an environment variable present
                             in a Container.
@@ -3445,6 +3448,21 @@ spec:
                     format: date-time
                     type: string
                 type: object
+              failureReason:
+                allOf:
+                - enum:
+                  - SecretAccessDenied
+                  - RunnerRefUnresolved
+                - enum:
+                  - SecretAccessDenied
+                  - RunnerRefUnresolved
+                description: |-
+                  FailureReason classifies why a Failed WorkflowRun failed, for the subset of causes that
+                  have a well-known classification below. Empty means EITHER the run has not failed OR it
+                  failed for a cause that is not one of the classified reasons — absence is not itself a
+                  claim that nothing went wrong, so consumers must treat an unrecognised value the same as
+                  an empty one, not as an error.
+                type: string
               message:
                 description: Message provides additional information about the workflow
                   status

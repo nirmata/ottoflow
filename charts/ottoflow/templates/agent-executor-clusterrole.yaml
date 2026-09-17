@@ -24,15 +24,6 @@ rules:
       - get
       - list
       - watch
-  # Secrets - needed for LLM API keys and MCP server credentials
-  # Note: This is read-only access. Consider restricting to specific namespaces or secret names in production.
-  - apiGroups:
-      - ""
-    resources:
-      - secrets
-    verbs:
-      - get
-      - list
   # TokenReview - needed to authenticate incoming requests from the controller
   - apiGroups:
       - authentication.k8s.io

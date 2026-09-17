@@ -10,12 +10,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/GoogleCloudPlatform/kubectl-ai/pkg/mcp"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -178,18 +176,23 @@ func (m *MCPClientManager) Close() error {
 
 // DefaultMCPClientFactory implements MCPClientFactory
 type DefaultMCPClientFactory struct {
-	k8sClient         client.Client
-	realClientBuilder RealMCPClientBuilder // optional; when set, used instead of mcp.NewClient (for tests)
+	k8sClient          client.Client
+	realClientBuilder  RealMCPClientBuilder // optional; when set, used instead of mcp.NewClient (for tests)
+	useAPISecretAccess bool                 // true: resolve Secrets via live k8sClient.Get; false: read from controller-mounted files (internal/secretmount)
 }
 
-// NewDefaultMCPClientFactory creates a new MCP client factory
-func NewDefaultMCPClientFactory(k8sClient client.Client) *DefaultMCPClientFactory {
-	return &DefaultMCPClientFactory{k8sClient: k8sClient}
+// NewDefaultMCPClientFactory creates a new MCP client factory. useAPISecretAccess selects how
+// MCP env/auth Secrets are resolved: true does a live client.Client.Get (the agent-executor
+// and the CLI, which read Secrets under their own identity); false reads from the files the
+// controller mounted into the pod (the in-cluster workflow-runner Job, which never reads
+// Secrets through the API).
+func NewDefaultMCPClientFactory(k8sClient client.Client, useAPISecretAccess bool) *DefaultMCPClientFactory {
+	return &DefaultMCPClientFactory{k8sClient: k8sClient, useAPISecretAccess: useAPISecretAccess}
 }
 
 // NewDefaultMCPClientFactoryWithBuilder creates a factory with an optional RealMCPClientBuilder (for tests).
-func NewDefaultMCPClientFactoryWithBuilder(k8sClient client.Client, builder RealMCPClientBuilder) *DefaultMCPClientFactory {
-	return &DefaultMCPClientFactory{k8sClient: k8sClient, realClientBuilder: builder}
+func NewDefaultMCPClientFactoryWithBuilder(k8sClient client.Client, builder RealMCPClientBuilder, useAPISecretAccess bool) *DefaultMCPClientFactory {
+	return &DefaultMCPClientFactory{k8sClient: k8sClient, realClientBuilder: builder, useAPISecretAccess: useAPISecretAccess}
 }
 
 // CreateClient creates an MCP client from MCPServer CRD
@@ -220,7 +223,7 @@ func (f *DefaultMCPClientFactory) createHTTPClient(ctx context.Context, mcpServe
 
 // createRealMCPClient builds MCP client config from MCPServer and returns a real MCP client
 func (f *DefaultMCPClientFactory) createRealMCPClient(ctx context.Context, mcpServer *ottoflowv1alpha1.MCPServer) (MCPClient, error) {
-	cfg, err := buildMCPClientConfig(ctx, f.k8sClient, mcpServer)
+	cfg, err := buildMCPClientConfig(ctx, f.k8sClient, mcpServer, f.useAPISecretAccess)
 	if err != nil {
 		return nil, fmt.Errorf("building MCP client config: %w", err)
 	}
@@ -239,118 +242,4 @@ func (f *DefaultMCPClientFactory) createRealMCPClient(ctx context.Context, mcpSe
 		client:            mcpClient,
 		connectionTimeout: connectionTimeout,
 	}, nil
-}
-
-// resolveAuth resolves authentication credentials from MCPServer spec (reserved for future MCP client impl).
-func (f *DefaultMCPClientFactory) resolveAuth(ctx context.Context, mcpServer *ottoflowv1alpha1.MCPServer) (map[string]string, error) { //nolint:unused
-	auth := mcpServer.Spec.Auth
-	if auth == nil {
-		return nil, nil
-	}
-
-	creds := make(map[string]string)
-
-	switch auth.Type {
-	case "bearer", "apiKey":
-		if auth.SecretRef == nil {
-			return nil, fmt.Errorf("secretRef is required for %s auth", auth.Type)
-		}
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      auth.SecretRef.Name,
-			Namespace: auth.SecretRef.Namespace,
-		}
-		if secretKey.Namespace == "" {
-			secretKey.Namespace = mcpServer.Namespace
-		}
-		if err := f.k8sClient.Get(ctx, secretKey, secret); err != nil {
-			return nil, fmt.Errorf("failed to get secret: %w", err)
-		}
-		tokenBytes, ok := secret.Data[auth.SecretRef.Key]
-		if !ok {
-			return nil, fmt.Errorf("key %s not found in secret", auth.SecretRef.Key)
-		}
-		creds["token"] = string(tokenBytes)
-	case "basic":
-		if auth.SecretRef == nil {
-			return nil, fmt.Errorf("secretRef is required for basic auth")
-		}
-		secret := &corev1.Secret{}
-		secretKey := types.NamespacedName{
-			Name:      auth.SecretRef.Name,
-			Namespace: auth.SecretRef.Namespace,
-		}
-		if secretKey.Namespace == "" {
-			secretKey.Namespace = mcpServer.Namespace
-		}
-		if err := f.k8sClient.Get(ctx, secretKey, secret); err != nil {
-			return nil, fmt.Errorf("failed to get secret: %w", err)
-		}
-		if usernameBytes, ok := secret.Data["username"]; ok {
-			creds["username"] = string(usernameBytes)
-		}
-		if passwordBytes, ok := secret.Data["password"]; ok {
-			creds["password"] = string(passwordBytes)
-		}
-		if creds["username"] == "" || creds["password"] == "" {
-			return nil, fmt.Errorf("secret for basic auth must contain username and password keys")
-		}
-	case "oauth2":
-		if auth.OAuth2 == nil {
-			return nil, fmt.Errorf("oauth2 auth type requires oauth2 config")
-		}
-		oauth2 := auth.OAuth2
-		creds["token_url"] = oauth2.TokenURL
-		if oauth2.ClientID != "" {
-			creds["client_id"] = oauth2.ClientID
-		}
-		if oauth2.ClientSecretRef != nil {
-			secret := &corev1.Secret{}
-			secretKey := types.NamespacedName{
-				Name:      oauth2.ClientSecretRef.Name,
-				Namespace: oauth2.ClientSecretRef.Namespace,
-			}
-			if secretKey.Namespace == "" {
-				secretKey.Namespace = mcpServer.Namespace
-			}
-			if err := f.k8sClient.Get(ctx, secretKey, secret); err != nil {
-				return nil, fmt.Errorf("failed to get oauth2 client secret: %w", err)
-			}
-			secretBytes, ok := secret.Data[oauth2.ClientSecretRef.Key]
-			if !ok {
-				return nil, fmt.Errorf("key %s not found in oauth2 secret", oauth2.ClientSecretRef.Key)
-			}
-			creds["client_secret"] = string(secretBytes)
-		}
-		if oauth2.ClientCredentialsRef != nil {
-			secret := &corev1.Secret{}
-			secretKey := types.NamespacedName{
-				Name:      oauth2.ClientCredentialsRef.Name,
-				Namespace: oauth2.ClientCredentialsRef.Namespace,
-			}
-			if secretKey.Namespace == "" {
-				secretKey.Namespace = mcpServer.Namespace
-			}
-			if err := f.k8sClient.Get(ctx, secretKey, secret); err != nil {
-				return nil, fmt.Errorf("failed to get oauth2 credentials secret: %w", err)
-			}
-			if idBytes, ok := secret.Data["client_id"]; ok {
-				creds["client_id"] = string(idBytes)
-			}
-			if secretBytes, ok := secret.Data["client_secret"]; ok {
-				creds["client_secret"] = string(secretBytes)
-			}
-			if creds["client_id"] == "" || creds["client_secret"] == "" {
-				return nil, fmt.Errorf("oauth2 credentials secret must contain client_id and client_secret keys")
-			}
-		}
-		if len(oauth2.Scopes) > 0 {
-			creds["scopes"] = strings.Join(oauth2.Scopes, " ")
-		}
-		if creds["client_id"] == "" || creds["client_secret"] == "" {
-			return nil, fmt.Errorf("oauth2 requires client_id and client_secret (via ClientID+ClientSecretRef or ClientCredentialsRef)")
-		}
-	}
-
-	return creds, nil
 }

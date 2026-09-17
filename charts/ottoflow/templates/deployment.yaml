@@ -110,14 +110,16 @@ spec:
         {{- end }}
         securityContext:
           {{- toYaml .Values.controller.securityContext | nindent 10 }}
-        {{- if or .Values.webhook.enabled .Values.controller.env }}
         env:
-        {{- if .Values.webhook.enabled }}
+        # Unconditional on purpose. The controller bootstraps its own TLS certs at startup
+        # whether or not the admission webhook is enabled, and the certmanager Role scopes
+        # `get`/`update`/`delete` to the Secret names derived from this service name. If this
+        # were gated, a release whose fullname is not "ottoflow" would fall back to the binary
+        # default "ottoflow-webhook" and cert bootstrap would fail Forbidden.
         - name: WEBHOOK_SERVICE_NAME
           value: {{ include "ottoflow.fullname" . }}-webhook
         - name: WEBHOOK_CONFIG_NAME
           value: {{ include "ottoflow.fullname" . }}-validating
-        {{- end }}
         {{- if .Values.controller.env }}
         {{- range .Values.controller.env }}
         - name: {{ .name }}
@@ -128,7 +130,6 @@ spec:
           valueFrom:
             {{- toYaml .valueFrom | nindent 12 }}
           {{- end }}
-        {{- end }}
         {{- end }}
         {{- end }}
         {{- if and .Values.agentExecutor.enabled .Values.agentExecutor.tls.internal.enabled (not .Values.agentExecutor.tls.secretName) }}

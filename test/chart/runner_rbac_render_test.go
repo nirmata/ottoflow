@@ -11,6 +11,7 @@ package chart
 
 import (
 	"bytes"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -58,24 +59,42 @@ func splitYAMLDocs(output string) []string {
 	return strings.Split(output, "\n---\n")
 }
 
+// helmTemplate runs `helm template <release>` against the OttoFlow chart, optionally layering
+// an extra values file on top of the chart defaults, and returns the raw multi-document YAML
+// output plus any error from the helm invocation (including a template `fail` — the caller
+// decides whether an error is expected). The single low-level render used by every chart test
+// in this package.
+func helmTemplate(t *testing.T, release, valuesFile string) (string, error) {
+	t.Helper()
+	helm := helmBin(t)
+	chart := chartDir(t)
+
+	args := []string{"template", release, chart, "--namespace", "ottoflow"}
+	if valuesFile != "" {
+		args = append(args, "-f", valuesFile)
+	}
+	cmd := exec.Command(helm, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, stderr.String())
+	}
+	return stdout.String(), nil
+}
+
 // render runs `helm template` for the given release against the OttoFlow chart with default
 // values and returns every rendered ClusterRole. Non-ClusterRole documents (ServiceAccounts,
 // ClusterRoleBindings, Deployments, etc.) are decoded too but discarded once their Kind is known.
 func render(t *testing.T, release string) []rbacv1.ClusterRole {
 	t.Helper()
-	helm := helmBin(t)
-	chart := chartDir(t)
-
-	cmd := exec.Command(helm, "template", release, chart, "--namespace", "ottoflow")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("helm template %s %s failed: %v\nstderr:\n%s", release, chart, err, stderr.String())
+	output, err := helmTemplate(t, release, "")
+	if err != nil {
+		t.Fatalf("helm template %s failed: %v", release, err)
 	}
 
 	var roles []rbacv1.ClusterRole
-	for _, doc := range splitYAMLDocs(stdout.String()) {
+	for _, doc := range splitYAMLDocs(output) {
 		doc = strings.TrimSpace(doc)
 		if doc == "" {
 			continue
@@ -98,7 +117,7 @@ const aggregateInstanceLabel = "rbac.ottoflow.io/aggregate-instance"
 
 // forbiddenGrant describes a (apiGroup, resource, verb) combination the runner-aggregated
 // ClusterRoles must never grant, because it would let a compromised workflow-runner Job
-// escalate to controller-level privileges.
+// escalate to controller-level privileges or read every Secret in the cluster.
 type forbiddenGrant struct {
 	apiGroup string
 	resource string
@@ -109,7 +128,12 @@ var forbiddenGrants = []forbiddenGrant{
 	{apiGroup: "batch", resource: "jobs", verbs: []string{"create"}},
 	{apiGroup: "", resource: "serviceaccounts", verbs: []string{"create"}},
 	{apiGroup: "rbac.authorization.k8s.io", resource: "clusterrolebindings", verbs: []string{"create"}},
-	{apiGroup: "", resource: "secrets", verbs: []string{"create", "update", "patch", "delete"}},
+	// Every verb on secrets: the runner reads the Secrets the controller mounts into its Job
+	// from files and holds no Secret grant of its own. get/list/watch is the rule this chart
+	// removed from the runner role; it is listed here so that re-adding it fails this test.
+	{apiGroup: "", resource: "secrets", verbs: []string{
+		"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection",
+	}},
 }
 
 // containsOrWildcard reports whether list contains want, or contains the RBAC wildcard "*".

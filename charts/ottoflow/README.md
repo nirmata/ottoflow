@@ -158,6 +158,8 @@ agentExecutor:
 | `rbac.clusterRole.extraResources` | Additional resources for additional ClusterRole | `[]` |
 | `rbac.runnerClusterRole.extraResources` | Additional resources aggregated into the runner-only `ottoflow-runner-role` (never into the controller's own roles) | `[]` |
 
+None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
+
 The controller's `ottoflow-role:core` ClusterRole grants `delete` on ClusterRoleBindings (needed to migrate a runner's binding when its target role changes — RoleRef is immutable, so migration is delete-and-recreate) and `bind` scoped to the runner ClusterRole name (needed so the controller can create ClusterRoleBindings referencing it, including when `rbac.runnerClusterRole.extraResources` grants verbs the controller itself doesn't hold — Kubernetes' RBAC escalation check allows `bind` as an alternative to holding every referenced permission). **Blast radius:** the `delete` grant on ClusterRoleBindings is cluster-wide, so a compromised controller could delete any ClusterRoleBinding in the cluster; it is a temporary grant needed only for this role migration, and is slated for removal once #153 is resolved.
 
 #### RBAC Customization

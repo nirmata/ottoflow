@@ -9,18 +9,24 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/agent"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 )
 
 // mockMCPClient implements agent.MCPClient for tests
@@ -59,7 +65,7 @@ var _ = Describe("MCPManager", func() {
 		utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
 		utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 		k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-		manager, err := NewMCPManager(k8sClient)
+		manager, err := NewMCPManager(k8sClient, true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(manager).NotTo(BeNil())
 		defer manager.Close() //nolint:errcheck
@@ -201,5 +207,96 @@ var _ = Describe("MCP Tool Call Step Execution", func() {
 		err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
 		Expect(err).To(HaveOccurred())
 		Expect(workflowRun.Status.StepStatuses["mcpStep"].Phase).To(Equal(ottoflowv1alpha1.StepPhaseFailed))
+	})
+})
+
+// secretGetFailsClient wraps base so that any Get of a Secret fails the spec while every other
+// Get (the MCPServer lookup) passes through — proving the MCP manager never reads Secrets via
+// the API when localExecutionMode is false.
+func secretGetFailsClient(base client.WithWatch) client.Client {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, isSecret := obj.(*corev1.Secret); isSecret {
+				Fail("unexpected Secret API Get for " + key.String() + ": localExecutionMode=false must resolve MCP credentials from mounted files")
+				return nil
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+}
+
+var _ = Describe("MCP manager secret access wiring", func() {
+	var (
+		ctx       context.Context
+		scheme    *runtime.Scheme
+		mcpServer *ottoflowv1alpha1.MCPServer
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		scheme = runtime.NewScheme()
+		utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
+		utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+		// secretmount.Load() memoizes OTTOFLOW_SECRET_MOUNTS for the process lifetime; each
+		// spec below sets it to a different value, so reset the memoization before every case.
+		secretmount.ResetForTest()
+		mcpServer = &ottoflowv1alpha1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "creds-srv", Namespace: "default"},
+			Spec: ottoflowv1alpha1.MCPServerSpec{
+				Transport: ottoflowv1alpha1.TransportConfig{Type: "stdio", Command: []string{"echo"}},
+				Env: []corev1.EnvVar{{
+					Name: "TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "mcp-creds"},
+						Key:                  "token",
+					}},
+				}},
+			},
+		}
+	})
+
+	mountToken := func(value string) {
+		path := filepath.Join(GinkgoT().TempDir(), "token")
+		Expect(os.WriteFile(path, []byte(value), 0o600)).To(Succeed())
+		raw, err := json.Marshal(secretmount.Mounts{secretmount.Key("default", "mcp-creds", "token"): path})
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoT().Setenv(secretmount.EnvVar, string(raw))
+	}
+
+	It("NewMCPManager(localExecutionMode=false) builds the client from the mounted credential without reading Secrets through the API", func() {
+		mountToken("mounted")
+		k8s := secretGetFailsClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(mcpServer).Build())
+		manager, err := NewMCPManager(k8s, false)
+		Expect(err).NotTo(HaveOccurred())
+		defer manager.Close() //nolint:errcheck
+		c, err := manager.GetClient(ctx, "creds-srv", "default")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c).NotTo(BeNil())
+	})
+
+	It("NewMCPManager(localExecutionMode=false) fails client creation when the credential is not mounted, rather than reading the API", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, "{}")
+		k8s := secretGetFailsClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(mcpServer).Build())
+		manager, err := NewMCPManager(k8s, false)
+		Expect(err).NotTo(HaveOccurred())
+		defer manager.Close() //nolint:errcheck
+		_, err = manager.GetClient(ctx, "creds-srv", "default")
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+	})
+
+	// The executor is what the in-cluster runner actually constructs (with a nil MCP manager
+	// and localExecutionMode=false), so the flag must reach the MCP manager from there.
+	It("a WorkflowExecutor built with localExecutionMode=false and no MCP manager resolves MCP credentials from the mounts", func() {
+		mountToken("mounted")
+		k8s := secretGetFailsClient(fake.NewClientBuilder().WithScheme(scheme).WithObjects(mcpServer).Build())
+		wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run", Namespace: "default"}}
+		exec, err := NewWorkflowExecutorWithAgentExecutorAndMCPManager(
+			k8s, nil, nil, nil, wr, agent.NewMockAgentExecutor(), nil, false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+		defer exec.mcpManager.Close() //nolint:errcheck
+		c, err := exec.mcpManager.GetClient(ctx, "creds-srv", "default")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c).NotTo(BeNil())
 	})
 })

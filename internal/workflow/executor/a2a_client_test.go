@@ -9,9 +9,17 @@ package executor
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -20,9 +28,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/secretmount"
 )
 
 var _ = Describe("a2aTaskResult.ToMap", func() {
@@ -109,7 +120,7 @@ var _ = Describe("a2aClient.fetchAgentCard", func() {
 		// cluster-local http host, so AllowInsecureHTTP permits it; testA2AHTTPClient is nil,
 		// so newA2AClient wires its production discovery transport.
 		step := &ottoflowv1alpha1.StepExternalAgentRef{URL: srv.URL, AllowInsecureHTTP: true}
-		c, err := newA2AClient(context.Background(), step, nil, "default")
+		c, err := newA2AClient(context.Background(), step, nil, "default", true)
 		Expect(err).NotTo(HaveOccurred())
 
 		err = c.fetchAgentCard(context.Background())
@@ -287,14 +298,14 @@ var _ = Describe("a2aClient.sendTask", func() {
 var _ = Describe("newA2AClient URL validation", func() {
 	It("rejects http:// URLs", func() {
 		step := &ottoflowv1alpha1.StepExternalAgentRef{URL: "http://insecure.example.com"}
-		_, err := newA2AClient(context.Background(), step, nil, "default")
+		_, err := newA2AClient(context.Background(), step, nil, "default", true)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("HTTPS"))
 	})
 
 	It("accepts https:// URLs with no secrets configured", func() {
 		step := &ottoflowv1alpha1.StepExternalAgentRef{URL: "https://agent.example.com"}
-		client, err := newA2AClient(context.Background(), step, nil, "default")
+		client, err := newA2AClient(context.Background(), step, nil, "default", true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(client).NotTo(BeNil())
 		Expect(client.baseURL).To(Equal("https://agent.example.com"))
@@ -307,7 +318,7 @@ var _ = Describe("newA2AClient transport gating", func() {
 			URL:               "http://kagent-controller.kagent.svc:8083",
 			AllowInsecureHTTP: true,
 		}
-		c, err := newA2AClient(context.Background(), step, nil, "default")
+		c, err := newA2AClient(context.Background(), step, nil, "default", true)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c.baseURL).To(Equal("http://kagent-controller.kagent.svc:8083"))
 		_, isBearer := c.httpClient.Transport.(*bearerAuthTransport)
@@ -326,7 +337,7 @@ var _ = Describe("newA2AClient transport gating", func() {
 			URL:  "https://agent.example.com",
 			Auth: &ottoflowv1alpha1.ExternalAgentAuth{SecretRef: &ottoflowv1alpha1.SecretReference{Name: "tok", Key: "token"}},
 		}
-		c, err := newA2AClient(context.Background(), step, k8s, "default")
+		c, err := newA2AClient(context.Background(), step, k8s, "default", true)
 		Expect(err).NotTo(HaveOccurred())
 		_, isBearer := c.httpClient.Transport.(*bearerAuthTransport)
 		Expect(isBearer).To(BeTrue())
@@ -355,7 +366,7 @@ var _ = Describe("newA2AClient http:// round-trip", func() {
 		// permits plaintext http when AllowInsecureHTTP is set. testA2AHTTPClient is nil, so
 		// newA2AClient builds and drives its real http transport against the test server.
 		step := &ottoflowv1alpha1.StepExternalAgentRef{URL: srv.URL, AllowInsecureHTTP: true}
-		c, err := newA2AClient(context.Background(), step, nil, "default")
+		c, err := newA2AClient(context.Background(), step, nil, "default", true)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(c.fetchAgentCard(context.Background())).To(Succeed())
@@ -376,5 +387,130 @@ var _ = Describe("newA2AClient http:// round-trip", func() {
 		part0, ok := parts[0].(map[string]interface{})
 		Expect(ok).To(BeTrue())
 		Expect(part0["text"]).To(Equal("plaintext ok"))
+	})
+})
+
+// failingGetClient returns a client whose Get always fails the spec — used to prove a
+// code path never touches the Secret API.
+func failingGetClient() client.Client {
+	base := fake.NewClientBuilder().Build()
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			Fail("unexpected Secret API Get for " + key.String() + ": localExecutionMode=false must never call the Secret API")
+			return nil
+		},
+	})
+}
+
+// generateTestCAPEM returns a minimal self-signed CA certificate in PEM form, suitable for
+// x509.CertPool.AppendCertsFromPEM.
+func generateTestCAPEM() []byte {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	Expect(err).NotTo(HaveOccurred())
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-ca"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(time.Hour),
+		IsCA:         true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	Expect(err).NotTo(HaveOccurred())
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+var _ = Describe("newA2AClient secret access (localExecutionMode=false, in-cluster runner)", func() {
+	BeforeEach(func() {
+		// secretmount.Load() memoizes OTTOFLOW_SECRET_MOUNTS for the process lifetime (it
+		// never changes in the real runner process); each spec below sets it to a different
+		// value, so reset the memoization before every case.
+		secretmount.ResetForTest()
+	})
+
+	It("reads the CA bundle and bearer token from mounted files without calling the Secret API", func() {
+		dir := GinkgoT().TempDir()
+		caPath := filepath.Join(dir, "ca.crt")
+		tokenPath := filepath.Join(dir, "token")
+		Expect(os.WriteFile(caPath, generateTestCAPEM(), 0o600)).To(Succeed())
+		Expect(os.WriteFile(tokenPath, []byte("mounted-token\n"), 0o600)).To(Succeed())
+
+		mounts := secretmount.Mounts{
+			secretmount.Key("default", "agent-ca", "ca.crt"):   caPath,
+			secretmount.Key("default", "agent-token", "token"): tokenPath,
+		}
+		raw, err := json.Marshal(mounts)
+		Expect(err).NotTo(HaveOccurred())
+		GinkgoT().Setenv(secretmount.EnvVar, string(raw))
+
+		step := &ottoflowv1alpha1.StepExternalAgentRef{
+			URL:         "https://agent.example.com",
+			CASecretRef: &ottoflowv1alpha1.NamespacedSecretRef{Name: "agent-ca"},
+			Auth: &ottoflowv1alpha1.ExternalAgentAuth{
+				SecretRef: &ottoflowv1alpha1.SecretReference{Name: "agent-token", Key: "token"},
+			},
+		}
+
+		c, err := newA2AClient(context.Background(), step, failingGetClient(), "default", false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(c).NotTo(BeNil())
+
+		bearer, isBearer := c.httpClient.Transport.(*bearerAuthTransport)
+		Expect(isBearer).To(BeTrue())
+		Expect(bearer.token).To(Equal("mounted-token"))
+
+		// The mounted CA must have landed in the TLS config, not just been read.
+		inner, ok := bearer.transport.(*http.Transport)
+		Expect(ok).To(BeTrue())
+		Expect(inner.TLSClientConfig.RootCAs).NotTo(BeNil())
+	})
+
+	It("errors without calling the Secret API when the CA mount is missing", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, `{}`)
+
+		step := &ottoflowv1alpha1.StepExternalAgentRef{
+			URL:         "https://agent.example.com",
+			CASecretRef: &ottoflowv1alpha1.NamespacedSecretRef{Name: "agent-ca"},
+		}
+
+		_, err := newA2AClient(context.Background(), step, failingGetClient(), "default", false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("loading CA secret default/agent-ca"))
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+	})
+
+	It("errors without calling the Secret API when the bearer token mount is missing", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, `{}`)
+
+		step := &ottoflowv1alpha1.StepExternalAgentRef{
+			URL: "https://agent.example.com",
+			Auth: &ottoflowv1alpha1.ExternalAgentAuth{
+				SecretRef: &ottoflowv1alpha1.SecretReference{Name: "agent-token", Key: "token"},
+			},
+		}
+
+		_, err := newA2AClient(context.Background(), step, failingGetClient(), "default", false)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("loading bearer token from secret"))
+		Expect(err.Error()).To(ContainSubstring("not mounted"))
+	})
+
+	It("reads the bearer token through the Secret API in local execution mode when nothing is mounted", func() {
+		GinkgoT().Setenv(secretmount.EnvVar, `{}`)
+		scheme := runtime.NewScheme()
+		Expect(corev1.AddToScheme(scheme)).To(Succeed())
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "tok", Namespace: "default"},
+			Data:       map[string][]byte{"token": []byte("api-token")},
+		}
+		k8s := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
+		step := &ottoflowv1alpha1.StepExternalAgentRef{
+			URL:  "https://agent.example.com",
+			Auth: &ottoflowv1alpha1.ExternalAgentAuth{SecretRef: &ottoflowv1alpha1.SecretReference{Name: "tok", Key: "token"}},
+		}
+		c, err := newA2AClient(context.Background(), step, k8s, "default", true)
+		Expect(err).NotTo(HaveOccurred())
+		bearer, isBearer := c.httpClient.Transport.(*bearerAuthTransport)
+		Expect(isBearer).To(BeTrue())
+		Expect(bearer.token).To(Equal("api-token"))
 	})
 })

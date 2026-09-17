@@ -84,7 +84,7 @@ func (e *WorkflowExecutor) executeExternalAgentStep(
 
 	// Build A2A client (resolves TLS and auth secrets — uses timeoutCtx so secret reads are bounded).
 	namespace := workflowRun.Namespace
-	a2aHTTPClient, err := newA2AClient(timeoutCtx, ref, e.controlClient, namespace)
+	a2aHTTPClient, err := newA2AClient(timeoutCtx, ref, e.controlClient, namespace, e.localExecutionMode)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build A2A client: %w", err)
 	}

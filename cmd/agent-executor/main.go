@@ -100,8 +100,10 @@ func main() {
 	authenticator := auth.NewTokenReviewAndSARAuthenticator(
 		clientset, *callerNamespaceFlag, auth.AgentExecutorCallerResourceName)
 
-	// Create MCP client provider for agent tool registration, then agent executor
-	mcpFactory := agent.NewDefaultMCPClientFactory(k8sClient)
+	// Create MCP client provider for agent tool registration, then agent executor.
+	// useAPISecretAccess is true here: the agent-executor reads MCP Secrets through the API
+	// under its own ServiceAccount; nothing mounts Secret files into this pod.
+	mcpFactory := agent.NewDefaultMCPClientFactory(k8sClient, true)
 	mcpManager := agent.NewMCPClientManager(k8sClient, mcpFactory)
 	agentExecutor := executor.NewOttoFlowAgentExecutor(k8sClient, mcpManager)
 

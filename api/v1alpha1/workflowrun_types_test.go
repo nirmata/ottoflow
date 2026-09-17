@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package v1alpha1
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -134,4 +135,54 @@ func TestWorkflowRunJobSpec_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWorkflowRunFailureReason_EnumMarkersMatchConstants guards against the field's and the
+// type's +kubebuilder:validation:Enum markers drifting apart from each other or from the
+// declared WorkflowRunFailureReason constants — controller-gen renders whichever marker it
+// finds, so a stale one would silently narrow the generated CRD's accepted values without any
+// compile-time signal. Reads the raw source rather than reflecting on the type, since Go struct
+// tags carry no equivalent of the marker comment.
+func TestWorkflowRunFailureReason_EnumMarkersMatchConstants(t *testing.T) {
+	src, err := os.ReadFile("workflowrun_types.go")
+	if err != nil {
+		t.Fatalf("read workflowrun_types.go: %v", err)
+	}
+	text := string(src)
+
+	fieldMarker := enumMarkerBefore(t, text, `FailureReason WorkflowRunFailureReason `+"`json:\"failureReason,omitempty\"`")
+	typeMarker := enumMarkerBefore(t, text, "type WorkflowRunFailureReason string")
+
+	want := strings.Join([]string{
+		string(WorkflowRunFailureReasonSecretAccessDenied),
+		string(WorkflowRunFailureReasonRunnerRefUnresolved),
+	}, ";")
+
+	if fieldMarker != want {
+		t.Errorf("field +kubebuilder:validation:Enum=%s does not match the declared constants (%s)", fieldMarker, want)
+	}
+	if typeMarker != want {
+		t.Errorf("type +kubebuilder:validation:Enum=%s does not match the declared constants (%s)", typeMarker, want)
+	}
+}
+
+// enumMarkerBefore returns the value of the nearest "+kubebuilder:validation:Enum=" comment
+// line preceding the first occurrence of anchor in src.
+func enumMarkerBefore(t *testing.T, src, anchor string) string {
+	t.Helper()
+	idx := strings.Index(src, anchor)
+	if idx < 0 {
+		t.Fatalf("anchor %q not found in workflowrun_types.go", anchor)
+	}
+	const markerPrefix = "+kubebuilder:validation:Enum="
+	before := src[:idx]
+	pos := strings.LastIndex(before, markerPrefix)
+	if pos < 0 {
+		t.Fatalf("no %s marker found before anchor %q", markerPrefix, anchor)
+	}
+	value := before[pos+len(markerPrefix):]
+	if nl := strings.IndexAny(value, "\r\n"); nl >= 0 {
+		value = value[:nl]
+	}
+	return value
 }
