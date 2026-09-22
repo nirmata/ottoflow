@@ -2,7 +2,23 @@
 # what it does NOT do for each provider. Verified against the pinned gollm
 # dependency, not assumed.
 #
-# Agent.spec.config effectiveness by provider:
+# PREREQUISITE: spec.config.endpoint is honored ONLY if the agent-executor
+# operator has pre-approved its origin via the AGENT_LLM_ENDPOINT_ALLOWLIST
+# process environment variable (Helm: agentExecutor.llmEndpointAllowlist).
+# An unset/empty allowlist rejects ANY non-empty spec.config.endpoint and
+# fails the agent run, for every provider, before this Agent's endpoint is
+# even parsed. To run this sample as written:
+#   helm upgrade --install ottoflow charts/ottoflow \
+#     --namespace ottoflow \
+#     --set-json 'agentExecutor.llmEndpointAllowlist=["https://my-aoai.internal.example.com"]'
+#
+# LISTING AN ORIGIN IS A FULL-CREDENTIAL TRUST DECISION, NOT A PER-PROVIDER
+# ONE: the allowlist is provider-agnostic, so ANY Agent's modelProvider can
+# be pointed at a listed origin, and that host then receives WHATEVER LLM
+# credential is present in the agent-executor pod, together with the full
+# prompt. Do not allowlist a host you do not control.
+#
+# Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
 #   - endpoint:
 #       * azure-openai (gollm azopenai provider, azopenai.go:62-64): honored.
 #         Overrides AZURE_OPENAI_ENDPOINT. NOTE: the scheme is FORCED to
@@ -15,10 +31,18 @@
 #         never reads that name — it is effectively dead for this purpose.
 #       * gemini / anthropic: IGNORED entirely.
 #       * local: IGNORED — the local (llama.cpp) provider uses LLAMACPP_HOST
-#         instead (see agent-local-llamacpp.yaml).
+#         instead (see agent-local-llamacpp.yaml), even when allowlisted.
 #   - skipVerifySSL:
-#       * honored by openai, anthropic, azure-openai, local.
-#       * IGNORED by gemini.
+#       * REJECTED for every provider, regardless of the allowlist above:
+#         the agent-executor's LLM credential is process-global, so a
+#         tenant-authored Agent may not turn off TLS verification for
+#         requests carrying it. Setting it to "true" fails the agent run.
+#         To reach an endpoint with a private CA, mount the CA bundle and
+#         set SSL_CERT_FILE or SSL_CERT_DIR on the agent-executor process
+#         instead (keeps TLS verification ON). As a last resort, set
+#         LLM_SKIP_VERIFY_SSL=true on the agent-executor process, which
+#         disables verification for ALL LLM egress from that pod, not just
+#         this Agent.
 #   - apiKey / baseURL / apiVersion / projectId (other Agent.spec.config
 #     fields, if present in your CRD version): NEVER read by the executor
 #     for any provider today — credentials always come from the
@@ -34,10 +58,12 @@ spec:
   modelProvider: azure-openai
   modelName: gpt-4o
   config:
-    # Honored: overrides AZURE_OPENAI_ENDPOINT for the azopenai provider.
-    # The scheme is forced to https no matter what is written here.
+    # Honored only because "https://my-aoai.internal.example.com" is listed
+    # in agentExecutor.llmEndpointAllowlist above (origin match: scheme +
+    # host, path/query ignored on the allowlist entry itself). Overrides
+    # AZURE_OPENAI_ENDPOINT for the azopenai provider. The scheme is forced
+    # to https no matter what is written here.
     endpoint: "https://my-aoai.internal.example.com"
-    skipVerifySSL: "true"
   outputExtraction:
     type: text
 ---
@@ -50,10 +76,11 @@ spec:
   prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
   modelProvider: openai
   modelName: gpt-4o
-  config:
-    # skipVerifySSL is honored for openai. endpoint would be ignored here —
-    # deliberately omitted; see the working alternative below.
-    skipVerifySSL: "true"
+  # config.endpoint is deliberately omitted here — it would be IGNORED for
+  # the openai provider even if its origin were allowlisted; see the
+  # working alternative below. config.skipVerifySSL is REJECTED for every
+  # provider (see the file header) — do not set it here either.
+  #
   # To point the openai provider at a proxy/custom base URL, config.endpoint
   # will NOT work. Instead set OPENAI_ENDPOINT or OPENAI_API_BASE on the
   # agent-executor pod via Helm:
@@ -77,7 +104,7 @@ spec:
       default: "What is Kubernetes?"
   steps:
     - name: askAgent
-      message: "Ask agent (azure-openai provider via custom endpoint)"
+      message: "Ask agent (azure-openai provider; endpoint allowlisted via agentExecutor.llmEndpointAllowlist)"
       agentRef:
         name: azure-proxy-agent
         additionalPrompts:

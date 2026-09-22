@@ -10,8 +10,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"os"
 
 	"github.com/GoogleCloudPlatform/kubectl-ai/gollm"
 	"github.com/GoogleCloudPlatform/kubectl-ai/pkg/tools"
@@ -133,33 +131,31 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 
 	klog.V(4).InfoS("Creating LLM client", "provider", provider, "providerID", providerID)
 
+	// Both checks below apply to every provider, before the client (and its credential) is
+	// ever constructed -- not just azure-openai, which is the only provider that honors
+	// endpoint today. A provider that ignores the key gets no exception: a stale endpoint
+	// that is inert now would go live the instant an SDK started reading it, and a loud
+	// failure beats that silent trap.
 	var opts []gollm.Option
-	if endpoint, ok := agentCRD.Spec.Config["endpoint"]; ok {
-		if parsedURL, err := url.Parse(endpoint); err == nil {
-			klog.V(4).InfoS("Setting custom endpoint", "endpoint", endpoint)
-			opts = append(opts, func(co *gollm.ClientOptions) {
-				co.URL = parsedURL
-			})
-			// gollm's llamacpp client (which backs modelProvider: local) reads its base URL
-			// from the LLAMACPP_HOST environment variable and never consults
-			// ClientOptions.URL, so spec.config.endpoint has no effect there. Say so rather
-			// than silently connecting to llama.cpp's default port. Setting the variable
-			// here instead is not an option: it is process-global and agents run
-			// concurrently, so two agents with different endpoints would race.
-			if provider == providerLocal {
-				klog.InfoS("spec.config.endpoint is ignored for modelProvider: local; "+
-					"the llama.cpp client reads LLAMACPP_HOST instead. Set that environment "+
-					"variable on the process to target a different server.",
-					"agent", agentCRD.Name, "endpoint", endpoint,
-					"llamacppHost", os.Getenv("LLAMACPP_HOST"))
-			}
-		} else {
-			klog.Warningf("Invalid endpoint URL: %s", endpoint)
+	if endpoint := agentCRD.Spec.Config["endpoint"]; endpoint != "" {
+		parsed, aerr := allowedLLMEndpoint(endpoint)
+		if aerr != nil {
+			return nil, fmt.Errorf("agent endpoint rejected: spec.config.endpoint (%q) is not permitted "+
+				"for provider %s: %v -- ask the operator to add its origin to %s (Helm: "+
+				"agentExecutor.llmEndpointAllowlist). Listing an origin authorises it to receive the "+
+				"agent-executor's shared LLM credential", endpoint, provider, aerr, AgentLLMEndpointAllowlistEnv)
 		}
+		klog.V(4).InfoS("Setting custom endpoint", "endpoint", endpoint)
+		opts = append(opts, func(co *gollm.ClientOptions) { co.URL = parsed })
 	}
-	if skipVerify, ok := agentCRD.Spec.Config["skipVerifySSL"]; ok && skipVerify == "true" {
-		klog.V(4).InfoS("SSL verification disabled")
-		opts = append(opts, gollm.WithSkipVerifySSL())
+	if agentCRD.Spec.Config["skipVerifySSL"] == "true" {
+		return nil, fmt.Errorf("agent config rejected: spec.config.skipVerifySSL is no longer honored "+
+			"(provider %q): the agent-executor's LLM credential is shared process-wide, so a "+
+			"tenant-authored Agent may not turn off TLS verification for requests carrying it. "+
+			"Preferred: mount the endpoint's CA bundle and set SSL_CERT_FILE or SSL_CERT_DIR on the "+
+			"agent-executor, which keeps TLS verification ON. Fallback: set LLM_SKIP_VERIFY_SSL=true "+
+			"on the agent-executor process, which disables verification for ALL LLM egress from that "+
+			"pod, not just this Agent", provider)
 	}
 
 	var client gollm.Client

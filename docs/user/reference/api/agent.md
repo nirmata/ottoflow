@@ -19,7 +19,7 @@
 | `modelName` | string | No | Model identifier (e.g. `gpt-4`, `claude-3-opus`). Default depends on provider. |
 | `mcpTools` | []string | No | List of MCP tools the agent can use. Format: `"server:tool"` (e.g. `kubernetes-mcp:get-resource`). |
 | `outputExtraction` | [OutputExtraction](#outputextraction) | No | How to extract outputs from agent responses (json, regex, text). |
-| `config` | map[string]string | No | Provider client options. Only `endpoint` and `skipVerifySSL` are read. `endpoint` is currently effective only for `azure-openai`; `openai` uses `OPENAI_ENDPOINT`/`OPENAI_API_BASE` from the agent-executor environment, and `local` uses `LLAMACPP_HOST`. API keys are never read from `config` — they come from the agent-executor process environment. |
+| `config` | map[string]string | No | Provider client options. `endpoint` is honored **only** if the agent-executor operator has pre-approved its origin via `AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`) — an unset/empty allowlist rejects any non-empty `endpoint` and fails the agent run, because the agent-executor's LLM API key is process-global and honoring an unapproved CR-supplied endpoint would expose that shared credential to a tenant-chosen destination. Once an origin **is** allowlisted, it is currently effective only for `azure-openai`; `openai` uses `OPENAI_ENDPOINT`/`OPENAI_API_BASE` from the agent-executor environment, and `local` uses `LLAMACPP_HOST`. An allowlisted origin is a provider-agnostic trust decision: any `modelProvider` may be pointed at it, so that host can receive whichever LLM credential is present in the agent-executor pod, together with the full prompt — do not list a host you do not control. `skipVerifySSL` is **rejected** for every provider: setting it to `"true"` fails the agent run, because the agent-executor's LLM credential is process-global and a tenant-authored Agent may not turn off TLS verification for requests carrying it. To reach an endpoint with a private CA, mount the CA bundle and set `SSL_CERT_FILE` or `SSL_CERT_DIR` on the agent-executor process (keeps TLS verification on); as a last resort, `LLM_SKIP_VERIFY_SSL=true` on the agent-executor process disables verification for all LLM egress from that pod, not just this Agent. API keys are never read from `config` — they come from the agent-executor process environment. |
 | `serviceAccount` | string | No | Kubernetes service account for agent execution (RBAC). |
 | `serviceName` | string | No | Name of the AgentExecutor Service. Default: `ottoflow-agent-executor`. |
 | `serviceNamespace` | string | No | Namespace of the AgentExecutor Service. Default: `ottoflow`. |
@@ -45,7 +45,7 @@ Extracted values are available in the step's outputs as `agentOutputs.<key>`; th
 
 ### Local provider (`modelProvider: local`)
 
-`local` targets any llama.cpp-compatible server (llama.cpp, Ollama, vLLM, LM Studio). The server address is read from the **`LLAMACPP_HOST`** environment variable in the process executing the agent step (the agent-executor pod in-cluster, or your shell for CLI local mode). `spec.config.endpoint` is ignored for this provider.
+`local` targets any llama.cpp-compatible server (llama.cpp, Ollama, vLLM, LM Studio). The server address is read from the **`LLAMACPP_HOST`** environment variable in the process executing the agent step (the agent-executor pod in-cluster, or your shell for CLI local mode). `spec.config.endpoint` is ignored for this provider — see the `config` row above.
 
 ---
 

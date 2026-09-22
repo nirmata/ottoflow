@@ -77,14 +77,31 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		Expect(factory.providerID).To(Equal("openai"))
 	})
 
-	It("applies custom endpoint from config when valid", func() {
+	It("rejects a config.endpoint when the operator has allowlisted no LLM endpoints (default-closed)", func() {
 		factory := &mockLLMClientFactory{client: &mockGollmClient{}}
 		e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
 		agentCRD := &ottoflowv1alpha1.Agent{
 			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
 			Spec: ottoflowv1alpha1.AgentSpec{
 				ModelProvider: "openai",
-				Config:        map[string]string{"endpoint": "https://api.example.com/v1"},
+				Config:        map[string]string{"endpoint": "https://api.example.com"},
+			},
+		}
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(AgentLLMEndpointAllowlistEnv))
+		Expect(factory.called).To(BeFalse())
+	})
+
+	It("applies a config.endpoint whose origin the operator has allowlisted", func() {
+		GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://api.example.com")
+		factory := &mockLLMClientFactory{client: &mockGollmClient{}}
+		e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
+		agentCRD := &ottoflowv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+			Spec: ottoflowv1alpha1.AgentSpec{
+				ModelProvider: "openai",
+				Config:        map[string]string{"endpoint": "https://api.example.com"},
 			},
 		}
 		_, err := e.createLLMClient(ctx, agentCRD)
@@ -92,7 +109,8 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		Expect(factory.optsCount).To(BeNumerically(">", 0))
 	})
 
-	It("applies skipVerifySSL when config has skipVerifySSL=true", func() {
+	It("rejects skipVerifySSL=true unconditionally, even with an allowlisted endpoint", func() {
+		GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://api.example.com")
 		factory := &mockLLMClientFactory{client: &mockGollmClient{}}
 		e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
 		agentCRD := &ottoflowv1alpha1.Agent{
@@ -103,11 +121,27 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 			},
 		}
 		_, err := e.createLLMClient(ctx, agentCRD)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.optsCount).To(BeNumerically(">", 0))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no longer honored"))
+		Expect(factory.called).To(BeFalse())
 	})
 
-	It("skips invalid endpoint URL and still creates client", func() {
+	It("keeps skipVerifySSL=\"false\" legal", func() {
+		factory := &mockLLMClientFactory{client: &mockGollmClient{}}
+		e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
+		agentCRD := &ottoflowv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+			Spec: ottoflowv1alpha1.AgentSpec{
+				ModelProvider: "openai",
+				Config:        map[string]string{"skipVerifySSL": "false"},
+			},
+		}
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("rejects an unparseable endpoint rather than silently ignoring it", func() {
+		GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://api.example.com")
 		factory := &mockLLMClientFactory{client: &mockGollmClient{}}
 		e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
 		agentCRD := &ottoflowv1alpha1.Agent{
@@ -118,8 +152,9 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 			},
 		}
 		client, err := e.createLLMClient(ctx, agentCRD)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(client).NotTo(BeNil())
+		Expect(err).To(HaveOccurred())
+		Expect(client).To(BeNil())
+		Expect(factory.called).To(BeFalse())
 	})
 })
 

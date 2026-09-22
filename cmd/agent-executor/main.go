@@ -73,6 +73,12 @@ func main() {
 		"Port for the pprof HTTP server (only used when --profile is set)")
 	flag.Parse()
 
+	// Fail fast on a malformed AGENT_LLM_ENDPOINT_ALLOWLIST rather than silently refusing
+	// every agent step's spec.config.endpoint once traffic starts arriving.
+	if err := agent.ValidateLLMEndpointAllowlist(); err != nil {
+		klog.Fatalf("Invalid %s: %v", agent.AgentLLMEndpointAllowlistEnv, err)
+	}
+
 	// Route controller-runtime's root logger (used by certwatcher for cert-rotation
 	// errors) through klog instead of the default NullLogSink. agent-executor already
 	// configures logging via klog.InitFlags, so klog.Background() reuses that setup

@@ -37,8 +37,14 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			wantCount: 0,
 		},
 		{
-			name:      "keys the default executor reads are accepted silently",
-			config:    map[string]string{"endpoint": "https://llm.example.com", "skipVerifySSL": "true"},
+			name:         "endpoint and skipVerifySSL=true each get their own dedicated warning",
+			config:       map[string]string{"endpoint": "https://llm.example.com", "skipVerifySSL": "true"},
+			wantCount:    2,
+			wantContains: []string{"spec.config.endpoint is honored only if", "spec.config.skipVerifySSL", "no longer honored"},
+		},
+		{
+			name:      "skipVerifySSL=false with no endpoint produces no warnings",
+			config:    map[string]string{"skipVerifySSL": "false"},
 			wantCount: 0,
 		},
 		{

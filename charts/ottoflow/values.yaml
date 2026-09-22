@@ -274,6 +274,31 @@ agentExecutor:
   # Environment variables
   env: []
 
+  # Origins an Agent's spec.config.endpoint may name: "scheme://host[:port]", ORIGIN ONLY.
+  # An entry with a path, query, fragment or user:pass@ is REJECTED at agent-executor startup.
+  # A path is not a credential boundary: the anthropic client keeps only scheme+host and then
+  # POSTs to /v1/messages at the host root, so an entry of "https://gw/teams/a" would still
+  # send the key to "https://gw/v1/messages". The boundary is the HOST, never the path.
+  # EMPTY (default) => no Agent may set spec.config.endpoint; any run that sets it FAILS.
+  # Rendered as AGENT_LLM_ENDPOINT_ALLOWLIST on the agent-executor container.
+  #
+  # LISTING AN ORIGIN IS A FULL-CREDENTIAL TRUST DECISION, NOT A PER-PROVIDER ONE. The
+  # allowlist is provider-agnostic: a tenant may point ANY modelProvider at a listed origin,
+  # so that host can receive ANY LLM credential present in this pod (ANTHROPIC_API_KEY,
+  # OPENAI_API_KEY, AZURE_OPENAI_API_KEY, GEMINI_API_KEY) together with the full prompt. For
+  # azure-openai the listed endpoint also REPLACES your AZURE_OPENAI_ENDPOINT. Do not list a
+  # host you do not control.
+  #
+  # Matching: scheme exact, host case-insensitive with trailing dot ignored, default :443/:80
+  # folded away. No wildcards — "https://*" is a literal host and matches nothing. An Agent
+  # may NOT put a path, query, fragment or user:pass@ on its own spec.config.endpoint either
+  # — such a run fails (userinfo becomes an Authorization: Basic header on the request
+  # carrying your LLM credential; a path/query can steer an allowlisted gateway to a
+  # different backend behind it).
+  # UPGRADE NOTE: Agents that set spec.config.endpoint worked before this release and now fail
+  # until their origin is listed here.
+  llmEndpointAllowlist: []
+
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
   # agent-executor pod via envFrom, for Workflow steps using agentRef. Empty by default (no injection).
   llmCredentialsSecret: ""

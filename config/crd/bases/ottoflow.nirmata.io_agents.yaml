@@ -47,15 +47,26 @@ spec:
                 additionalProperties:
                   type: string
                 description: |-
-                  Config contains provider-specific client options. The executor reads exactly
-                  two keys (internal/agent/default_executor.go):
+                  Config contains provider-specific client options (internal/agent/default_executor.go):
 
-                  - endpoint: custom base URL passed to gollm as ClientOptions.URL; with the pinned
-                  gollm honored ONLY by modelProvider "azure-openai" (overrides AZURE_OPENAI_ENDPOINT);
-                  "openai" reads OPENAI_ENDPOINT/OPENAI_API_BASE from the process environment instead;
-                  "google", "gemini" and "anthropic" ignore it; "local" uses LLAMACPP_HOST.
-                  - skipVerifySSL: "true" disables TLS verification; honored by openai, anthropic,
-                  azure-openai and local.
+                  - endpoint: honored ONLY if the agent-executor operator has pre-approved its origin
+                  via AGENT_LLM_ENDPOINT_ALLOWLIST (Helm: agentExecutor.llmEndpointAllowlist). Unset
+                  allowlist ⇒ any non-empty value fails the agent run: the agent-executor's LLM API key
+                  is process-global, so honoring a CR-supplied endpoint the operator has not approved
+                  would send that shared credential to a tenant-chosen destination. Per-provider
+                  behaviour once an origin IS allowlisted: "azure-openai" honors it (overrides
+                  AZURE_OPENAI_ENDPOINT); "openai" reads OPENAI_ENDPOINT/OPENAI_API_BASE from the
+                  process environment instead; "google", "gemini" and "anthropic" ignore it; "local"
+                  uses LLAMACPP_HOST. An allowlisted origin is a provider-agnostic trust decision: any
+                  modelProvider may be pointed at it, so that host can receive whichever LLM credential
+                  is present in the agent-executor pod, together with the full prompt.
+                  - skipVerifySSL: REJECTED for every provider, same reasoning as endpoint above: the
+                  agent-executor's LLM credential is process-global, so a tenant-authored Agent may not
+                  turn off TLS verification for requests carrying it. Setting it to "true" fails the
+                  agent run. To reach an endpoint with a private CA, mount the CA bundle and set
+                  SSL_CERT_FILE or SSL_CERT_DIR on the agent-executor process instead (keeps TLS
+                  verification on). As a last resort, LLM_SKIP_VERIFY_SSL=true on the agent-executor
+                  process disables verification for ALL LLM egress from that pod, not just this Agent.
 
                   API keys are NOT read from here; they come from the agent-executor process
                   environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, AZURE_OPENAI_API_KEY).
