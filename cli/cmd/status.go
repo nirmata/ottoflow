@@ -52,6 +52,10 @@ func init() {
 }
 
 func getStatus(cmd *cobra.Command, args []string) error {
+	if err := display.ValidateOutputFormat(statusOutputFormat); err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 	workflowRunName := args[0]
 
