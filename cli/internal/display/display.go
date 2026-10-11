@@ -43,6 +43,16 @@ func PrintStepStatusLine(stepName string, s *ottoflowv1alpha1.StepStatus) {
 	fmt.Printf("  %s: %s %s%s\n", stepName, icon, phase, suffix)
 }
 
+// ValidateOutputFormat returns an error if format is not supported by PrintWorkflowStatus.
+func ValidateOutputFormat(format string) error {
+	switch format {
+	case "table", "json", "yaml":
+		return nil
+	default:
+		return fmt.Errorf("invalid --output %q: must be one of table, json, yaml", format)
+	}
+}
+
 // PrintWorkflowStatus prints workflow status in the specified format.
 // Output is appended to the terminal (no clear screen) so users can scroll and troubleshoot.
 // includeInputs controls whether spec.inputValues (which may contain secrets) are included in json/yaml output.
