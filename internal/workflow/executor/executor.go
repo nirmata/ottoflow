@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -418,10 +419,19 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 		workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
 	}
 	for _, step := range workflow.Spec.Steps {
-		if _, exists := workflowRun.Status.StepStatuses[step.Name]; !exists {
+		status, exists := workflowRun.Status.StepStatuses[step.Name]
+		if !exists {
 			workflowRun.Status.StepStatuses[step.Name] = ottoflowv1alpha1.StepStatus{
 				Phase: ottoflowv1alpha1.StepPhasePending,
 			}
+			continue
+		}
+		// A step left Running (runner restarted mid-step) or Waiting (resumed after a
+		// waitForCallback pause) must execute again; the loop below only runs Pending steps.
+		// waitForCallback steps pick up their outputs from status.pendingCallback on re-entry.
+		if status.Phase == ottoflowv1alpha1.StepPhaseRunning || status.Phase == ottoflowv1alpha1.StepPhaseWaiting {
+			status.Phase = ottoflowv1alpha1.StepPhasePending
+			workflowRun.Status.StepStatuses[step.Name] = status
 		}
 	}
 
@@ -446,7 +456,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 		e.emitWorkflowLevelEvent(workflow, workflowRun, "WorkflowRunning", corev1.EventTypeNormal, "Workflow run started")
 	}
 
-	// Resolve maxConcurrentSteps: at most this many steps executed per iteration (batch limit)
+	// Resolve maxConcurrentSteps: at most this many ready steps are executed per iteration (batch limit)
 	maxConcurrentSteps := int32(0) // 0 means no limit (process all ready)
 	if workflow.Spec.ExecutionLimits != nil && workflow.Spec.ExecutionLimits.MaxConcurrentSteps != nil && *workflow.Spec.ExecutionLimits.MaxConcurrentSteps > 0 {
 		maxConcurrentSteps = *workflow.Spec.ExecutionLimits.MaxConcurrentSteps
@@ -487,7 +497,10 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				}
 			}
 
-			return nil
+			// Steps remain but none can run: report it rather than leaving the run in Running.
+			msg := fmt.Sprintf("workflow stalled: no runnable steps remain (pending: %s)", strings.Join(pendingStepNames(workflow, workflowRun), ", "))
+			e.recordWorkflowFailure(workflow, workflowRun, msg)
+			return errors.New(msg)
 		}
 
 		// Execute ready steps
@@ -630,9 +643,23 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	}
 	if allComplete {
 		e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
+		return nil
 	}
 
-	return nil
+	msg := fmt.Sprintf("workflow stalled: iteration limit reached with steps still pending: %s", strings.Join(pendingStepNames(workflow, workflowRun), ", "))
+	e.recordWorkflowFailure(workflow, workflowRun, msg)
+	return errors.New(msg)
+}
+
+// pendingStepNames returns the names of steps that are not yet done, in spec order.
+func pendingStepNames(workflow *ottoflowv1alpha1.Workflow, workflowRun *ottoflowv1alpha1.WorkflowRun) []string {
+	var names []string
+	for _, step := range workflow.Spec.Steps {
+		if !isStepDone(step, workflowRun.Status.StepStatuses[step.Name]) {
+			names = append(names, step.Name)
+		}
+	}
+	return names
 }
 
 func isStepDone(step ottoflowv1alpha1.Step, status ottoflowv1alpha1.StepStatus) bool {
@@ -745,8 +772,9 @@ func (e *WorkflowExecutor) checkMatchConditions(ctx context.Context, step ottofl
 	return true, nil // All conditions true
 }
 
-// executeStep executes a single step. Returns (outputs, nil) on success so forEach can collect per-item outputs; returns (nil, err) on failure.
-func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (map[string]interface{}, error) {
+// executeStepOnce executes a single attempt of a step, without retry/timeout handling (see executeStep).
+// Returns (outputs, nil) on success so forEach can collect per-item outputs; returns (nil, err) on failure.
+func (e *WorkflowExecutor) executeStepOnce(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (map[string]interface{}, error) {
 	// Check step type and delegate to appropriate handler
 	if step.ForEach != nil {
 		err := e.executeForEach(ctx, workflowRun, step)

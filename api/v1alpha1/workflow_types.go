@@ -124,8 +124,8 @@ type KagentExposeSpec struct {
 
 // ExecutionLimits configures per-workflow concurrency and rate limits.
 type ExecutionLimits struct {
-	// MaxConcurrentSteps is the maximum number of steps that may run concurrently in a single WorkflowRun.
-	// When multiple steps are ready (DAG), only this many are started at once. Zero or nil means no limit.
+	// MaxConcurrentSteps is the maximum number of ready steps processed per scheduling round in a single WorkflowRun.
+	// Ready steps currently execute one at a time, in step-name order (forEach items run concurrently, see forEach.maxConcurrency). Zero or nil means no limit.
 	// +optional
 	MaxConcurrentSteps *int32 `json:"maxConcurrentSteps,omitempty"`
 
