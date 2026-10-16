@@ -9,6 +9,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -100,5 +101,36 @@ func TestPendingCallbackPatchUnderCancelReportsError(t *testing.T) {
 	}
 	if err := clearPendingCallbackPatch(ctx, c, run); err == nil {
 		t.Error("clearPendingCallbackPatch returned nil though its write never reached the server")
+	}
+}
+
+// With checkpointing disabled, saveCheckpoint must not build the snapshot (it clones every step status).
+func TestSaveCheckpointBuildsNoSnapshotWhenDisabled(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	run := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "default"},
+		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf"}},
+	}
+	wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"}}
+	exec, err := NewWorkflowExecutorWithAgentExecutor(c, nil, nil, nil, run, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.contextManager.InitializeContext(context.Background(), wf, nil); err != nil {
+		t.Fatal(err)
+	}
+	cm := NewCheckpointManager(c, run)
+	if cm.Enabled() {
+		t.Fatal("test needs checkpointing disabled")
+	}
+	exec.SetCheckpointManager(cm)
+	run.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{}
+	for i := 0; i < 200; i++ {
+		run.Status.StepStatuses[fmt.Sprintf("s%d", i)] = ottoflowv1alpha1.StepStatus{Phase: ottoflowv1alpha1.StepPhaseSucceeded}
+	}
+	if n := testing.AllocsPerRun(10, func() { exec.saveCheckpoint(context.Background(), run, "s0") }); n != 0 {
+		t.Errorf("saveCheckpoint allocated %v times with checkpointing disabled, want 0", n)
 	}
 }

@@ -1099,7 +1099,8 @@ func (e *WorkflowExecutor) loadCheckpointIfNeeded(ctx context.Context, workflowR
 
 // checkpointCleanup returns a deferred function that flushes writes and deletes the checkpoint on terminal state.
 func (e *WorkflowExecutor) saveCheckpoint(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, stepName string) {
-	if e.checkpointManager == nil {
+	// SaveAsync is a no-op when disabled; skip building the snapshot (clone of every step status) too.
+	if e.checkpointManager == nil || !e.checkpointManager.Enabled() {
 		return
 	}
 	e.checkpointManager.SaveAsync(ctx, CheckpointSnapshot{
