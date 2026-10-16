@@ -162,7 +162,6 @@ Pending → Running → Succeeded
 ```
 WorkflowRunReconciler
 ├── Client              → K8s API client
-├── CELCache            → Pre-compiled CEL programs (shared across all runs)
 ├── RunnerConfig        → Image, ServiceAccount, RBAC, secrets configuration
 └── ControllerNamespace → Fallback namespace for Workflow lookup
 ```
