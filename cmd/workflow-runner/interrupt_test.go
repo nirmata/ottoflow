@@ -363,6 +363,44 @@ func TestRunWorkflowToCompletionSignalAfterCompletionIsSuccess(t *testing.T) {
 	}
 }
 
+// A run interrupted and then resumed to success must not keep the interrupt marker at run level.
+func TestResumedRunSuccessClearsInterruptedMessage(t *testing.T) {
+	run := newRun()
+	run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+	run.Status.Message = interruptedMessage
+	run.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{Message: interruptedMessage}
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
+			{Name: "only", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "1"}}},
+		}},
+	}
+	c, _ := ctxAwareClient(run, wf)
+	exec, err := workflowexecutor.NewWorkflowExecutorWithAgentExecutor(
+		c, nil, nil, nil, run, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm := workflowexecutor.NewCheckpointManager(c, run)
+	exec.SetCheckpointManager(cm)
+	cfg := runnerConfig{
+		runName: "r", runNamespace: "default", runKey: client.ObjectKeyFromObject(run), jobName: "j", podName: "p",
+	}
+
+	if code := runWorkflowToCompletion(context.Background(), exec, cm, wf, run, c, cfg); code != 0 {
+		t.Fatalf("exit code=%d, want 0", code)
+	}
+	stored := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), cfg.runKey, stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+		stored.Status.Message == interruptedMessage ||
+		stored.Status.Execution == nil || stored.Status.Execution.Message == interruptedMessage {
+		t.Fatalf("interrupt marker survived success: %+v exec=%+v", stored.Status, stored.Status.Execution)
+	}
+}
+
 // The worst case from signal to exit must stay inside the 30s default grace period with margin.
 func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
 	const grace, margin = 30 * time.Second, 10 * time.Second

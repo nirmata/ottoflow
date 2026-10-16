@@ -703,6 +703,10 @@ func persistExecutionSuccess(
 	jobName, podName string,
 ) {
 	end := metav1.Now()
+	// A resumed run still carries the marker markInterrupted wrote; a normal success writes no message.
+	if workflowRun.Status.Message == interruptedMessage {
+		workflowRun.Status.Message = ""
+	}
 	if workflowRun.Status.Execution == nil {
 		workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}
 	}
