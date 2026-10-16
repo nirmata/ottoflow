@@ -134,3 +134,19 @@ func TestSaveCheckpointBuildsNoSnapshotWhenDisabled(t *testing.T) {
 		t.Errorf("saveCheckpoint allocated %v times with checkpointing disabled, want 0", n)
 	}
 }
+
+// A cancelled audit-snapshot write must return an error, not the ConfigMap name of an object
+// that was never created.
+func TestSaveAuditSnapshotUnderCancelReportsError(t *testing.T) {
+	scheme := runtime.NewScheme()
+	utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c := cancelOnGet{Client: fake.NewClientBuilder().WithScheme(scheme).Build(), cancel: cancel}
+	run := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "r", Namespace: "default", UID: "u"}}
+	cm := NewCheckpointManager(c, run)
+	name, err := cm.SaveAuditSnapshot(ctx, CheckpointSnapshot{Version: 1, WorkflowRunUID: "u"})
+	if err == nil {
+		t.Errorf("SaveAuditSnapshot returned name %q and nil error though its write never reached the server", name)
+	}
+}
