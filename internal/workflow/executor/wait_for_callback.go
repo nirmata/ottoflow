@@ -167,7 +167,7 @@ func setPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv
 		return fmt.Errorf("marshal CallbackState: %w", err)
 	}
 	patch := fmt.Sprintf(`{"status":{"pendingCallback":%s}}`, string(cbJSON))
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retryOnConflictKeepErr(func() error {
 		current := &ottoflowv1alpha1.WorkflowRun{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(wr), current); err != nil {
 			return err
@@ -180,11 +180,25 @@ func setPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv
 // Refetches the object on each conflict retry to get a fresh resourceVersion.
 func clearPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv1alpha1.WorkflowRun) error {
 	patch := `{"status":{"pendingCallback":null}}`
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retryOnConflictKeepErr(func() error {
 		current := &ottoflowv1alpha1.WorkflowRun{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(wr), current); err != nil {
 			return err
 		}
 		return c.Status().Patch(ctx, current, client.RawPatch(types.MergePatchType, []byte(patch)))
 	})
+}
+
+// retryOnConflictKeepErr is retry.RetryOnConflict that reports the last error when ctx ends mid-retry.
+// RetryOnConflict returns nil then, though nothing was written, and SIGTERM would read as a stored patch.
+func retryOnConflictKeepErr(fn func() error) error {
+	var last error
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		last = fn()
+		return last
+	})
+	if err == nil {
+		return last
+	}
+	return err
 }

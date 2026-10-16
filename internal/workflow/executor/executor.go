@@ -475,8 +475,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				}
 			}
 			if allDone {
-				e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
-				return nil
+				return e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
 			}
 
 			for _, step := range workflow.Spec.Steps {
@@ -630,7 +629,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 		}
 	}
 	if allComplete {
-		e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
+		return e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
 	}
 
 	return nil
@@ -684,16 +683,20 @@ func (e *WorkflowExecutor) recordWorkflowSuccess(
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	workflowName, namespace string,
-) {
+) error {
+	// Outputs first: a cancel that cut evaluation short must not leave the run Succeeded with an output missing.
+	if err := e.evaluateWorkflowOutputs(ctx, workflow, workflowRun, workflowName, namespace); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		fmt.Printf("Warning: failed to evaluate workflow outputs: %v\n", err)
+	}
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
 	now := metav1.Now()
 	workflowRun.Status.CompletionTime = &now
 	e.emitWorkflowLevelEvent(workflow, workflowRun, "WorkflowSucceeded", corev1.EventTypeNormal, "Workflow run completed successfully")
-
-	if err := e.evaluateWorkflowOutputs(ctx, workflow, workflowRun, workflowName, namespace); err != nil {
-		fmt.Printf("Warning: failed to evaluate workflow outputs: %v\n", err)
-	}
 	e.invokeProgressCallback(workflowRun, workflow)
+	return nil
 }
 
 func (e *WorkflowExecutor) invokeProgressCallback(workflowRun *ottoflowv1alpha1.WorkflowRun, workflow *ottoflowv1alpha1.Workflow) {
@@ -1007,6 +1010,9 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 			result, err = e.celEvaluator.EvaluateOutputValue(ctx, valueData, vars)
 			if err != nil {
 				// Log error but continue with other outputs
+				if ctx.Err() != nil {
+					return err
+				}
 				fmt.Printf("Warning: failed to evaluate workflow output '%s' value: %v\n", outputDef.Name, err)
 				continue
 			}
@@ -1014,6 +1020,9 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 			result, err = e.celEvaluator.EvaluateExpression(ctx, outputDef.Expression, vars)
 			if err != nil {
 				// Log error but continue with other outputs
+				if ctx.Err() != nil {
+					return err
+				}
 				fmt.Printf("Warning: failed to evaluate workflow output '%s' expression: %v\n", outputDef.Name, err)
 				continue
 			}
