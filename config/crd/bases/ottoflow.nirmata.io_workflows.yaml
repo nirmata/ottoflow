@@ -3501,13 +3501,17 @@ spec:
                   type: object
                 type: array
               run:
-                description: Run configures retention and scale limits for WorkflowRuns
-                  of this workflow.
+                default: {}
+                description: |-
+                  Run configures retention and scale limits for WorkflowRuns of this workflow.
+                  When omitted, completed runs are kept for 7 days and at most 50 are retained.
                 properties:
                   maxAllowed:
+                    default: 50
                     description: |-
                       MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).
-                      When exceeded, oldest completed runs are deleted first. Zero or nil means no limit.
+                      When exceeded, oldest completed runs are deleted first. Omitted means 50.
+                      Set to 0 for no limit.
                       Pending and Running runs are not counted toward this limit when deciding deletions.
                     format: int32
                     type: integer
@@ -3519,9 +3523,11 @@ spec:
                     format: int32
                     type: integer
                   retentionMinutes:
+                    default: 10080
                     description: |-
                       RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).
-                      Completed runs older than this are deleted. Zero or nil means no automatic deletion.
+                      Completed runs older than this are deleted. Omitted means 10080 (7 days).
+                      Set to 0 to disable age-based deletion.
                     format: int32
                     type: integer
                 type: object

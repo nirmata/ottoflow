@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -156,7 +157,7 @@ var _ = Describe("WorkflowRun Controller", func() {
 					Steps: []ottoflowv1alpha1.Step{
 						{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}},
 					},
-					Run: &ottoflowv1alpha1.RunPolicy{RetentionMinutes: 1},
+					Run: &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](1)},
 				},
 			}
 			oldCompletion := metav1.NewTime(time.Now().Add(-2 * time.Hour))
@@ -180,7 +181,7 @@ var _ = Describe("WorkflowRun Controller", func() {
 					Steps: []ottoflowv1alpha1.Step{
 						{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}},
 					},
-					Run: &ottoflowv1alpha1.RunPolicy{MaxAllowed: 2},
+					Run: &ottoflowv1alpha1.RunPolicy{MaxAllowed: ptr.To[int32](2)},
 				},
 			}
 			baseTime := time.Now()

@@ -815,8 +815,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `retentionMinutes` _integer_ | RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).<br />Completed runs older than this are deleted. Zero or nil means no automatic deletion. |  | Optional: \{\} <br /> |
-| `maxAllowed` _integer_ | MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).<br />When exceeded, oldest completed runs are deleted first. Zero or nil means no limit.<br />Pending and Running runs are not counted toward this limit when deciding deletions. |  | Optional: \{\} <br /> |
+| `retentionMinutes` _integer_ | RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).<br />Completed runs older than this are deleted. Omitted means 10080 (7 days).<br />Set to 0 to disable age-based deletion. | 10080 | Optional: \{\} <br /> |
+| `maxAllowed` _integer_ | MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).<br />When exceeded, oldest completed runs are deleted first. Omitted means 50.<br />Set to 0 for no limit.<br />Pending and Running runs are not counted toward this limit when deciding deletions. | 50 | Optional: \{\} <br /> |
 | `maxConcurrentRuns` _integer_ | MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.<br />When a trigger (cron, event) would create a new run, creation is skipped if active runs >= MaxConcurrentRuns.<br />Zero or nil means no limit. |  | Optional: \{\} <br /> |
 
 
@@ -1725,7 +1725,7 @@ _Appears in:_
 | `outputs` _[Output](#output) array_ | Outputs defines workflow-level outputs that are evaluated at completion<br />and added to the WorkflowRun status for observability |  | Optional: \{\} <br /> |
 | `triggers` _[Trigger](#trigger) array_ | Triggers defines automatic triggers for this workflow template<br />When triggers fire, they automatically create WorkflowRun instances<br />Multiple triggers can be defined (OR logic - any trigger can fire) |  | Optional: \{\} <br /> |
 | `events` _[EventConfig](#eventconfig)_ | Events configures Kubernetes event emission for this workflow. |  | Optional: \{\} <br /> |
-| `run` _[RunPolicy](#runpolicy)_ | Run configures retention and scale limits for WorkflowRuns of this workflow. |  | Optional: \{\} <br /> |
+| `run` _[RunPolicy](#runpolicy)_ | Run configures retention and scale limits for WorkflowRuns of this workflow.<br />When omitted, completed runs are kept for 7 days and at most 50 are retained. | \{  \} | Optional: \{\} <br /> |
 | `celCostLimit` _integer_ | CELCostLimit is the maximum cost budget for CEL expression evaluation in this workflow.<br />If unset, a default (~2MB-equivalent) is used. Increase for workflows that do large data joins. |  | Optional: \{\} <br /> |
 | `execution` _[WorkflowRunExecutionSpec](#workflowrunexecutionspec)_ | Execution is the default execution spec for WorkflowRuns created from this Workflow (e.g. by cron).<br />When the scheduler creates a WorkflowRun, it copies this into the run's spec so runner Jobs get<br />the same env, volumes, etc. Use this to inject Nirmata LLM credentials (valueFrom.secretKeyRef). |  | Optional: \{\} <br /> |
 | `executionLimits` _[ExecutionLimits](#executionlimits)_ | ExecutionLimits configures concurrency and rate limits for this workflow. |  | Optional: \{\} <br /> |
