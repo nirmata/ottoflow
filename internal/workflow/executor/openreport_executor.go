@@ -92,7 +92,7 @@ func (e *WorkflowExecutor) executeOpenReportStep(
 		namespace = workflowRun.Namespace
 	}
 
-	crdAvailable, err := e.isOpenReportsCRDAvailable(ctx)
+	crdAvailable, unavailableReason, err := e.isOpenReportsCRDAvailable(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("openReport: failed to check CRD availability: %w", err)
 	}
@@ -105,10 +105,10 @@ func (e *WorkflowExecutor) executeOpenReportStep(
 		mode, reportName, reportNamespace = "crd", ref.ReportName, namespace
 	} else {
 		msg := fmt.Sprintf(
-			"OpenReports CRD (%s) is not installed in this cluster. "+
+			"%s "+
 				"Report data is available in reportResult.data and can be captured via workflow outputs. "+
 				"To create CRD-backed reports, install OpenReports: %s",
-			openReportsCRDName, openReportsInstallURL,
+			unavailableReason, openReportsInstallURL,
 		)
 		klog.Warningf("openReport step %q: %s", step.Name, msg)
 		if e.eventRecorder != nil {
@@ -128,25 +128,32 @@ func (e *WorkflowExecutor) executeOpenReportStep(
 }
 
 // isOpenReportsCRDAvailable checks whether the openreports.io/v1alpha1 Report CRD is
-// installed in the cluster. The result is cached for the lifetime of the WorkflowRun —
-// the CRD is cluster-global and will not change mid-run. Uses the control client because
-// CRDs are control-plane objects.
-func (e *WorkflowExecutor) isOpenReportsCRDAvailable(ctx context.Context) (bool, error) {
+// installed in the TARGET cluster (e.client), which is where createOpenReportCRD writes.
+// The result is cached for the lifetime of this executor (one WorkflowRun, one target).
+// A nil target client (CLI -f with no kubeconfig) or a Forbidden probe cannot determine
+// availability and falls back to data mode with a reason; NotFound means not installed.
+// Any other error fails the step.
+func (e *WorkflowExecutor) isOpenReportsCRDAvailable(ctx context.Context) (bool, string, error) {
 	e.openReportsCRDOnce.Do(func() {
+		if e.client == nil {
+			e.openReportsCRDReason = fmt.Sprintf("Cannot determine whether the OpenReports CRD (%s) is installed: no Kubernetes client is available in this execution mode (no kubeconfig).", openReportsCRDName)
+			return
+		}
 		crd := &unstructured.Unstructured{}
 		crd.SetGroupVersionKind(openReportsCRDGVK)
-		err := e.controlClient.Get(ctx, types.NamespacedName{Name: openReportsCRDName}, crd)
-		if err == nil {
+		err := e.client.Get(ctx, types.NamespacedName{Name: openReportsCRDName}, crd)
+		switch {
+		case err == nil:
 			e.openReportsCRDAvail = true
-			return
+		case apierrors.IsNotFound(err):
+			e.openReportsCRDReason = fmt.Sprintf("OpenReports CRD (%s) is not installed in the target cluster.", openReportsCRDName)
+		case apierrors.IsForbidden(err):
+			e.openReportsCRDReason = fmt.Sprintf("Cannot determine whether the OpenReports CRD (%[1]s) is installed: the target identity is not permitted to get customresourcedefinitions (resourceNames: %[1]s), so the Report write was not attempted. Underlying error: %[2]v.", openReportsCRDName, err)
+		default:
+			e.openReportsCRDErr = err
 		}
-		if apierrors.IsNotFound(err) {
-			e.openReportsCRDAvail = false
-			return
-		}
-		e.openReportsCRDErr = err
 	})
-	return e.openReportsCRDAvail, e.openReportsCRDErr
+	return e.openReportsCRDAvail, e.openReportsCRDReason, e.openReportsCRDErr
 }
 
 // computeOpenReportSummary returns pass/fail/warn/error/skip counts either by evaluating
