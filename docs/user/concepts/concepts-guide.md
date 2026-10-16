@@ -42,9 +42,9 @@ Step (api/v1alpha1/workflow_types.go)
 
 The step dispatcher in `executeStep()` (`internal/workflow/executor/executor.go`) checks these fields in this exact priority order:
 
-`forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → expressions (default)`
+`expressions (evaluated first, on every step) → forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → outputs only (default)`
 
-A step takes exactly ONE action. In particular, `expressions:` are only evaluated on pure expression steps — they are ignored on a step that also has an action field like `resourceQuery`.
+A step takes exactly ONE action. A step's `expressions:` are evaluated before its action runs, so the action's fields can read them as `expressions.<name>`. To post-process the action's result, use the step's `outputs:` or a dependent expression-only step.
 
 ---
 
@@ -56,7 +56,7 @@ CEL (Common Expression Language) is the glue that connects steps. Every output, 
 inputs.*              → Workflow input values (always strings)
 variables.*           → Workflow-level variables AND step outputs (flat, no step prefix)
 steps.<stepName>.*    → Step-scoped results (e.g. forEach results)
-expressions.*         → Current step's inline expression results
+expressions.*         → Inline expression results: visible to the step's own action and outputs and to later steps (forEach items are isolated)
 item                  → Current item in a ForEach loop
 toolResult            → MCP tool call result
 agentResponse         → Raw LLM output text
