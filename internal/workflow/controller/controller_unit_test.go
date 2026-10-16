@@ -2573,7 +2573,7 @@ func TestInjectWellKnownLLMCredentials_SecretPresent(t *testing.T) {
 
 func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t,
-		map[string][]byte{testLLMTokenKey: []byte("secret-tok"), "OPENAI_API_KEY": []byte("openai-key")},
+		map[string][]byte{testLLMTokenKey: []byte("secret-tok"), "NIRMATA_LLM_APIKEY": []byte("openai-key")},
 		"ottoflow-llm-credentials",
 	)
 	// NIRMATA_LLM_TOKEN is already set explicitly in spec.execution.job.env
@@ -2582,7 +2582,7 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Only OPENAI_API_KEY should be injected; NIRMATA_LLM_TOKEN was already in existingEnvNames
+	// Only NIRMATA_LLM_APIKEY should be injected; NIRMATA_LLM_TOKEN was already in existingEnvNames
 	for _, ev := range extras {
 		if ev.Name == testLLMTokenKey {
 			t.Errorf("NIRMATA_LLM_TOKEN must not be injected when already explicit in job env")
@@ -2590,12 +2590,12 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	}
 	found := false
 	for _, ev := range extras {
-		if ev.Name == "OPENAI_API_KEY" {
+		if ev.Name == "NIRMATA_LLM_APIKEY" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected OPENAI_API_KEY to be injected from well-known Secret")
+		t.Error("expected NIRMATA_LLM_APIKEY to be injected from well-known Secret")
 	}
 }
 

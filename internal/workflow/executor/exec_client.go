@@ -60,9 +60,6 @@ var testExecURLBase string
 var LLMEnvAllowlist = []string{
 	"NIRMATA_LLM_TOKEN", "NIRMATA_LLM_SERVICEACCOUNT_TOKEN", "NIRMATA_LLM_APIKEY", "NIRMATA_URL",
 	"NIRMATA_LLM_MODEL",
-	"GEMINI_API_KEY", "GOOGLE_API_KEY",
-	"OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
-	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 }
 
 // OttoFlowAgentExecutor implements the server-side agent executor for the exec HTTP endpoint.
