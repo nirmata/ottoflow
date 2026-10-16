@@ -662,13 +662,15 @@ func persistInterrupted(
 	klog.InfoS("interrupted; saving step statuses", append(keys, "cause", cause.Error())...)
 	markInterrupted(&workflowRun.Status, workflow)
 	// One budget for both writes, so the interrupted path costs at most persistTimeout.
+	// Status first: Flush only waits on saves that use their own 30s ctx, so a slow checkpoint
+	// save must not use up the budget the status write needs.
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	if err := cm.Flush(writeCtx); err != nil {
-		klog.ErrorS(err, "failed to flush checkpoint on interrupt", keys...)
-	}
 	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, workflowRun.Status); err != nil {
 		klog.ErrorS(err, "failed to persist interrupted status", keys...)
+	}
+	if err := cm.Flush(writeCtx); err != nil {
+		klog.ErrorS(err, "failed to flush checkpoint on interrupt", keys...)
 	}
 }
 

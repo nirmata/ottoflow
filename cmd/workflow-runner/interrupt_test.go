@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -410,5 +411,50 @@ func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
 	// Normal interrupted path: shared flush+write budget plus the OTel flush deferred in run().
 	if normal := persistTimeout + otelFlushTimeout; normal > defaultHardStop {
 		t.Fatalf("normal interrupted path %s outlasts the hard stop %s", normal, defaultHardStop)
+	}
+}
+
+// A checkpoint save that hangs must not use up the budget of the interrupted-status write: the
+// status reaches the server even though Flush times out.
+func TestInterruptedStatusSurvivesStalledCheckpointSave(t *testing.T) {
+	run := newRun()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "loop"}}},
+	}
+	c, _ := ctxAwareClient(run, wf)
+	release := make(chan struct{})
+	defer close(release)
+	stalled := interceptor.NewClient(c, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object,
+			opts ...client.GetOption) error {
+			if _, ok := o.(*corev1.ConfigMap); ok {
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+				return ctx.Err()
+			}
+			return c.Get(ctx, k, o, opts...)
+		},
+	})
+	cm := workflowexecutor.NewCheckpointManager(stalled, run)
+	cm.SaveAsync(context.Background(), workflowexecutor.CheckpointSnapshot{Version: 1})
+	run.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{
+		"loop": {Phase: ottoflowv1alpha1.StepPhaseRunning},
+	}
+	cfg := runnerConfig{runName: "r", runNamespace: "default", runKey: client.ObjectKeyFromObject(run)}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	persistInterrupted(ctx, cm, c, cfg, wf, run, context.Canceled)
+
+	stored := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), cfg.runKey, stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Status.StepStatuses["loop"]; got.Phase != ottoflowv1alpha1.StepPhasePending ||
+		got.Message != interruptedMessage {
+		t.Fatalf("interrupted status not stored behind a stalled checkpoint save: %+v", stored.Status)
 	}
 }
