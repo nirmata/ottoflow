@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -1096,7 +1097,7 @@ func (e *WorkflowExecutor) saveCheckpoint(ctx context.Context, workflowRun *otto
 		Version:           1,
 		WorkflowRunUID:    string(workflowRun.UID),
 		LastCompletedStep: stepName,
-		StepStatuses:      workflowRun.Status.StepStatuses,
+		StepStatuses:      maps.Clone(workflowRun.Status.StepStatuses), // SaveAsync reads it off-goroutine
 		Context:           e.contextManager.GetContext(),
 		CompletionOrder:   e.contextManager.CompletionOrder(),
 	})

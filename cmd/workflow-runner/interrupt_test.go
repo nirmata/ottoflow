@@ -105,7 +105,7 @@ func TestInterruptedStatusRetriesWithoutCheckpoint(t *testing.T) {
 			"step1": step1, "step2": {Phase: ottoflowv1alpha1.StepPhasePending},
 		}
 		if rewrite {
-			markInterrupted(&run.Status, wf)
+			markInterrupted(&run.Status)
 		}
 		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := persistWorkflowRunStatus(writeCtx, c, client.ObjectKeyFromObject(run), run.Status); err != nil {
@@ -149,30 +149,33 @@ func TestInterruptedStatusRetriesWithoutCheckpoint(t *testing.T) {
 	}
 }
 
-// A matchCondition failure under cancel (Failed, Error only, no times) is rewritten; a
-// Continue-policy failure keeps its genuine failure.
-func TestMarkInterruptedRewritesMatchConditionFailure(t *testing.T) {
-	wf := &ottoflowv1alpha1.Workflow{Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
-		{Name: "soft", FailurePolicy: ottoflowv1alpha1.FailurePolicyContinue},
-		{Name: "gate"},
-	}}}
+// Every non-Pending step goes back to Pending, whatever its phase or FailurePolicy: a retry
+// without a checkpoint restore must not skip a step whose outputs it no longer has.
+func TestMarkInterruptedResetsEveryNonPendingStep(t *testing.T) {
 	st := ottoflowv1alpha1.WorkflowRunStatus{
 		Phase: ottoflowv1alpha1.WorkflowRunPhaseFailed,
 		StepStatuses: map[string]ottoflowv1alpha1.StepStatus{
-			"soft": {Phase: ottoflowv1alpha1.StepPhaseFailed, Error: "boom"},
+			"done":    {Phase: ottoflowv1alpha1.StepPhaseSucceeded},
+			"skipped": {Phase: ottoflowv1alpha1.StepPhaseSkipped},
+			"soft":    {Phase: ottoflowv1alpha1.StepPhaseFailed, Error: "boom"},
 			// matchCondition failure: Failed, Error only, no StartTime/CompletionTime.
-			"gate": {Phase: ottoflowv1alpha1.StepPhaseFailed, Error: "matchCondition evaluation failed: context canceled"},
+			"gate":    {Phase: ottoflowv1alpha1.StepPhaseFailed, Error: "matchCondition evaluation failed: context canceled"},
+			"running": {Phase: ottoflowv1alpha1.StepPhaseRunning},
+			"waiting": {Phase: ottoflowv1alpha1.StepPhasePending, Message: "keep"},
 		},
 	}
-	markInterrupted(&st, wf)
-	g, s := st.StepStatuses["gate"], st.StepStatuses["soft"]
-	t.Logf("after markInterrupted: runPhase=%s gate.phase=%s gate.msg=%q soft.phase=%s",
-		st.Phase, g.Phase, g.Message, s.Phase)
-	if g.Phase != ottoflowv1alpha1.StepPhasePending || g.Message != interruptedMessage {
-		t.Errorf("matchCondition failure under cancel not rewritten")
+	markInterrupted(&st)
+	for name, s := range st.StepStatuses {
+		want := interruptedMessage
+		if name == "waiting" {
+			want = "keep"
+		}
+		if s.Phase != ottoflowv1alpha1.StepPhasePending || s.Message != want || s.Error != "" {
+			t.Errorf("step %s not reset: %+v", name, s)
+		}
 	}
-	if s.Phase != ottoflowv1alpha1.StepPhaseFailed {
-		t.Errorf("Continue-policy failure was rewritten")
+	if st.Phase != ottoflowv1alpha1.WorkflowRunPhaseRunning {
+		t.Errorf("run phase=%s, want Running", st.Phase)
 	}
 }
 

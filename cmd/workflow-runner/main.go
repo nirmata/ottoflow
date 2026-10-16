@@ -162,18 +162,14 @@ func hardStopAfterSignal(ctx context.Context, d time.Duration) {
 	klog.FlushAndExit(hardStopFlushTimeout, 1)
 }
 
-// markInterrupted rewrites the status the executor left after a root-ctx cancel so a controller
-// retry re-runs the in-flight step instead of resuming a stale Running or Failed one. Call it only
-// when the root ctx is done: then a step is interrupted iff it is Running, or Failed without
-// FailurePolicy Continue (the executor stops at the first non-Continue failure).
-func markInterrupted(status *ottoflowv1alpha1.WorkflowRunStatus, workflow *ottoflowv1alpha1.Workflow) {
-	continueOnFail := map[string]bool{}
-	for _, st := range workflow.Spec.Steps {
-		continueOnFail[st.Name] = st.FailurePolicy == ottoflowv1alpha1.FailurePolicyContinue
-	}
+// markInterrupted rewrites the status the executor left after a root-ctx cancel. Every non-Pending
+// step goes back to Pending: a retry that restores a checkpoint replaces these statuses with the
+// snapshot's, and one that does not starts from an empty context, where a step kept Succeeded would
+// be skipped without its outputs. Call it only when the root ctx is done. Trade-off: the saved
+// status no longer shows which steps finished before the signal.
+func markInterrupted(status *ottoflowv1alpha1.WorkflowRunStatus) {
 	for name, s := range status.StepStatuses {
-		if s.Phase != ottoflowv1alpha1.StepPhaseRunning &&
-			(s.Phase != ottoflowv1alpha1.StepPhaseFailed || continueOnFail[name]) {
+		if s.Phase == ottoflowv1alpha1.StepPhasePending {
 			continue
 		}
 		s.Phase = ottoflowv1alpha1.StepPhasePending
@@ -564,13 +560,20 @@ func mustPersistRunningStatus(
 	jobName, podName string,
 ) {
 	now := metav1.Now()
-	workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{
+	execution := &ottoflowv1alpha1.WorkflowRunExecutionStatus{
 		Phase:     string(ottoflowv1alpha1.WorkflowRunPhaseRunning),
 		JobName:   jobName,
 		PodName:   podName,
 		Message:   "Runner pod started",
 		StartTime: &now,
 	}
+	// Keep the controller's retry bookkeeping: loadCheckpointIfNeeded reads Attempts to detect a
+	// retry, and handleFailedJob compares it with maxRestartAttempts.
+	if prev := workflowRun.Status.Execution; prev != nil {
+		execution.Attempts = prev.Attempts
+		execution.LastTerminationReason = prev.LastTerminationReason
+	}
+	workflowRun.Status.Execution = execution
 	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
 		keys := logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name)
 		klog.ErrorS(err, "failed to persist initial WorkflowRun status", keys...)
@@ -660,13 +663,15 @@ func persistInterrupted(
 ) {
 	keys := logging.KeysForRun(workflow.Name, cfg.runNamespace, cfg.runName)
 	klog.InfoS("interrupted; saving step statuses", append(keys, "cause", cause.Error())...)
-	markInterrupted(&workflowRun.Status, workflow)
+	// Rewrite a copy: checkpoint saves still in flight read the live StepStatuses map.
+	status := workflowRun.Status.DeepCopy()
+	markInterrupted(status)
 	// One budget for both writes, so the interrupted path costs at most persistTimeout.
 	// Status first: Flush only waits on saves that use their own 30s ctx, so a slow checkpoint
 	// save must not use up the budget the status write needs.
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, workflowRun.Status); err != nil {
+	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, *status); err != nil {
 		klog.ErrorS(err, "failed to persist interrupted status", keys...)
 	}
 	if err := cm.Flush(writeCtx); err != nil {
