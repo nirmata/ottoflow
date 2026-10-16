@@ -9,8 +9,10 @@ package executor
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -37,6 +39,18 @@ func (c cancelOnGet) Get(ctx context.Context, key client.ObjectKey, obj client.O
 // A SIGTERM that cancels workflow-output evaluation must not record the run as Succeeded:
 // the output would be missing from a run the controller then never retries.
 func TestOutputEvalUnderCancelIsNotSuccess(t *testing.T) {
+	const getExpr = `resource.Get("v1", "configmaps", "default", "cm").metadata.name`
+	for name, out := range map[string]ottoflowv1alpha1.Output{
+		"expression": {Name: "o", Expression: getExpr},
+		// EvaluateOutputValue falls back to the literal string on an evaluation error.
+		"value": {Name: "o", Value: &apiextensionsv1.JSON{Raw: []byte(`"` + strings.ReplaceAll(getExpr, `"`, `\"`) + `"`)}},
+	} {
+		t.Run(name, func(t *testing.T) { outputEvalUnderCancel(t, out) })
+	}
+}
+
+func outputEvalUnderCancel(t *testing.T, out ottoflowv1alpha1.Output) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	utilruntime.Must(ottoflowv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -51,7 +65,7 @@ func TestOutputEvalUnderCancelIsNotSuccess(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps:   []ottoflowv1alpha1.Step{{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "1"}}}},
-			Outputs: []ottoflowv1alpha1.Output{{Name: "o", Expression: `resource.Get("v1", "configmaps", "default", "cm").metadata.name`}},
+			Outputs: []ottoflowv1alpha1.Output{out},
 		},
 	}
 	exec, err := NewWorkflowExecutorWithAgentExecutor(c, nil, nil, nil, run, agent.NewMockAgentExecutor(), false, 0, 5, nil)
