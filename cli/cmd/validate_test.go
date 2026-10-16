@@ -701,3 +701,14 @@ spec:
 		t.Errorf("expected warning naming missing-agent, got: %s", warnings[0].message)
 	}
 }
+
+func TestCheckWorkflow_NoSteps(t *testing.T) {
+	celEnv, celEnvErr := executor.NewValidationCELEnv()
+	errs := checkWorkflow(context.Background(), &ottoflowv1alpha1.Workflow{}, nil, celEnv, celEnvErr)
+	for _, e := range errs {
+		if e.code == "NO_STEPS" {
+			return
+		}
+	}
+	t.Fatalf("expected a NO_STEPS error for a workflow with no steps, got: %+v", errs)
+}

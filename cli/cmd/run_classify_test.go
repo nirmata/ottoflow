@@ -54,7 +54,11 @@ metadata:
   name: cluster-overview
   namespace: ottoflow
 spec:
-  steps: []
+  steps:
+    - name: step1
+      expressions:
+        - name: x
+          expression: '"hello"'
 `
 
 const workflowRunManifest = `apiVersion: ottoflow.nirmata.io/v1alpha1
