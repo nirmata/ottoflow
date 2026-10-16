@@ -412,6 +412,9 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	if len(workflow.Spec.Steps) == 0 {
 		const msg = "workflow has no steps"
 		e.recordWorkflowFailure(workflow, workflowRun, msg)
+		// Retention cleanup keys off Status.CompletionTime, which the success path also sets.
+		now := metav1.Now()
+		workflowRun.Status.CompletionTime = &now
 		return errors.New(msg)
 	}
 

@@ -40,4 +40,7 @@ func TestExecuteWorkflow_NoStepsRecordsFailure(t *testing.T) {
 	if wr.Status.Message != "workflow has no steps" {
 		t.Errorf("Message = %q, want %q", wr.Status.Message, "workflow has no steps")
 	}
+	if wr.Status.CompletionTime == nil {
+		t.Error("CompletionTime is nil; retention cleanup needs it on a terminal run")
+	}
 }
