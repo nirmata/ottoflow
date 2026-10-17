@@ -279,6 +279,11 @@ func checkWorkflow(
 ) []validationError {
 	var errs []validationError
 
+	// Check 0: a workflow with no steps would run to Succeeded without doing anything.
+	if len(wf.Spec.Steps) == 0 {
+		errs = append(errs, validationError{code: "NO_STEPS", message: "workflow has no steps"})
+	}
+
 	// Check 1+2: DAG cycle detection and invalid dependsOn references.
 	if _, dagErr := executor.BuildDAG(wf.Spec.Steps); dagErr != nil {
 		code := "MISSING_DEPENDS_ON"

@@ -407,6 +407,17 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 
 	defer e.checkpointCleanup(ctx, workflow, workflowRun)()
 
+	// A workflow with no steps would otherwise finish as Succeeded without doing anything.
+	// Record the failure so Phase and Message are set before the runner exits.
+	if len(workflow.Spec.Steps) == 0 {
+		const msg = "workflow has no steps"
+		e.recordWorkflowFailure(workflow, workflowRun, msg)
+		// Retention cleanup keys off Status.CompletionTime, which the success path also sets.
+		now := metav1.Now()
+		workflowRun.Status.CompletionTime = &now
+		return errors.New(msg)
+	}
+
 	// Build DAG
 	dag, err := BuildDAG(workflow.Spec.Steps)
 	if err != nil {
