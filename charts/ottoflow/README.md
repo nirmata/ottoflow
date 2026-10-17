@@ -276,7 +276,7 @@ helm upgrade ottoflow ./charts/ottoflow -n ottoflow --set webhook.enabled=false
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `networkPolicy.create` | Create NetworkPolicy | `true` |
-| `networkPolicy.egress` | Egress rules | See values.yaml |
+| `networkPolicy.egress` | Egress rules (Helm replaces this list; see [Network Policy egress](#network-policy-egress)) | See values.yaml |
 
 ### CRD Parameters
 
@@ -376,6 +376,18 @@ controller:
 ```yaml
 networkPolicy:
   create: false
+```
+
+### Network Policy egress
+
+Helm replaces a list value instead of merging it. If you set `networkPolicy.egress`, your list replaces the chart defaults, so copy the defaults from `values.yaml` and add this rule for the API server's endpoint port, or the controller cannot reach the API server on clusters where that port is not 443 (for example kind, kubeadm, k3s and RKE2 use 6443; minikube uses 8443):
+
+```yaml
+networkPolicy:
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 6443
 ```
 
 ### Skip CRD Installation
