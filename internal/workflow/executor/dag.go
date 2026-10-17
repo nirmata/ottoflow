@@ -9,6 +9,7 @@ package executor
 
 import (
 	"fmt"
+	"sort"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
@@ -153,6 +154,8 @@ func (d *DAG) GetReadySteps(completedSteps map[string]bool) []string {
 		}
 	}
 
+	// Map iteration order is random; sort so execution order and maxConcurrentSteps truncation are deterministic.
+	sort.Strings(ready)
 	return ready
 }
 

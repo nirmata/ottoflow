@@ -348,7 +348,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `maxConcurrentSteps` _integer_ | MaxConcurrentSteps is the maximum number of steps that may run concurrently in a single WorkflowRun.<br />When multiple steps are ready (DAG), only this many are started at once. Zero or nil means no limit. |  | Optional: \{\} <br /> |
+| `maxConcurrentSteps` _integer_ | MaxConcurrentSteps is the maximum number of ready steps processed per scheduling round in a single WorkflowRun.<br />Ready steps currently execute one at a time, in step-name order (forEach items run concurrently, see forEach.maxConcurrency). Zero or nil means no limit. |  | Optional: \{\} <br /> |
 | `outboundRequestsPerMinute` _integer_ | OutboundRequestsPerMinute limits the rate of outbound calls (MCP, agent executor) per WorkflowRun.<br />When set, the executor waits as needed before each call. Zero or nil means no rate limit. |  | Optional: \{\} <br /> |
 
 
