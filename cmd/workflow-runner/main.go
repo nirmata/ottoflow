@@ -75,17 +75,19 @@ const (
 	// otelFlushTimeout bounds the span flush deferred in run().
 	otelFlushTimeout = 5 * time.Second
 	// defaultHardStop is how long after the signal the runner force-exits, whatever it is doing.
-	defaultHardStop = 15 * time.Second
+	defaultHardStop = workflowexecutor.RunnerShutdownHardStop
 	// hardStopFlushTimeout caps klog's flush on that forced exit (klog.ExitFlushTimeout is 10s).
 	hardStopFlushTimeout = 2 * time.Second
 )
 
-// Shutdown budget, measured from the signal, against the 30s default terminationGracePeriodSeconds:
+// Shutdown budget, measured from the signal, against the runner pod's terminationGracePeriodSeconds
+// (RunnerTerminationGracePeriod, 30s, set by the controller):
 //   - normal interrupted path: ExecuteWorkflow returns, then the shared flush+write budget (5s) and the
 //     deferred OTel flush (5s) run, so it ends 10s after ExecuteWorkflow returns;
 //   - the hard stop bounds all of it: it fires defaultHardStop after the signal and exits within
 //     hardStopFlushTimeout, so the worst case is 15s + 2s = 17s, 13s inside the grace period.
-// Raising --shutdown-hard-stop eats that margin: keep it at most the grace period minus 13s.
+// Raising the hard stop (--shutdown-hard-stop or OTTOFLOW_SHUTDOWN_HARD_STOP) eats that margin: keep it at
+// most the grace period minus 13s.
 
 func main() {
 	// os.Exit would skip defers, so run() holds them (span End, OTel flush, executor Close).
@@ -197,6 +199,21 @@ func persistBounded(
 	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status)
 }
 
+// hardStopDefault returns the hard stop the controller passed in v, or defaultHardStop when v is unset
+// or invalid.
+func hardStopDefault(v string) time.Duration {
+	if v == "" {
+		return defaultHardStop
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		klog.ErrorS(err, "invalid hard stop; using the default", "env", workflowexecutor.RunnerShutdownHardStopEnv,
+			"value", v, "default", defaultHardStop)
+		return defaultHardStop
+	}
+	return d
+}
+
 func parseRunnerFlags() runnerConfig {
 	var runName, runNamespace, prometheusURL, jobName, podName string
 	flag.StringVar(&runName, "workflow-run-name", os.Getenv("WORKFLOW_RUN_NAME"), "WorkflowRun name")
@@ -207,7 +224,8 @@ func parseRunnerFlags() runnerConfig {
 	flag.StringVar(&podName, "pod-name", os.Getenv("POD_NAME"),
 		"Pod name (runner pod identity; set by controller when running in-cluster)")
 	var hardStop time.Duration
-	flag.DurationVar(&hardStop, "shutdown-hard-stop", defaultHardStop,
+	flag.DurationVar(&hardStop, "shutdown-hard-stop",
+		hardStopDefault(os.Getenv(workflowexecutor.RunnerShutdownHardStopEnv)),
 		"Force exit this long after SIGTERM if the run has not stopped (keep below the pod grace period)")
 	flag.Parse()
 	if runName == "" || runNamespace == "" {

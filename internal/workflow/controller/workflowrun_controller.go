@@ -1173,6 +1173,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
+		{Name: executor.RunnerShutdownHardStopEnv, Value: executor.RunnerShutdownHardStop.String()},
 	}
 	if secretMountsJSON != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: secretmount.EnvVar, Value: secretMountsJSON})
@@ -1280,6 +1281,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 							},
 						},
 					},
+					TerminationGracePeriodSeconds: ptr.To(int64(executor.RunnerTerminationGracePeriod / time.Second)),
 				},
 			},
 		},

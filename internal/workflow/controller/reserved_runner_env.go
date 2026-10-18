@@ -38,8 +38,9 @@ import (
 // Deliberately NOT reserved: PROMETHEUS_URL (the runner takes its Prometheus URL from its own
 // flag or discovery and reads nothing from this variable, and it carries no authority),
 // TRACEPARENT/TRACESTATE (appended after the author's entries, so the controller's value already
-// wins), and the LLM credential names (NIRMATA_LLM_TOKEN and its legacy aliases), which
-// spec.execution.job.env is documented to override.
+// wins), the LLM credential names (NIRMATA_LLM_TOKEN and its legacy aliases), which
+// spec.execution.job.env is documented to override, and OTTOFLOW_SHUTDOWN_HARD_STOP (raising it
+// only delays the author's own runner's exit, which the pod's grace period still caps).
 var reservedRunnerEnvNames = map[string]struct{}{
 	secretmount.EnvVar:         {},
 	"WORKFLOW_RUN_NAME":        {},

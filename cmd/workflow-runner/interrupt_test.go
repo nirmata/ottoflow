@@ -408,9 +408,9 @@ func TestResumedRunSuccessClearsInterruptedMessage(t *testing.T) {
 	}
 }
 
-// The worst case from signal to exit must stay inside the 30s default grace period with margin.
+// The worst case from signal to exit must stay inside the runner pod's grace period with margin.
 func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
-	const grace, margin = 30 * time.Second, 10 * time.Second
+	const grace, margin = workflowexecutor.RunnerTerminationGracePeriod, 10 * time.Second
 	if worst := defaultHardStop + hardStopFlushTimeout; worst > grace-margin {
 		t.Fatalf("worst case %s leaves under %s of the %s grace period", worst, margin, grace)
 	}
@@ -536,5 +536,21 @@ func TestRunWorkflowToCompletionFailureBeforeSignalStaysFailed(t *testing.T) {
 				t.Fatalf("real failure not kept: code=%d phase=%s boom=%+v", code, stored.Status.Phase, boom)
 			}
 		})
+	}
+}
+
+// The controller's env value sets the hard-stop default; an unset, unparsable or non-positive value
+// falls back to the compiled default.
+func TestHardStopDefaultFromEnv(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"":      workflowexecutor.RunnerShutdownHardStop,
+		"20s":   20 * time.Second,
+		"bogus": workflowexecutor.RunnerShutdownHardStop,
+		"0s":    workflowexecutor.RunnerShutdownHardStop,
+		"-5s":   workflowexecutor.RunnerShutdownHardStop,
+	} {
+		if got := hardStopDefault(in); got != want {
+			t.Errorf("hardStopDefault(%q) = %s, want %s", in, got, want)
+		}
 	}
 }
