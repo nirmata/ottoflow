@@ -333,7 +333,8 @@ Demonstrates:
 
 For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml`,
 `agent-gemini.yaml`, `agent-local-llamacpp.yaml`, and `agent-custom-endpoint.yaml`
-(which documents exactly which `spec.config` fields each provider honours).
+(which documents exactly which `spec.config` fields each provider honours, and that
+`spec.config.endpoint` needs its origin on the operator's `AGENT_LLM_ENDPOINT_ALLOWLIST`).
 
 **Prerequisites:**
 ```bash
@@ -345,7 +346,7 @@ kubectl apply -f agent-basic.yaml
 ```bash
 ```
 
-**Note:** Shows how to configure agents with custom provider settings like endpoints and SSL options.
+**Note:** Shows when `spec.config.endpoint` is honored (only for an origin the operator has allowlisted via Helm `agentExecutor.llmEndpointAllowlist`; otherwise the run fails), and that `spec.config.skipVerifySSL: "true"` is rejected for every provider.
 
 ### 21. MCP with Authentication (`mcp-with-auth.yaml`)
 Demonstrates:

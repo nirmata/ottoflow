@@ -13,8 +13,10 @@
 #     `agentExecutor.env`
 #     (charts/ottoflow/templates/agent-executor-deployment.yaml), which
 #     supports secretKeyRef.
-#   - NOTE: Agent.spec.config.skipVerifySSL is IGNORED by the gemini
-#     provider (honored only by openai/anthropic/azure-openai/local).
+#   - NOTE: Agent.spec.config.skipVerifySSL="true" is rejected for every
+#     provider, gemini included: the agent run fails. To reach a private
+#     endpoint over TLS, mount its CA bundle and set SSL_CERT_FILE or
+#     SSL_CERT_DIR on the agent-executor process instead.
 #
 # One-time setup:
 #   kubectl create secret generic llm-credentials \

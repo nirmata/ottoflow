@@ -274,6 +274,24 @@ agentExecutor:
   # Environment variables
   env: []
 
+  # Origins an Agent's spec.config.endpoint may name: "scheme://host[:port]", origin only.
+  # Rendered as AGENT_LLM_ENDPOINT_ALLOWLIST on the agent-executor container.
+  # EMPTY (default): no Agent may set spec.config.endpoint; a run whose Agent sets it fails.
+  # An entry with a path, query, fragment or user:pass@ stops the agent-executor at startup.
+  #
+  # Listing an origin is a trust decision for every credential in this pod, not one provider's:
+  # any Agent may name a listed origin, so that host can receive the LLM credentials set on the
+  # agent-executor together with the full prompt. Do not list a host you do not control.
+  #
+  # Matching: scheme exact; host case-insensitive, trailing dot ignored; default ports :443 and
+  # :80 folded. No wildcards. The Agent's endpoint must itself be origin-only (a trailing "/" is
+  # fine): a path, query, fragment or user:pass@ is refused even on a listed origin.
+  # azure-openai additionally requires an https:// endpoint.
+  #
+  # Upgrade note: Agents that set spec.config.endpoint ran before this setting existed and now
+  # fail until their origin is listed here.
+  llmEndpointAllowlist: []
+
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
   # agent-executor pod via envFrom, for Workflow steps using agentRef. Empty by default (no injection).
   llmCredentialsSecret: ""

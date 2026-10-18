@@ -50,12 +50,20 @@ spec:
                   Config contains provider-specific client options. The executor reads exactly
                   two keys (internal/agent/default_executor.go):
 
-                  - endpoint: custom base URL passed to gollm as ClientOptions.URL; with the pinned
-                  gollm honored ONLY by modelProvider "azure-openai" (overrides AZURE_OPENAI_ENDPOINT);
+                  - endpoint: accepted ONLY if the agent-executor operator has allowlisted its origin
+                  via AGENT_LLM_ENDPOINT_ALLOWLIST (Helm: agentExecutor.llmEndpointAllowlist), and only
+                  as an origin ("scheme://host[:port]"; a path, query, fragment or userinfo is rejected).
+                  Otherwise any non-empty value fails the agent run, for every provider: the
+                  agent-executor's LLM API keys are process-wide, so an endpoint the operator has not
+                  approved must not receive them. Once accepted, it is passed to gollm as
+                  ClientOptions.URL; with the pinned gollm it is honored ONLY by modelProvider
+                  "azure-openai" (overrides AZURE_OPENAI_ENDPOINT; the endpoint must be https://);
                   "openai" reads OPENAI_ENDPOINT/OPENAI_API_BASE from the process environment instead;
                   "google", "gemini" and "anthropic" ignore it; "local" uses LLAMACPP_HOST.
-                  - skipVerifySSL: "true" disables TLS verification; honored by openai, anthropic,
-                  azure-openai and local.
+                  - skipVerifySSL: "true" is REJECTED for every provider and fails the agent run; "false"
+                  is accepted. To reach an endpoint with a private CA, set SSL_CERT_FILE or SSL_CERT_DIR on
+                  the agent-executor process (keeps TLS verification on); as a last resort,
+                  LLM_SKIP_VERIFY_SSL=true on that process disables verification for all its LLM egress.
 
                   API keys are NOT read from here; they come from the agent-executor process
                   environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, AZURE_OPENAI_API_KEY).
