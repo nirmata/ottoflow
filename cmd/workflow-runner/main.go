@@ -179,7 +179,7 @@ func hardStopAfterSignal(ctx context.Context, d time.Duration, writeStarted <-ch
 	}
 	time.Sleep(time.Until(deadline))
 	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", d)
-	klog.FlushAndExit(hardStopFlushTimeout, 1)
+	klog.FlushAndExit(hardStopFlushTimeout, exitInterrupted)
 }
 
 // markInterrupted rewrites the status the executor left after a root-ctx cancel. Every non-Pending

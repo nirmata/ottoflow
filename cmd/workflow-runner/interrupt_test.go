@@ -562,7 +562,8 @@ func TestHardStopDefaultFromEnv(t *testing.T) {
 }
 
 // Once the final status write has started, the hard stop gives it its whole budget, even past the hard
-// stop's own deadline. Without a write it still fires at its deadline.
+// stop's own deadline. Without a write it still fires at its deadline. It exits 143, as the normal
+// interrupted path does.
 func TestHardStopWaitsForFinalWrite(t *testing.T) {
 	const budget = time.Second
 	for _, tc := range []struct {
@@ -594,7 +595,7 @@ func TestHardStopWaitsForFinalWrite(t *testing.T) {
 			})
 			elapsed := time.Since(start)
 			t.Logf("code=%d exited after %s (want %s..%s)", code, elapsed, tc.min, tc.max)
-			if code == -1 || elapsed < tc.min || elapsed > tc.max {
+			if code != exitInterrupted || elapsed < tc.min || elapsed > tc.max {
 				t.Fatalf("hard stop exited after %s with code %d, want between %s and %s", elapsed, code, tc.min, tc.max)
 			}
 		})
