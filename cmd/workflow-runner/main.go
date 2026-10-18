@@ -185,15 +185,15 @@ func hardStopAfterSignal(ctx context.Context, d time.Duration, writeStarted <-ch
 // markInterrupted rewrites the status the executor left after a root-ctx cancel. Every non-Pending
 // step goes back to Pending: a retry that restores a checkpoint replaces these statuses with the
 // snapshot's, and one that does not starts from an empty context, where a step kept Succeeded would
-// be skipped without its outputs. Call it only when the root ctx is done. Trade-off: the saved
-// status no longer shows which steps finished before the signal.
+// be skipped without its outputs. Call it only when the root ctx is done. Each step's message keeps the
+// phase it had reached, since a run that is not retried ends with these statuses.
 func markInterrupted(status *ottoflowv1alpha1.WorkflowRunStatus) {
 	for name, s := range status.StepStatuses {
 		if s.Phase == ottoflowv1alpha1.StepPhasePending {
 			continue
 		}
+		s.Message = fmt.Sprintf("%s (was %s)", interruptedMessage, s.Phase) // keeps what the step had reached
 		s.Phase = ottoflowv1alpha1.StepPhasePending
-		s.Message = interruptedMessage
 		s.Error = ""
 		s.CompletionTime = nil
 		status.StepStatuses[name] = s

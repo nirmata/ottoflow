@@ -123,7 +123,7 @@ func TestInterruptedStatusRetriesWithoutCheckpoint(t *testing.T) {
 			rewrite, *updates, stored.Status.Phase, stored.Status.Message, stored.Status.StepStatuses["step1"].Phase,
 			stored.Status.StepStatuses["step1"].Message, stored.Status.AuditSnapshotError)
 		if rewrite && (stored.Status.Message != interruptedMessage ||
-			stored.Status.StepStatuses["step1"].Message != interruptedMessage) {
+			stored.Status.StepStatuses["step1"].Message != "interrupted by SIGTERM (was Failed)") {
 			t.Errorf("marker not stored")
 		}
 
@@ -168,11 +168,16 @@ func TestMarkInterruptedResetsEveryNonPendingStep(t *testing.T) {
 		},
 	}
 	markInterrupted(&st)
+	wantMsg := map[string]string{
+		"done":    "interrupted by SIGTERM (was Succeeded)",
+		"skipped": "interrupted by SIGTERM (was Skipped)",
+		"soft":    "interrupted by SIGTERM (was Failed)",
+		"gate":    "interrupted by SIGTERM (was Failed)",
+		"running": "interrupted by SIGTERM (was Running)",
+		"waiting": "keep",
+	}
 	for name, s := range st.StepStatuses {
-		want := interruptedMessage
-		if name == "waiting" {
-			want = "keep"
-		}
+		want := wantMsg[name]
 		if s.Phase != ottoflowv1alpha1.StepPhasePending || s.Message != want || s.Error != "" {
 			t.Errorf("step %s not reset: %+v", name, s)
 		}
@@ -314,7 +319,7 @@ func TestRunWorkflowToCompletionInterrupted(t *testing.T) {
 	t.Logf("stored: phase=%s msg=%q loop=%s loopMsg=%q",
 		stored.Status.Phase, stored.Status.Message, loop.Phase, loop.Message)
 	if stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseRunning || stored.Status.Message != interruptedMessage ||
-		loop.Phase != ottoflowv1alpha1.StepPhasePending || loop.Message != interruptedMessage {
+		loop.Phase != ottoflowv1alpha1.StepPhasePending || loop.Message != "interrupted by SIGTERM (was Failed)" {
 		t.Fatalf("interrupted status not stored: %+v", stored.Status)
 	}
 }
@@ -461,7 +466,7 @@ func TestInterruptedStatusSurvivesStalledCheckpointSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := stored.Status.StepStatuses["loop"]; got.Phase != ottoflowv1alpha1.StepPhasePending ||
-		got.Message != interruptedMessage {
+		got.Message != "interrupted by SIGTERM (was Running)" {
 		t.Fatalf("interrupted status not stored behind a stalled checkpoint save: %+v", stored.Status)
 	}
 }
@@ -591,6 +596,42 @@ func TestHardStopWaitsForFinalWrite(t *testing.T) {
 			t.Logf("code=%d exited after %s (want %s..%s)", code, elapsed, tc.min, tc.max)
 			if code == -1 || elapsed < tc.min || elapsed > tc.max {
 				t.Fatalf("hard stop exited after %s with code %d, want between %s and %s", elapsed, code, tc.min, tc.max)
+			}
+		})
+	}
+}
+
+// A step re-run from the API status (checkpointing on, but no snapshot saved before the signal) must
+// not keep the interrupt note from the earlier attempt once it runs again.
+func TestRerunStepClearsInterruptedMessage(t *testing.T) {
+	for name, step := range map[string]ottoflowv1alpha1.Step{
+		"succeeds": {Name: "step1", Expressions: []ottoflowv1alpha1.Expression{{Name: "a", Expression: "1"}}},
+		"matchCondition fails": {Name: "step1", Expressions: []ottoflowv1alpha1.Expression{{Name: "a", Expression: "1"}},
+			MatchConditions: []ottoflowv1alpha1.MatchCondition{{Name: "m", Expression: "variables.doesNotExist"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newRun()
+			run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+			run.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{
+				"step1": {Phase: ottoflowv1alpha1.StepPhaseRunning}, // the signal landed during the first step
+			}
+			markInterrupted(&run.Status)
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{step}},
+			}
+			c, _ := ctxAwareClient(run, wf)
+			exec, err := workflowexecutor.NewWorkflowExecutorWithAgentExecutor(
+				c, nil, nil, nil, run, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec.SetCheckpointManager(workflowexecutor.NewCheckpointManager(c, run)) // no snapshot exists
+			err = exec.ExecuteWorkflow(context.Background(), wf, run)
+			got := run.Status.StepStatuses["step1"]
+			t.Logf("err=%v runPhase=%s step1=%s msg=%q error=%q", err, run.Status.Phase, got.Phase, got.Message, got.Error)
+			if got.Phase == ottoflowv1alpha1.StepPhasePending || strings.HasPrefix(got.Message, interruptedMessage) {
+				t.Fatalf("re-run step kept the interrupt note: %+v", got)
 			}
 		})
 	}

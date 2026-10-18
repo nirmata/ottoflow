@@ -504,6 +504,8 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 			}
 
 			executedAny = true
+			// A re-run step drops the notes of an earlier attempt (the runner's interrupt marker).
+			stepStatus.Message, stepStatus.Error = "", ""
 
 			// Check matchConditions
 			shouldExecute, err := e.checkMatchConditions(ctx, *step)
