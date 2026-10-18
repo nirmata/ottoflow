@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -420,5 +422,70 @@ func TestCreateRunCapCountsUnreconciledRuns(t *testing.T) {
 	}
 	if _, err := s.createRun(context.Background(), "hi"); err == nil {
 		t.Fatalf("create %d succeeded; want concurrency-limit refusal", defaultMaxConcurrentRuns+1)
+	}
+}
+
+// listBarrierClient holds each WorkflowRun List until n callers have listed, or wait elapses, so
+// concurrent createRun calls overlap at the count step.
+type listBarrierClient struct {
+	client.Client
+	mu      sync.Mutex
+	arrived int
+	n       int
+	release chan struct{}
+	wait    time.Duration
+}
+
+func (b *listBarrierClient) List(ctx context.Context, l client.ObjectList, opts ...client.ListOption) error {
+	err := b.Client.List(ctx, l, opts...)
+	if _, ok := l.(*ottoflowv1alpha1.WorkflowRunList); ok {
+		b.mu.Lock()
+		b.arrived++
+		if b.arrived == b.n {
+			close(b.release)
+		}
+		b.mu.Unlock()
+		select {
+		case <-b.release:
+		case <-time.After(b.wait):
+		}
+	}
+	return err
+}
+
+// Two calls that count at the same time, one slot below the cap, must not both create a run.
+func TestCreateRunCapHoldsForOverlappingCalls(t *testing.T) {
+	objs := []client.Object{exposedWorkflow()}
+	for i := 0; i < defaultMaxConcurrentRuns-1; i++ {
+		objs = append(objs, &ottoflowv1alpha1.WorkflowRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: fmt.Sprintf("greeter-running-%d", i),
+				Labels: map[string]string{"ottoflow.nirmata.io/workflow": "greeter"},
+			},
+			Status: ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+		})
+	}
+	base := newFakeClient(t, objs...)
+	bc := &listBarrierClient{Client: base, n: 2, release: make(chan struct{}), wait: 500 * time.Millisecond}
+	s := NewServer(bc, "greeter", "default", "", 0)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = s.createRun(context.Background(), "hi")
+		}(i)
+	}
+	wg.Wait()
+
+	var runs ottoflowv1alpha1.WorkflowRunList
+	if err := base.List(context.Background(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs.Items) != defaultMaxConcurrentRuns {
+		t.Fatalf("two overlapping calls with %d active runs left %d runs, want %d (errs: %v)",
+			defaultMaxConcurrentRuns-1, len(runs.Items), defaultMaxConcurrentRuns, errs)
 	}
 }

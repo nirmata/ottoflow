@@ -407,7 +407,9 @@ serveA2A:
   # a2a-caller; kagent UI chat does not send a token at all. Pods roll when the controller
   # re-upserts the Agent (at controller start or within 10 minutes), and a pinned
   # serveA2A.image.tag keeps the old, unauthenticated image. Exposed Workflows with no
-  # spec.run.maxConcurrentRuns are now capped at 10 active runs (explicit 0 = unlimited).
+  # spec.run.maxConcurrentRuns are now capped at 10 active runs (explicit 0 = unlimited). The cap
+  # is enforced per serve-a2a pod: best-effort across replicas and across runs created by cron,
+  # event, webhook or MCP.
   allowUnauthenticated: false
 
 # RBAC configuration

@@ -225,7 +225,8 @@ calling Agent. **Narrowing with `kagent: <agent-name>` is untested.**
 - **Concurrency cap.** A Workflow with no `spec.run.maxConcurrentRuns` allows 10 active runs
   through serve-a2a (matching the webhook trigger burst); an explicit `0` means unlimited and `N`
   means N. Active runs from cron and event triggers count against it. MCP calls still treat an unset
-  value as unlimited, as do cron and event triggers.
+  value as unlimited, as do cron and event triggers. Each serve-a2a pod enforces the cap on its
+  own, so it is best-effort across replicas and across runs created by cron, event, webhook or MCP.
 - `serve-a2a` sets `ReadHeaderTimeout` to 10 s and gives TokenReview and SubjectAccessReview
   one shared 10 s deadline (not 10 s each).
 - Plain HTTP, no TLS: a bearer token crosses the pod network in cleartext. The dedicated audience

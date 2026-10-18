@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -59,6 +60,9 @@ type Server struct {
 	wfNS       string
 	publicURL  string
 	runTimeout time.Duration
+	// admitMu serializes the cap check with the create, so overlapping calls in this pod cannot
+	// both pass the count. It does not coordinate with other pods or other run creators.
+	admitMu sync.Mutex
 }
 
 // NewServer builds a Server for the named Workflow. A non-positive runTimeout falls back to
@@ -421,6 +425,8 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 		limit = *rp.MaxConcurrentRuns
 	}
 	if limit > 0 {
+		s.admitMu.Lock()
+		defer s.admitMu.Unlock()
 		active, err := s.countActiveRuns(ctx, wf.Name)
 		if err != nil {
 			return nil, fmt.Errorf("counting active runs for %s/%s: %w", s.wfNS, wf.Name, err)
