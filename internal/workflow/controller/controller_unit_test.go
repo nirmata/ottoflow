@@ -3123,6 +3123,11 @@ func TestBuildWorkflowRunnerJob_ShutdownGraceAndHardStop(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildWorkflowRunnerJob: %v", err)
 			}
+			// A pod being deleted must not count as failed until it has exited, or the retry Job starts
+			// while the interrupted runner is still writing its status.
+			if p := job.Spec.PodReplacementPolicy; p == nil || *p != batchv1.Failed {
+				t.Errorf("podReplacementPolicy = %v, want %s", p, batchv1.Failed)
+			}
 			spec := job.Spec.Template.Spec
 			if g := spec.TerminationGracePeriodSeconds; g == nil ||
 				*g != int64(executor.RunnerTerminationGracePeriod/time.Second) {
