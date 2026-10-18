@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -459,5 +462,79 @@ func TestInterruptedStatusSurvivesStalledCheckpointSave(t *testing.T) {
 	if got := stored.Status.StepStatuses["loop"]; got.Phase != ottoflowv1alpha1.StepPhasePending ||
 		got.Message != interruptedMessage {
 		t.Fatalf("interrupted status not stored behind a stalled checkpoint save: %+v", stored.Status)
+	}
+}
+
+// runCapturingExit runs f on its own goroutine and returns the code it exits with, through
+// klog.FlushAndExit or by returning.
+func runCapturingExit(t *testing.T, f func() int) int {
+	t.Helper()
+	codes := make(chan int, 1)
+	prev := klog.OsExit
+	klog.OsExit = func(code int) {
+		codes <- code
+		runtime.Goexit() // OsExit must not return to its caller
+	}
+	defer func() { klog.OsExit = prev }()
+	go func() { codes <- f() }()
+	select {
+	case code := <-codes:
+		return code
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not exit")
+		return 0
+	}
+}
+
+// A step that fails for a real reason and only then sees the signal must be stored Failed with exit 1,
+// not rewritten as interrupted: the controller does not retry a Failed run.
+func TestRunWorkflowToCompletionFailureBeforeSignalStaysFailed(t *testing.T) {
+	missingKey := []ottoflowv1alpha1.Expression{{Name: "x", Expression: "variables.doesNotExist"}}
+	for name, step := range map[string]ottoflowv1alpha1.Step{
+		"step": {Name: "boom", Expressions: missingKey},
+		"matchCondition": {Name: "boom", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "1"}},
+			MatchConditions: []ottoflowv1alpha1.MatchCondition{{Name: "m", Expression: "variables.doesNotExist"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run := newRun()
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{step}},
+			}
+			c, _ := ctxAwareClient(run, wf)
+			exec, err := workflowexecutor.NewWorkflowExecutorWithAgentExecutor(
+				c, nil, nil, nil, run, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cm := workflowexecutor.NewCheckpointManager(c, run)
+			exec.SetCheckpointManager(cm)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			exec.SetProgressCallback(func(r *ottoflowv1alpha1.WorkflowRun, _ *ottoflowv1alpha1.Workflow) {
+				if r.Status.StepStatuses["boom"].Phase == ottoflowv1alpha1.StepPhaseFailed {
+					cancel() // SIGTERM lands after the step has already failed
+				}
+			})
+			cfg := runnerConfig{
+				runName: "r", runNamespace: "default", runKey: client.ObjectKeyFromObject(run), jobName: "j", podName: "p",
+			}
+
+			code := runCapturingExit(t, func() int { return runWorkflowToCompletion(ctx, exec, cm, wf, run, c, cfg) })
+			stored := &ottoflowv1alpha1.WorkflowRun{}
+			if err := c.Get(context.Background(), cfg.runKey, stored); err != nil {
+				t.Fatal(err)
+			}
+			boom := stored.Status.StepStatuses["boom"]
+			t.Logf("code=%d ctxErr=%v stored: phase=%s msg=%q boom=%s err=%q",
+				code, ctx.Err(), stored.Status.Phase, stored.Status.Message, boom.Phase, boom.Error)
+			if ctx.Err() == nil {
+				t.Fatal("test did not cancel the ctx")
+			}
+			if code != 1 || stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed ||
+				boom.Phase != ottoflowv1alpha1.StepPhaseFailed || !strings.Contains(boom.Error, "doesNotExist") {
+				t.Fatalf("real failure not kept: code=%d phase=%s boom=%+v", code, stored.Status.Phase, boom)
+			}
+		})
 	}
 }

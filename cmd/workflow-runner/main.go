@@ -634,8 +634,9 @@ func runWorkflowToCompletion(
 			klog.FlushAndExit(klog.ExitFlushTimeout, 0)
 		}
 		// Interrupted (SIGTERM): save the steps as interrupted rather than failed so a retry re-runs them.
-		// err == nil with ctx done means the run finished, and takes the success path below.
-		if ctx.Err() != nil {
+		// A failure the executor saw before the cancel stays Failed. err == nil with ctx done means the
+		// run finished, and takes the success path below.
+		if ctx.Err() != nil && !errors.Is(err, workflowexecutor.ErrFailedBeforeCancel) {
 			persistInterrupted(ctx, cm, controlClient, cfg, workflow, workflowRun, err)
 			return exitInterrupted
 		}

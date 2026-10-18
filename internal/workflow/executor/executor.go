@@ -483,7 +483,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				if status.Phase == ottoflowv1alpha1.StepPhaseFailed {
 					msg := fmt.Sprintf("Step %s failed: %s", step.Name, status.Error)
 					e.recordWorkflowFailure(workflow, workflowRun, msg)
-					return fmt.Errorf("workflow failed: step %s failed", step.Name)
+					return markIfLive(ctx.Err() == nil, fmt.Errorf("workflow failed: step %s failed", step.Name))
 				}
 			}
 
@@ -508,6 +508,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 			// Check matchConditions
 			shouldExecute, err := e.checkMatchConditions(ctx, *step)
 			if err != nil {
+				live := ctx.Err() == nil // before the progress callback, which can run past the signal
 				stepStatus.Phase = ottoflowv1alpha1.StepPhaseFailed
 				stepStatus.Error = fmt.Sprintf("matchCondition evaluation failed: %v", err)
 				workflowRun.Status.StepStatuses[stepName] = stepStatus
@@ -517,7 +518,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 					continue
 				}
 				e.recordWorkflowFailure(workflow, workflowRun, fmt.Sprintf("Step %s failed: %v", stepName, err))
-				return fmt.Errorf("matchCondition evaluation failed for step %s: %w", stepName, err)
+				return markIfLive(live, fmt.Errorf("matchCondition evaluation failed for step %s: %w", stepName, err))
 			}
 
 			if !shouldExecute {
@@ -577,6 +578,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 					// Propagate sentinel — runner main loop will exit with code 0
 					return err
 				}
+				live := ctx.Err() == nil // before the progress callback, which can run past the signal
 				stepStatus = workflowRun.Status.StepStatuses[stepName]
 				stepStatus.Phase = ottoflowv1alpha1.StepPhaseFailed
 				stepStatus.Error = err.Error()
@@ -594,7 +596,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				}
 
 				e.recordWorkflowFailure(workflow, workflowRun, fmt.Sprintf("Step %s failed: %v", stepName, err))
-				return err
+				return markIfLive(live, err)
 			}
 			// Mark step as succeeded
 			// Re-read status to get the latest, but preserve StartTime
@@ -666,6 +668,24 @@ func (e *WorkflowExecutor) evaluateWorkflowVariables(ctx context.Context, workfl
 		vars = e.celEvaluator.BuildVariableMap(contextData)
 	}
 	return nil
+}
+
+// ErrFailedBeforeCancel marks a run failure that happened while the run's ctx was still live, so the
+// cancel did not cause it. The runner keeps such a run Failed even when SIGTERM lands before
+// ExecuteWorkflow returns.
+var ErrFailedBeforeCancel = errors.New("failed before the run context was cancelled")
+
+type failedBeforeCancel struct{ error }
+
+func (f failedBeforeCancel) Unwrap() error      { return f.error }
+func (failedBeforeCancel) Is(target error) bool { return target == ErrFailedBeforeCancel }
+
+// markIfLive adds ErrFailedBeforeCancel to err when live; the error text is unchanged.
+func markIfLive(live bool, err error) error {
+	if !live {
+		return err
+	}
+	return failedBeforeCancel{err}
 }
 
 func (e *WorkflowExecutor) recordWorkflowFailure(
