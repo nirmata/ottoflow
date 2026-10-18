@@ -94,7 +94,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--namespace` | | `ottoflow` | Leader election namespace (where the lease is created) |
 | `--metrics-secure` | | `false` | Serve metrics over HTTPS |
 | `--enable-http2` | | `false` | Enable HTTP/2 on the metrics/webhook servers |
-| `--cel-cache-size` | | `1000` | Max compiled CEL expressions cached |
+| `--cel-cache-size` | | `1000` | Deprecated: no effect, will be removed. Remove it from the controller args |
 | `--prometheus-url` | | (empty) | Prometheus server URL for CEL `prometheusMetrics()`. When set, the controller uses it and **passes it to every workflow runner Job**, so you configure it once per environment (Helm `controller.prometheusURL`) and it does not need to be in the workflow. |
 | `--agent-executor-service-name` | `AGENT_EXECUTOR_SERVICE_NAME` | (empty) | Agent executor Service name for internal TLS cert controller |
 | `--agent-executor-namespace` | `AGENT_EXECUTOR_NAMESPACE` | `ottoflow` | Namespace for agent-executor TLS cert controller |

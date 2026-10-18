@@ -101,8 +101,6 @@ type WorkflowRunReconciler struct {
 	MetricsClient       metricsclientset.Interface
 	CustomMetricsClient executor.CustomMetricsClient
 	PrometheusClient    executor.PrometheusClient
-	CELCacheSize        int // Maximum number of compiled CEL expressions to cache
-	CELCache            *executor.CELCompilationCache
 	EventRecorder       events.EventRecorder
 	RunnerConfig        RunnerConfig
 	// ControllerNamespace is the namespace where the controller (and the bundled Workflow CRs)

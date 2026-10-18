@@ -105,7 +105,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.IntVar(&celCacheSize, "cel-cache-size", 1000,
-		"Maximum number of compiled CEL expressions to cache (default: 1000)")
+		"Deprecated: has no effect and will be removed. Kept so existing controller args keep parsing.")
 	flag.StringVar(&prometheusURL, "prometheus-url", "",
 		"Prometheus server URL for CEL prometheusMetrics() (optional).")
 	flag.StringVar(&agentExecutorServiceName, "agent-executor-service-name", os.Getenv("AGENT_EXECUTOR_SERVICE_NAME"),
@@ -187,6 +187,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(textlogger.NewLogger(logConfig))
+
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "cel-cache-size" {
+			setupLog.Info("--cel-cache-size is deprecated and has no effect; remove it from the controller args")
+		}
+	})
 
 	if workflowRunnerClusterRole == "" {
 		setupLog.Error(errors.New("workflow-runner-cluster-role not set"),
@@ -403,8 +409,7 @@ func main() {
 		SecretRefAllowedNamespaces: secretRefAllowedNamespaces,
 	}
 
-	// Create shared CEL compilation cache; expressions are compiled when
-	// Workflows are loaded and reused across WorkflowRun reconciliations.
+	// Shared CEL environment used to validate Workflow expressions at reconcile time.
 	celCache, err := workflowexecutor.NewCELCompilationCache(
 		mgr.GetClient(), metricsClient, customMetricsClient, prometheusClient,
 		ctrl.Log.WithName("cel-cache"))
@@ -430,8 +435,6 @@ func main() {
 		MetricsClient:       metricsClient,
 		CustomMetricsClient: customMetricsClient,
 		PrometheusClient:    prometheusClient,
-		CELCacheSize:        celCacheSize,
-		CELCache:            celCache,
 		EventRecorder:       eventRecorder,
 		RunnerConfig:        runnerConfig,
 		ControllerNamespace: namespace,

@@ -40,9 +40,7 @@ import (
 // before each prg.Eval() call so macros always use the current caller context
 // rather than context.Background().
 //
-// Note: programs pre-loaded from CELCompilationCache use that cache's own holder
-// (not the per-run evaluator's). Those programs fall back to context.Background()
-// for macro calls — a known limitation that will require a deeper refactor to fix.
+// Each evaluator owns its holder; compiled programs are never shared across evaluators.
 type macroContextHolder struct {
 	mu  sync.RWMutex
 	ctx context.Context
@@ -284,20 +282,6 @@ func (e *CELEvaluator) SetResourceListPageSize(n int64) {
 // SetImageDataFetcher sets the optional image data fetcher (for tests). When nil, default is used.
 func (e *CELEvaluator) SetImageDataFetcher(f ImageDataFetcher) {
 	e.imageDataFetcher = f
-}
-
-// PreloadFromCache populates the evaluator's per-instance LRU cache with
-// pre-compiled programs from the shared CELCompilationCache.  Subsequent calls
-// to getOrCompileProgram will find these programs immediately, avoiding a
-// redundant compile step.
-func (e *CELEvaluator) PreloadFromCache(cache *CELCompilationCache, workflowKey string) {
-	if cache == nil {
-		return
-	}
-	programs := cache.GetPrograms(workflowKey)
-	for exprText, prog := range programs {
-		e.programCache.Add(exprText, prog)
-	}
 }
 
 // BuildVariableMap creates a variable map from context for CEL evaluation

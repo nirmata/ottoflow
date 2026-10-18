@@ -155,19 +155,6 @@ func (e *WorkflowExecutor) waitOutboundRateLimit(ctx context.Context) error {
 	return e.outboundRateLimiter.Wait(ctx)
 }
 
-// SetCELCache pre-populates this executor's CEL evaluator with programs from
-// the shared compilation cache and sets the workflow's CEL cost limit for any
-// on-the-fly compilation. Pass the workflow so the cost limit can be applied.
-func (e *WorkflowExecutor) SetCELCache(cache *CELCompilationCache, workflowKey string, workflow *ottoflowv1alpha1.Workflow) {
-	if workflow != nil {
-		e.celEvaluator.SetCELCostLimit(ResolveCELCostLimit(&workflow.Spec))
-	}
-	if cache == nil {
-		return
-	}
-	e.celEvaluator.PreloadFromCache(cache, workflowKey)
-}
-
 // NewWorkflowExecutor creates a new workflow executor
 func NewWorkflowExecutor(k8sClient client.Client, workflowRun *ottoflowv1alpha1.WorkflowRun) (*WorkflowExecutor, error) {
 	return NewWorkflowExecutorWithMetrics(k8sClient, nil, nil, nil, workflowRun, 0, 0, nil)
@@ -386,7 +373,7 @@ func (e *WorkflowExecutor) emitStepEventWarning(workflow *ottoflowv1alpha1.Workf
 
 // ExecuteWorkflow executes a workflow
 func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, workflowRun *ottoflowv1alpha1.WorkflowRun) error {
-	// Apply workflow's CEL cost limit for this run (CLI and any path that didn't set it via SetCELCache)
+	// Apply workflow's CEL cost limit for this run
 	e.celEvaluator.SetCELCostLimit(ResolveCELCostLimit(&workflow.Spec))
 
 	restoredFromCheckpoint, err := e.loadCheckpointIfNeeded(ctx, workflowRun)

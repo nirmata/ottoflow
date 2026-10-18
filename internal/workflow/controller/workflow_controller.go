@@ -60,13 +60,10 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				r.WebhookServer.RemoveLimiter(workflowKey)
 			}
 		}
-		if r.CELCache != nil {
-			r.CELCache.InvalidateWorkflow(executor.WorkflowKey(workflow.Namespace, workflow.Name))
-		}
 		return ctrl.Result{}, nil
 	}
 
-	// Compile and validate all CEL expressions (replaces any previous cache for this workflow)
+	// Compile all CEL expressions to surface errors early; programs are discarded
 	if r.CELCache != nil {
 		if errs := r.CELCache.CompileWorkflow(workflow); len(errs) > 0 {
 			for _, e := range errs {
