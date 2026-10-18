@@ -541,12 +541,14 @@ networkPolicy:
       ports:
       - protocol: TCP
         port: 8443
-    # Allow Kubernetes API access (in-cluster services on 443)
-    - to:
-      - namespaceSelector: {}
-      ports:
+    # Allow the API server's endpoint port. kube-proxy rewrites the kubernetes Service
+    # (443) to the endpoint port before some CNIs (measured: Calico) enforce egress policy,
+    # so the rule must match the endpoint port: 6443 by default on kubeadm, kind, k3s and RKE2; 8443 on
+    # minikube (add a rule for it if you use minikube). Clusters whose endpoint port is
+    # 443 are covered by the any-destination 443 rule below.
+    - ports:
       - protocol: TCP
-        port: 443
+        port: 6443
     # Allow outbound HTTPS for LLM API calls, PyPI, etc.
     - ports:
       - protocol: TCP
