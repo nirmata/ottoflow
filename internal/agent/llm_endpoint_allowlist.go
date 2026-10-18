@@ -59,10 +59,12 @@ func llmEndpointAllowlist() (map[llmOrigin]struct{}, error) {
 		if err != nil {
 			return nil, fmt.Errorf("entry %q: %w", e, err)
 		}
-		if u.Scheme == "" || u.Host == "" {
+		// Check the host name matching compares: "https://:443" has a port but no host name.
+		o := originOf(u)
+		if u.Scheme == "" || o.host == "" {
 			return nil, fmt.Errorf("entry %q must include scheme and host (e.g. https://llm.example.com)", e)
 		}
-		if err := requireASCIIHost(u); err != nil {
+		if err := requireComparableHost(u); err != nil {
 			return nil, fmt.Errorf("entry %q: %w", e, err)
 		}
 		// Origin only. A path would look like a credential boundary and is not one: an LLM
@@ -76,7 +78,7 @@ func llmEndpointAllowlist() (map[llmOrigin]struct{}, error) {
 		if origins == nil {
 			origins = map[llmOrigin]struct{}{}
 		}
-		origins[originOf(u)] = struct{}{}
+		origins[o] = struct{}{}
 	}
 	return origins, nil
 }
@@ -96,7 +98,7 @@ func allowedLLMEndpoint(raw string) (*url.URL, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
-	if err := requireASCIIHost(parsed); err != nil {
+	if err := requireComparableHost(parsed); err != nil {
 		return nil, err
 	}
 	if _, ok := origins[originOf(parsed)]; !ok {
@@ -126,14 +128,21 @@ func ValidateLLMEndpointAllowlist() error {
 	return err
 }
 
-// requireASCIIHost refuses a non-ASCII hostname: case folding can map a non-ASCII rune onto an
-// ASCII letter (U+0130 "İ" lowercases to "i", U+212A Kelvin sign to "k"), so a lookalike could
-// match an allowlisted name while the transport dials a different one. Use the punycode form.
-func requireASCIIHost(u *url.URL) error {
-	for _, r := range u.Hostname() {
+// requireComparableHost refuses a host that case folding in originOf would not compare safely:
+//   - non-ASCII: case folding can map a non-ASCII rune onto an ASCII letter (U+0130 "İ"
+//     lowercases to "i", U+212A Kelvin sign to "k"), so a lookalike could match an allowlisted
+//     name while the transport dials a different one. Use the punycode form.
+//   - an IPv6 zone ("[fe80::1%25eth0]"): the zone names a local network interface, and interface
+//     names are case-sensitive, so folding would let one interface match an entry for another.
+func requireComparableHost(u *url.URL) error {
+	h := u.Hostname()
+	for _, r := range h {
 		if r > 127 {
-			return fmt.Errorf("host %q must be ASCII (use the punycode form for an internationalized name)", u.Hostname())
+			return fmt.Errorf("host %q must be ASCII (use the punycode form for an internationalized name)", h)
 		}
+	}
+	if strings.Contains(h, "%") {
+		return fmt.Errorf("host %q must not carry an IPv6 zone (%%25...): it names a local network interface", h)
 	}
 	return nil
 }

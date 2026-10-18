@@ -204,3 +204,41 @@ func TestAllowedLLMEndpoint_RejectsNonASCIIHost(t *testing.T) {
 		t.Setenv(AgentLLMEndpointAllowlistEnv, "https://api.ilk.example")
 	}
 }
+
+// An IPv6 zone ("%25eth0") names a local network interface, and interface names are
+// case-sensitive, so folding case would let "%25ETH0" match an entry for "%25eth0". Zones are
+// refused in both the operator's entry and the tenant's endpoint.
+func TestAllowedLLMEndpoint_RejectsIPv6Zone(t *testing.T) {
+	t.Setenv(AgentLLMEndpointAllowlistEnv, "https://[fe80::1]")
+	if _, err := allowedLLMEndpoint("https://[fe80::1]"); err != nil {
+		t.Fatalf("control: unzoned IPv6 origin must be admitted: %v", err)
+	}
+	t.Setenv(AgentLLMEndpointAllowlistEnv, "https://[fe80::1%25eth0]")
+	if _, err := allowedLLMEndpoint("https://[fe80::1%25ETH0]"); err == nil {
+		t.Error("allowedLLMEndpoint admitted zone ETH0 for an entry naming zone eth0")
+	}
+	for _, host := range []string{"https://[fe80::1%25eth0]", "https://[fe80::1%25ETH0]:443"} {
+		t.Setenv(AgentLLMEndpointAllowlistEnv, "https://[fe80::1]")
+		if _, err := allowedLLMEndpoint(host); err == nil || !strings.Contains(err.Error(), "zone") {
+			t.Errorf("allowedLLMEndpoint(%q) error = %v; want a zone refusal", host, err)
+		}
+		t.Setenv(AgentLLMEndpointAllowlistEnv, host)
+		if err := ValidateLLMEndpointAllowlist(); err == nil || !strings.Contains(err.Error(), "zone") {
+			t.Errorf("allowlist entry %q error = %v; want a zone startup error", host, err)
+		}
+	}
+}
+
+// An entry with a port but no host name ("https://:443") or only a trailing dot names no host
+// at all, so it must fail at startup rather than become an origin with an empty host.
+func TestValidateLLMEndpointAllowlist_RejectsEmptyHost(t *testing.T) {
+	for _, entry := range []string{"https://:443", "https://.", "https://.:443"} {
+		t.Setenv(AgentLLMEndpointAllowlistEnv, entry)
+		if err := ValidateLLMEndpointAllowlist(); err == nil || !strings.Contains(err.Error(), "must include scheme and host") {
+			t.Errorf("allowlist entry %q error = %v; want a must-include-host startup error", entry, err)
+		}
+		if _, err := allowedLLMEndpoint(entry); err == nil {
+			t.Errorf("allowedLLMEndpoint(%q) admitted an endpoint with no host", entry)
+		}
+	}
+}
