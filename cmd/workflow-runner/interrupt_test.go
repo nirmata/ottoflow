@@ -572,7 +572,8 @@ func TestHardStopWaitsForFinalWrite(t *testing.T) {
 		noticeAt time.Duration // after the signal; negative: before it; zero: never
 		min, max time.Duration
 	}{
-		{name: "write started before the signal", d: 200 * time.Millisecond, noticeAt: -1, min: budget, max: budget + time.Second},
+		{name: "write started before the signal", d: 200 * time.Millisecond, noticeAt: -1,
+			min: budget, max: budget + time.Second},
 		{name: "write started after the signal", d: 500 * time.Millisecond, noticeAt: 100 * time.Millisecond,
 			min: 100*time.Millisecond + budget, max: 100*time.Millisecond + budget + time.Second},
 		{name: "no write", d: 200 * time.Millisecond, min: 200 * time.Millisecond, max: budget - 100*time.Millisecond},

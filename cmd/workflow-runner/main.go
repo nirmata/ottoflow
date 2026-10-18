@@ -167,9 +167,12 @@ func run() int {
 // writeStarted is closed it waits at least writeBudget from then, so a step that returns late does not
 // cut off the final status write. It reads no shared state (executor goroutines write
 // workflowRun.Status), so it cannot save step statuses; it only bounds how long the runner lingers.
-func hardStopAfterSignal(ctx context.Context, d time.Duration, writeStarted <-chan struct{}, writeBudget time.Duration) {
+func hardStopAfterSignal(
+	ctx context.Context, d time.Duration, writeStarted <-chan struct{}, writeBudget time.Duration,
+) {
 	<-ctx.Done()
-	deadline := time.Now().Add(d)
+	signalled := time.Now()
+	deadline := signalled.Add(d)
 	select {
 	case <-writeStarted:
 		if t := time.Now().Add(writeBudget); t.After(deadline) {
@@ -178,7 +181,7 @@ func hardStopAfterSignal(ctx context.Context, d time.Duration, writeStarted <-ch
 	case <-time.After(d):
 	}
 	time.Sleep(time.Until(deadline))
-	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", d)
+	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", time.Since(signalled))
 	klog.FlushAndExit(hardStopFlushTimeout, exitInterrupted)
 }
 
@@ -192,7 +195,7 @@ func markInterrupted(status *ottoflowv1alpha1.WorkflowRunStatus) {
 		if s.Phase == ottoflowv1alpha1.StepPhasePending {
 			continue
 		}
-		s.Message = fmt.Sprintf("%s (was %s)", interruptedMessage, s.Phase) // keeps what the step had reached
+		s.Message = fmt.Sprintf("%s (was %s)", interruptedMessage, s.Phase)
 		s.Phase = ottoflowv1alpha1.StepPhasePending
 		s.Error = ""
 		s.CompletionTime = nil
