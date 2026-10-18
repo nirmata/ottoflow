@@ -640,6 +640,15 @@ func runnerSecretSourceNamespace(cfg RunnerConfig, workflowNamespace string) str
 	return workflowNamespace
 }
 
+// publicProviderEnvNames are the public-provider credential and model names that used to be in
+// executor.LLMEnvAllowlist. Nothing on the runner reads them and the runner no longer forwards
+// them; the agent-executor takes public-provider keys from its own process environment only.
+var publicProviderEnvNames = []string{
+	"GEMINI_API_KEY", "GOOGLE_API_KEY",
+	"OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+}
+
 // injectWellKnownLLMCredentials looks up the well-known LLM credentials Secret in the
 // WorkflowRun's namespace and returns secretKeyRef EnvVars for any recognized LLM keys
 // that are not already present in existingEnvNames. Returns nil when the Secret does not
@@ -660,6 +669,27 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 		secretName = ref.Name
 		if ref.Namespace != "" {
 			secretNamespace = ref.Namespace
+		}
+	}
+
+	// Before the Secret is even considered: a public-provider key in the run's own
+	// spec.execution.job.env is mounted on the runner but never read or forwarded, so say so.
+	// This sits before the secretName=="" return so it also fires on installs with no
+	// well-known Secret configured, where job.env is the only source.
+	if r.EventRecorder != nil {
+		var ignored []string
+		for _, k := range publicProviderEnvNames {
+			if _, ok := existingEnvNames[k]; ok {
+				ignored = append(ignored, k)
+			}
+		}
+		if len(ignored) > 0 {
+			r.EventRecorder.Eventf(workflowRun, nil, corev1.EventTypeWarning,
+				"LLMCredentialIgnored", "LLMCredentialIgnored",
+				"spec.execution.job.env sets %s, which nothing reads: public-provider API keys come "+
+					"from the agent-executor's own environment (Helm agentExecutor.llmCredentialsSecret "+
+					"or agentExecutor.env), not from the run",
+				strings.Join(ignored, ", "))
 		}
 	}
 

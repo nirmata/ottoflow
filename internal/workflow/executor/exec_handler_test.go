@@ -313,7 +313,7 @@ var _ = Describe("executeAgentViaExecHTTP", func() {
 		}))
 		testExecURLBase = fakeServer.URL
 
-		GinkgoT().Setenv("OPENAI_API_KEY", "fake-key-for-test")
+		GinkgoT().Setenv("NIRMATA_LLM_TOKEN", "fake-key-for-test")
 
 		e, err := NewWorkflowExecutorWithAgentExecutor(k8sClient, nil, nil, nil, workflowRun, &execHTTPStub{}, false, 0, 5, nil)
 		Expect(err).NotTo(HaveOccurred())

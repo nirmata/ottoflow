@@ -60,8 +60,8 @@ spec:
   #   helm upgrade --install ottoflow charts/ottoflow \
   #     --namespace ottoflow \
   #     --set-json 'agentExecutor.env=[{"name":"OPENAI_API_BASE","value":"https://my-openai-proxy.internal.example.com/v1"}]'
-  # NOTE: OPENAI_BASE_URL is listed in ottoflow's LLMEnvAllowlist but is
-  # dead for this purpose — gollm's openai provider never reads that name.
+  # NOTE: OPENAI_BASE_URL is not forwarded by ottoflow (it is not in
+  # LLMEnvAllowlist), and gollm's openai provider never reads that name.
   outputExtraction:
     type: text
 ---
