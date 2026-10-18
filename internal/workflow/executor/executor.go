@@ -746,6 +746,34 @@ func (e *WorkflowExecutor) checkMatchConditions(ctx context.Context, step ottofl
 
 // executeStep executes a single step. Returns (outputs, nil) on success so forEach can collect per-item outputs; returns (nil, err) on failure.
 func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (map[string]interface{}, error) {
+	contextData, err := e.contextManager.ReadContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read context: %w", err)
+	}
+
+	// Build variable map for CEL evaluation
+	vars := e.celEvaluator.BuildVariableMap(contextData)
+
+	// Evaluate expressions before dispatch so every action sees them
+	// (and so do the step's outputs).
+	if len(step.Expressions) > 0 {
+		exprResults, err := e.celEvaluator.EvaluateStepExpressions(ctx, step, vars)
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate expressions: %w", err)
+		}
+
+		// Update context with expression results
+		if contextData["expressions"] == nil {
+			contextData["expressions"] = make(map[string]interface{})
+		}
+		for k, v := range exprResults {
+			contextData["expressions"].(map[string]interface{})[k] = v
+		}
+
+		// Update vars for output evaluation
+		vars = e.celEvaluator.BuildVariableMap(contextData)
+	}
+
 	// Check step type and delegate to appropriate handler
 	if step.ForEach != nil {
 		err := e.executeForEach(ctx, workflowRun, step)
@@ -782,35 +810,7 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflo
 	if step.WaitForCallback != nil {
 		return e.executeWaitForCallback(ctx, workflowRun, step)
 	}
-	// Default: expression-based step
-	contextData, err := e.contextManager.ReadContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read context: %w", err)
-	}
-
-	// Build variable map for CEL evaluation
-	vars := e.celEvaluator.BuildVariableMap(contextData)
-
-	// Evaluate expressions sequentially and update context
-	if len(step.Expressions) > 0 {
-		exprResults, err := e.celEvaluator.EvaluateStepExpressions(ctx, step, vars)
-		if err != nil {
-			return nil, fmt.Errorf("failed to evaluate expressions: %w", err)
-		}
-
-		// Update context with expression results
-		if contextData["expressions"] == nil {
-			contextData["expressions"] = make(map[string]interface{})
-		}
-		for k, v := range exprResults {
-			contextData["expressions"].(map[string]interface{})[k] = v
-		}
-
-		// Update vars for output evaluation
-		vars = e.celEvaluator.BuildVariableMap(contextData)
-	}
-
-	// Evaluate outputs
+	// Evaluate outputs (reached by pure expression steps; vars already include this step's expressions)
 	outputs, err := e.celEvaluator.EvaluateStepOutputs(ctx, step, vars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate outputs: %w", err)
