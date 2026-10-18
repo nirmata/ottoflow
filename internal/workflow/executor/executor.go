@@ -104,12 +104,13 @@ type WorkflowExecutor struct {
 	execHTTPClient     *http.Client
 	execHTTPClientErr  error
 	// openReportsCRD/Once/Avail/Err: cached per-run CRD availability check for openReport steps (thread-safe via sync.Once).
-	openReportsCRDOnce  sync.Once
-	openReportsCRDAvail bool
-	openReportsCRDErr   error
-	checkpointManager   *CheckpointManager
-	providerOverride    string
-	modelOverride       string
+	openReportsCRDOnce   sync.Once
+	openReportsCRDAvail  bool
+	openReportsCRDReason string
+	openReportsCRDErr    error
+	checkpointManager    *CheckpointManager
+	providerOverride     string
+	modelOverride        string
 	// kubeClient is the typed Kubernetes clientset propagated to the CELEvaluator for resource.GetLogs.
 	// nil when the executor was created without a rest.Config (convenience wrappers, CLI local mode).
 	kubeClient kubernetes.Interface
