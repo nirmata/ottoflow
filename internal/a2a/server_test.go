@@ -10,6 +10,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -356,5 +357,68 @@ func TestWriteSSEEnvelope(t *testing.T) {
 	}
 	if gotResult != evt {
 		t.Errorf("result = %+v, want %+v", gotResult, evt)
+	}
+}
+
+// --- default concurrency cap ---------------------------------------------------------
+
+func TestCreateRunDefaultConcurrencyCap(t *testing.T) {
+	activeRuns := func(n int) []client.Object {
+		var objs []client.Object
+		for i := 0; i < n; i++ {
+			objs = append(objs, &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default", Name: fmt.Sprintf("greeter-running-%d", i),
+					Labels: map[string]string{"ottoflow.nirmata.io/workflow": "greeter"},
+				},
+				Status: ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+			})
+		}
+		return objs
+	}
+	wfWith := func(limit *int32) *ottoflowv1alpha1.Workflow {
+		wf := exposedWorkflow()
+		if limit != nil {
+			wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: limit}
+		}
+		return wf
+	}
+	i32 := func(v int32) *int32 { return &v }
+
+	cases := []struct {
+		name    string
+		limit   *int32
+		active  int
+		wantErr bool
+	}{
+		{"nil cap, 9 active: allowed", nil, 9, false},
+		{"nil cap, 10 active: refused", nil, 10, true},
+		{"explicit 0, 25 active: unlimited", i32(0), 25, false},
+		{"explicit 3, 3 active: refused", i32(3), 3, true},
+		{"explicit 20, 12 active: allowed (overrides the default)", i32(20), 12, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := append([]client.Object{wfWith(tc.limit)}, activeRuns(tc.active)...)
+			s := NewServer(newFakeClient(t, objs...), "greeter", "default", "", 0)
+			_, err := s.createRun(context.Background(), "hi")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("createRun err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Runs created by createRun have an empty phase until the controller reconciles them; they must
+// count toward the default cap.
+func TestCreateRunCapCountsUnreconciledRuns(t *testing.T) {
+	s := NewServer(newFakeClient(t, exposedWorkflow()), "greeter", "default", "", 0)
+	for i := 0; i < defaultMaxConcurrentRuns; i++ {
+		if _, err := s.createRun(context.Background(), "hi"); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	if _, err := s.createRun(context.Background(), "hi"); err == nil {
+		t.Fatalf("create %d succeeded; want concurrency-limit refusal", defaultMaxConcurrentRuns+1)
 	}
 }

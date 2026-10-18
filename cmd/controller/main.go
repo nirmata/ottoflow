@@ -92,6 +92,7 @@ func main() {
 	var serveA2AImage string
 	var serveA2AServiceAccount string
 	var serveA2AClusterRole string
+	var serveA2AAllowUnauthenticated bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -173,6 +174,10 @@ func main() {
 		"Shared ClusterRole the serve-a2a BYO pod's ServiceAccount is bound to (Helm-provisioned; "+
 			"the controller only creates a RoleBinding to it, never the ClusterRole itself). "+
 			"Default: ottoflow-serve-a2a.")
+	flag.BoolVar(&serveA2AAllowUnauthenticated, "serve-a2a-allow-unauthenticated", false,
+		"Turn OFF caller authentication on serve-a2a pods: anyone who can reach a pod can create WorkflowRuns. "+
+			"Default false (callers need a TokenReview-valid token and get configmaps/a2a-caller). "+
+			"Pair with a NetworkPolicy; see docs/user/tasks/workflows-as-a2a-agents.md.")
 
 	webhookServiceName := envOrDefault("WEBHOOK_SERVICE_NAME", "ottoflow-webhook")
 	webhookConfigName := envOrDefault("WEBHOOK_CONFIG_NAME", "ottoflow-validating")
@@ -447,11 +452,12 @@ func main() {
 			"(Workflows with spec.expose.kagent will not get a kagent Agent)")
 	}
 	if err = (&workflowcontroller.WorkflowExposureReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		ServeA2AImage:          serveA2AImage,
-		ServeA2AServiceAccount: serveA2AServiceAccount,
-		ServeA2AClusterRole:    serveA2AClusterRole,
+		Client:                       mgr.GetClient(),
+		Scheme:                       mgr.GetScheme(),
+		ServeA2AImage:                serveA2AImage,
+		ServeA2AServiceAccount:       serveA2AServiceAccount,
+		ServeA2AClusterRole:          serveA2AClusterRole,
+		ServeA2AAllowUnauthenticated: serveA2AAllowUnauthenticated,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkflowExposure")
 		os.Exit(1)

@@ -817,7 +817,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `retentionMinutes` _integer_ | RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).<br />Completed runs older than this are deleted. Zero or nil means no automatic deletion. |  | Optional: \{\} <br /> |
 | `maxAllowed` _integer_ | MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).<br />When exceeded, oldest completed runs are deleted first. Zero or nil means no limit.<br />Pending and Running runs are not counted toward this limit when deciding deletions. |  | Optional: \{\} <br /> |
-| `maxConcurrentRuns` _integer_ | MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.<br />When a trigger (cron, event) would create a new run, creation is skipped if active runs >= MaxConcurrentRuns.<br />Zero or nil means no limit. |  | Optional: \{\} <br /> |
+| `maxConcurrentRuns` _integer_ | MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.<br />When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active<br />runs >= MaxConcurrentRuns; for those, zero or nil means no limit.<br />serve-a2a (A2A calls) differs: nil means 10, an explicit 0 means no limit, and N means N. |  | Optional: \{\} <br /> |
 
 
 #### SecretReference

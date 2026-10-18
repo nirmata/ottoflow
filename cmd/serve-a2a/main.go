@@ -16,6 +16,8 @@ that can be found in the LICENSE.md file.
 package main
 
 import (
+	"context"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -23,6 +25,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,10 +33,12 @@ import (
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/a2a"
+	"github.com/nirmata/ottoflow/internal/auth"
 )
 
 func main() {
 	klog.InitFlags(nil)
+	flag.Parse() // makes klog's -v usable; the auth rejection reasons log at V(4)
 
 	workflowName := os.Getenv("WORKFLOW_NAME")
 	if workflowName == "" {
@@ -75,9 +80,35 @@ func main() {
 	mux := http.NewServeMux()
 	srv.Register(mux)
 
+	var handler http.Handler = mux
+	if os.Getenv("A2A_ALLOW_UNAUTHENTICATED") == "true" {
+		klog.Warning("A2A_ALLOW_UNAUTHENTICATED=true: serve-a2a accepts A2A calls with NO authentication. " +
+			"Anyone who can reach this pod can create WorkflowRuns. Restrict access with a NetworkPolicy.")
+	} else {
+		kc, err := kubernetes.NewForConfig(cfg)
+		if err != nil {
+			klog.Fatalf("creating kube clientset: %v", err)
+		}
+		// Callers need "get configmaps/a2a-caller" in the Workflow's namespace and a token minted for
+		// the dedicated audience; see docs/user/tasks/workflows-as-a2a-agents.md.
+		handler = a2a.RequireAuth(
+			auth.NewTokenReviewAndSARAuthenticator(kc, namespace, a2a.CallerResourceName).WithAudiences(a2a.TokenAudience),
+			mux)
+		// Without a ClusterRoleBinding for TokenReview/SubjectAccessReview every call is refused.
+		// Say so at startup; readiness stays the agent-card probe, so this is a log line only.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		for _, m := range auth.MissingReviewerAccess(ctx, kc) {
+			klog.Errorf("serve-a2a cannot authenticate callers, every request will get 401: %s. "+
+				"Bind the a2a token-reviewer ClusterRole to this ServiceAccount with a ClusterRoleBinding.", m)
+		}
+		cancel()
+	}
+
 	addr := ":" + port
 	klog.Infof("serve-a2a listening on %s (workflow=%s/%s)", addr, namespace, workflowName)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	// ReadHeaderTimeout bounds slow-header connections. No WriteTimeout: SSE responses run up to the run timeout.
+	httpSrv := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	if err := httpSrv.ListenAndServe(); err != nil {
 		klog.Fatalf("server error: %v", err)
 	}
 }
