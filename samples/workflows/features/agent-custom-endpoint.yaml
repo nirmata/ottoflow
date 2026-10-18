@@ -11,10 +11,10 @@
 #     --namespace ottoflow \
 #     --set-json 'agentExecutor.llmEndpointAllowlist=["https://my-aoai.internal.example.com"]'
 #
-# Listing an origin trusts it with every LLM credential in the
-# agent-executor pod: any Agent may name a listed origin, and that host can
-# then receive the pod's LLM credential together with the full prompt. Do
-# not allowlist a host you do not control.
+# Listing an origin trusts it with the agent-executor's LLM credentials: any
+# Agent may name a listed origin, and every provider client that uses the
+# endpoint (with the pinned gollm, azure-openai) sends its credential there
+# together with the full prompt. Do not allowlist a host you do not control.
 #
 # Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
 #   - endpoint (origin only, "scheme://host[:port]"; a path, query, fragment

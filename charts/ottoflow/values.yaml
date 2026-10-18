@@ -279,9 +279,10 @@ agentExecutor:
   # EMPTY (default): no Agent may set spec.config.endpoint; a run whose Agent sets it fails.
   # An entry with a path, query, fragment or user:pass@ stops the agent-executor at startup.
   #
-  # Listing an origin is a trust decision for every credential in this pod, not one provider's:
-  # any Agent may name a listed origin, so that host can receive the LLM credentials set on the
-  # agent-executor together with the full prompt. Do not list a host you do not control.
+  # Listing an origin trusts it with this pod's LLM credentials: any Agent may name a listed
+  # origin, and every provider client that uses the endpoint (with the pinned gollm,
+  # azure-openai) sends its credential there together with the full prompt. Do not list a host
+  # you do not control.
   #
   # Matching: scheme exact; host case-insensitive, trailing dot ignored; default ports :443 and
   # :80 folded. No wildcards. The Agent's endpoint must itself be origin-only (a trailing "/" is
