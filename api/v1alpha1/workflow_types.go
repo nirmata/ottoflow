@@ -143,6 +143,7 @@ type RunPolicy struct {
 	// Completed runs older than this are deleted. Omitted means 10080 (7 days).
 	// Set to 0 to disable age-based deletion.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=10080
 	RetentionMinutes *int32 `json:"retentionMinutes,omitempty"`
 
@@ -151,6 +152,7 @@ type RunPolicy struct {
 	// Set to 0 for no limit.
 	// Pending and Running runs are not counted toward this limit when deciding deletions.
 	// +optional
+	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=50
 	MaxAllowed *int32 `json:"maxAllowed,omitempty"`
 

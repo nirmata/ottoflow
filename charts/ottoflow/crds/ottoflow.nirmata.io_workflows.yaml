@@ -3514,6 +3514,7 @@ spec:
                       Set to 0 for no limit.
                       Pending and Running runs are not counted toward this limit when deciding deletions.
                     format: int32
+                    minimum: 0
                     type: integer
                   maxConcurrentRuns:
                     description: |-
@@ -3529,6 +3530,7 @@ spec:
                       Completed runs older than this are deleted. Omitted means 10080 (7 days).
                       Set to 0 to disable age-based deletion.
                     format: int32
+                    minimum: 0
                     type: integer
                 type: object
               steps:

@@ -1323,7 +1323,7 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 		cutoffRetention := now.Add(-time.Duration(retention) * time.Minute)
 		for _, wr := range completed {
 			if wr.Status.CompletionTime != nil && wr.Status.CompletionTime.Time.Before(cutoffRetention) {
-				if err := r.Delete(ctx, wr); err != nil {
+				if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 					return false, fmt.Errorf("delete run %s for retention: %w", wr.Name, err)
 				}
 				if wr.UID == current.UID {
@@ -1351,7 +1351,7 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 		toDelete := len(completed) - maxAllowed
 		for i := 0; i < toDelete && i < len(completed); i++ {
 			wr := completed[i]
-			if err := r.Delete(ctx, wr); err != nil {
+			if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 				return false, fmt.Errorf("delete run %s for maxAllowed: %w", wr.Name, err)
 			}
 			if wr.UID == current.UID {

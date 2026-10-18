@@ -815,8 +815,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `retentionMinutes` _integer_ | RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).<br />Completed runs older than this are deleted. Omitted means 10080 (7 days).<br />Set to 0 to disable age-based deletion. | 10080 | Optional: \{\} <br /> |
-| `maxAllowed` _integer_ | MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).<br />When exceeded, oldest completed runs are deleted first. Omitted means 50.<br />Set to 0 for no limit.<br />Pending and Running runs are not counted toward this limit when deciding deletions. | 50 | Optional: \{\} <br /> |
+| `retentionMinutes` _integer_ | RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).<br />Completed runs older than this are deleted. Omitted means 10080 (7 days).<br />Set to 0 to disable age-based deletion. | 10080 | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxAllowed` _integer_ | MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).<br />When exceeded, oldest completed runs are deleted first. Omitted means 50.<br />Set to 0 for no limit.<br />Pending and Running runs are not counted toward this limit when deciding deletions. | 50 | Minimum: 0 <br />Optional: \{\} <br /> |
 | `maxConcurrentRuns` _integer_ | MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.<br />When a trigger (cron, event) would create a new run, creation is skipped if active runs >= MaxConcurrentRuns.<br />Zero or nil means no limit. |  | Optional: \{\} <br /> |
 
 

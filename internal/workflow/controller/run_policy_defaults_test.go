@@ -12,6 +12,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -53,6 +54,19 @@ var _ = Describe("Workflow spec.run defaults", func() {
 		Expect(r.MaxAllowed).To(HaveValue(BeEquivalentTo(0)))
 	})
 
+	DescribeTable("rejects negative values",
+		func(name string, run *ottoflowv1alpha1.RunPolicy) {
+			err := k8sClient.Create(ctx, &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: steps, Run: run},
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(apierrors.IsInvalid(err)).To(BeTrue(), err.Error())
+		},
+		Entry("negative retentionMinutes", "negretention", &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](-1)}),
+		Entry("negative maxAllowed", "negmax", &ottoflowv1alpha1.RunPolicy{MaxAllowed: ptr.To[int32](-1)}),
+	)
+
 	DescribeTable("defaults for typed creates",
 		func(name string, run *ottoflowv1alpha1.RunPolicy, wantRetention, wantMax int32) {
 			Expect(k8sClient.Create(ctx, &ottoflowv1alpha1.Workflow{
@@ -66,6 +80,8 @@ var _ = Describe("Workflow spec.run defaults", func() {
 		},
 		Entry("no spec.run", "norun", nil, int32(10080), int32(50)),
 		Entry("partial spec.run", "partial", &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: ptr.To[int32](3)}, int32(10080), int32(50)),
+		Entry("only retentionMinutes 0", "onlyretention0", &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](0)}, int32(0), int32(50)),
+		Entry("only maxAllowed 0", "onlymax0", &ottoflowv1alpha1.RunPolicy{MaxAllowed: ptr.To[int32](0)}, int32(10080), int32(0)),
 		Entry("typed explicit zero", "typedzero", &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](0), MaxAllowed: ptr.To[int32](0)}, int32(0), int32(0)),
 	)
 })
