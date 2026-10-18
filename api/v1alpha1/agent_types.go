@@ -104,8 +104,8 @@ type AgentSpec struct {
 	// "google", "gemini" and "anthropic" ignore it; "local" uses LLAMACPP_HOST.
 	// - skipVerifySSL: "true" is REJECTED for every provider and fails the agent run; "false"
 	// is accepted. To reach an endpoint with a private CA, set SSL_CERT_FILE or SSL_CERT_DIR on
-	// the agent-executor process (keeps TLS verification on); as a last resort,
-	// LLM_SKIP_VERIFY_SSL=true on that process disables verification for all its LLM egress.
+	// the agent-executor process (keeps TLS verification on); as a last resort, set
+	// LLM_SKIP_VERIFY_SSL=true on that process, a process-wide setting not scoped to one Agent.
 	//
 	// API keys are NOT read from here; they come from the agent-executor process
 	// environment (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, AZURE_OPENAI_API_KEY).

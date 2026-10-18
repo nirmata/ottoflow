@@ -17,9 +17,9 @@
 #   - Agent.spec.config.skipVerifySSL="true" is rejected for every provider,
 #     local included: the agent run fails. To reach a llama.cpp server with a
 #     private CA, mount its CA bundle and set SSL_CERT_FILE or SSL_CERT_DIR on
-#     the agent-executor process instead; as a last resort,
-#     LLM_SKIP_VERIFY_SSL=true on that process disables verification for all
-#     LLM egress from the pod, not just this Agent.
+#     the agent-executor process instead; as a last resort, set
+#     LLM_SKIP_VERIFY_SSL=true on that process, a process-wide setting not
+#     scoped to this Agent.
 #
 # One-time setup (point at a llama.cpp server reachable from the
 # agent-executor pod):

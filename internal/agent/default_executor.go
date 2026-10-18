@@ -170,9 +170,9 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 			"(provider %q): the agent-executor's LLM credential is shared process-wide, so an Agent may "+
 			"not turn off TLS verification for requests carrying it. Preferred: mount the endpoint's CA "+
 			"bundle and set SSL_CERT_FILE or SSL_CERT_DIR on the agent-executor, which keeps TLS "+
-			"verification on. Fallback: set LLM_SKIP_VERIFY_SSL=true on the agent-executor process, which "+
-			"disables verification for all LLM egress from that process, not just this Agent. In CLI "+
-			"local mode, set the same variable in your shell", provider)
+			"verification on. Fallback: set LLM_SKIP_VERIFY_SSL=true on the agent-executor process, a "+
+			"process-wide setting not scoped to this Agent. In CLI local mode, set the same variable in "+
+			"your shell", provider)
 	}
 
 	var client gollm.Client

@@ -122,7 +122,7 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		It("default closed: an unset or empty-ish allowlist refuses every provider", func() {
 			for _, envVal := range []string{"", " ", ",", " , ", ",,", "\t\n"} {
 				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, envVal)
-				assertRefused(allProviders, map[string]string{"endpoint": "https://attacker.example.com"},
+				assertRefused(allProviders, map[string]string{"endpoint": "https://unlisted.example.com"},
 					"allowlisted no LLM endpoints")
 			}
 		})
@@ -147,15 +147,15 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
 				assertRefused(allProviders, map[string]string{"endpoint": endpoint}, "not in the operator's allowlist")
 			},
-			Entry("host suffix", "https://llm.corp.example.evil.example"),
+			Entry("host suffix", "https://llm.corp.example.other.example"),
 			Entry("scheme", "http://llm.corp.example"),
 			Entry("port", "https://llm.corp.example:8443"),
-			Entry("userinfo swaps the effective host", "https://llm.corp.example@evil.example"),
+			Entry("userinfo swaps the effective host", "https://llm.corp.example@other.example"),
 		)
 
 		It("refuses userinfo on an allowlisted host", func() {
 			GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
-			assertRefused(allProviders, map[string]string{"endpoint": "https://evil.example@llm.corp.example"},
+			assertRefused(allProviders, map[string]string{"endpoint": "https://other.example@llm.corp.example"},
 				"userinfo is not permitted")
 		})
 

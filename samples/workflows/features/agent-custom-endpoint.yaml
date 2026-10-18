@@ -12,9 +12,9 @@
 #     --set-json 'agentExecutor.llmEndpointAllowlist=["https://my-aoai.internal.example.com"]'
 #
 # Listing an origin trusts it with every LLM credential in the
-# agent-executor pod: any Agent may name a listed origin, and that host then
-# receives the pod's LLM credential together with the full prompt. Do not
-# allowlist a host you do not control.
+# agent-executor pod: any Agent may name a listed origin, and that host can
+# then receive the pod's LLM credential together with the full prompt. Do
+# not allowlist a host you do not control.
 #
 # Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
 #   - endpoint (origin only, "scheme://host[:port]"; a path, query, fragment
@@ -34,8 +34,8 @@
 #         the agent run fails. To reach an endpoint with a private CA, mount
 #         the CA bundle and set SSL_CERT_FILE or SSL_CERT_DIR on the
 #         agent-executor process instead (keeps TLS verification on). As a
-#         last resort, LLM_SKIP_VERIFY_SSL=true on that process disables
-#         verification for all LLM egress from the pod, not just this Agent.
+#         last resort, set LLM_SKIP_VERIFY_SSL=true on that process, a
+#         process-wide setting not scoped to this Agent.
 #   - apiKey / baseURL / apiVersion / projectId (other Agent.spec.config
 #     fields, if present in your CRD version): NEVER read by the executor
 #     for any provider today — credentials always come from the
