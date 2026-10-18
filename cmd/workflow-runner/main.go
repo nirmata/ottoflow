@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -80,14 +81,22 @@ const (
 	hardStopFlushTimeout = 2 * time.Second
 )
 
+// finalWriteStarted is closed once ExecuteWorkflow returns, so the hard stop leaves the final status
+// write its budget.
+var (
+	finalWriteStarted = make(chan struct{})
+	startFinalWrite   = sync.OnceFunc(func() { close(finalWriteStarted) })
+)
+
 // Shutdown budget, measured from the signal, against the runner pod's terminationGracePeriodSeconds
 // (RunnerTerminationGracePeriod, 30s, set by the controller):
 //   - normal interrupted path: ExecuteWorkflow returns, then the shared flush+write budget (5s) and the
 //     deferred OTel flush (5s) run, so it ends 10s after ExecuteWorkflow returns;
-//   - the hard stop bounds all of it: it fires defaultHardStop after the signal and exits within
-//     hardStopFlushTimeout, so the worst case is 15s + 2s = 17s, 13s inside the grace period.
+//   - the hard stop bounds all of it: it fires defaultHardStop after the signal, or persistTimeout after
+//     ExecuteWorkflow returns if that is later, and exits within hardStopFlushTimeout. The worst case is a
+//     return just before the hard stop: 15s + 5s + 2s = 22s, 8s inside the grace period.
 // Raising the hard stop (--shutdown-hard-stop or OTTOFLOW_SHUTDOWN_HARD_STOP) eats that margin: keep it at
-// most the grace period minus 13s.
+// most the grace period minus 15s.
 
 func main() {
 	// os.Exit would skip defers, so run() holds them (span End, OTel flush, executor Close).
@@ -98,7 +107,7 @@ func run() int {
 	cfg := parseRunnerFlags()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	go hardStopAfterSignal(ctx, cfg.hardStop)
+	go hardStopAfterSignal(ctx, cfg.hardStop, finalWriteStarted, persistTimeout)
 
 	// Initialize OTel TracerProvider first — it registers the W3C propagator globally,
 	// which must be set before we call Extract below.
@@ -154,12 +163,21 @@ func run() int {
 	return runWorkflowToCompletion(ctx, exec, cm, workflow, workflowRun, controlClient, cfg)
 }
 
-// hardStopAfterSignal force-exits d after ctx is cancelled, in case a step ignores the ctx.
-// It reads no shared state (executor goroutines write workflowRun.Status), so it cannot save step
-// statuses; it only bounds how long the runner lingers. d should stay below the pod's grace period.
-func hardStopAfterSignal(ctx context.Context, d time.Duration) {
+// hardStopAfterSignal force-exits d after ctx is cancelled, in case a step ignores the ctx. Once
+// writeStarted is closed it waits at least writeBudget from then, so a step that returns late does not
+// cut off the final status write. It reads no shared state (executor goroutines write
+// workflowRun.Status), so it cannot save step statuses; it only bounds how long the runner lingers.
+func hardStopAfterSignal(ctx context.Context, d time.Duration, writeStarted <-chan struct{}, writeBudget time.Duration) {
 	<-ctx.Done()
-	time.Sleep(d)
+	deadline := time.Now().Add(d)
+	select {
+	case <-writeStarted:
+		if t := time.Now().Add(writeBudget); t.After(deadline) {
+			deadline = t
+		}
+	case <-time.After(d):
+	}
+	time.Sleep(time.Until(deadline))
 	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", d)
 	klog.FlushAndExit(hardStopFlushTimeout, 1)
 }
@@ -642,7 +660,9 @@ func runWorkflowToCompletion(
 	cfg runnerConfig,
 ) int {
 	defer exec.Close() //nolint:errcheck
-	if err := exec.ExecuteWorkflow(ctx, workflow, workflowRun); err != nil {
+	err := exec.ExecuteWorkflow(ctx, workflow, workflowRun)
+	startFinalWrite()
+	if err != nil {
 		// waitForCallback pause: exit with code 0 so the Job is not marked failed.
 		// The controller will recreate the Job once the callback arrives.
 		if errors.Is(err, workflowexecutor.ErrAwaitingCallback) {

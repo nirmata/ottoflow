@@ -410,8 +410,9 @@ func TestResumedRunSuccessClearsInterruptedMessage(t *testing.T) {
 
 // The worst case from signal to exit must stay inside the runner pod's grace period with margin.
 func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
-	const grace, margin = workflowexecutor.RunnerTerminationGracePeriod, 10 * time.Second
-	if worst := defaultHardStop + hardStopFlushTimeout; worst > grace-margin {
+	const grace, margin = workflowexecutor.RunnerTerminationGracePeriod, 8 * time.Second
+	// The hard stop waits persistTimeout for a final write that starts just before it fires.
+	if worst := defaultHardStop + persistTimeout + hardStopFlushTimeout; worst > grace-margin {
 		t.Fatalf("worst case %s leaves under %s of the %s grace period", worst, margin, grace)
 	}
 	// Normal interrupted path: shared flush+write budget plus the OTel flush deferred in run().
@@ -552,5 +553,45 @@ func TestHardStopDefaultFromEnv(t *testing.T) {
 		if got := hardStopDefault(in); got != want {
 			t.Errorf("hardStopDefault(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// Once the final status write has started, the hard stop gives it its whole budget, even past the hard
+// stop's own deadline. Without a write it still fires at its deadline.
+func TestHardStopWaitsForFinalWrite(t *testing.T) {
+	const budget = time.Second
+	for _, tc := range []struct {
+		name     string
+		d        time.Duration
+		noticeAt time.Duration // after the signal; negative: before it; zero: never
+		min, max time.Duration
+	}{
+		{name: "write started before the signal", d: 200 * time.Millisecond, noticeAt: -1, min: budget, max: budget + time.Second},
+		{name: "write started after the signal", d: 500 * time.Millisecond, noticeAt: 100 * time.Millisecond,
+			min: 100*time.Millisecond + budget, max: 100*time.Millisecond + budget + time.Second},
+		{name: "no write", d: 200 * time.Millisecond, min: 200 * time.Millisecond, max: budget - 100*time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			writeStarted := make(chan struct{})
+			if tc.noticeAt < 0 {
+				close(writeStarted)
+			}
+			start := time.Now()
+			cancel()
+			if tc.noticeAt > 0 {
+				timer := time.AfterFunc(tc.noticeAt, func() { close(writeStarted) })
+				defer timer.Stop()
+			}
+			code := runCapturingExit(t, func() int {
+				hardStopAfterSignal(ctx, tc.d, writeStarted, budget)
+				return -1 // hardStopAfterSignal must not return
+			})
+			elapsed := time.Since(start)
+			t.Logf("code=%d exited after %s (want %s..%s)", code, elapsed, tc.min, tc.max)
+			if code == -1 || elapsed < tc.min || elapsed > tc.max {
+				t.Fatalf("hard stop exited after %s with code %d, want between %s and %s", elapsed, code, tc.min, tc.max)
+			}
+		})
 	}
 }
