@@ -175,10 +175,15 @@ func hardStopAfterSignal(
 	deadline := signalled.Add(d)
 	select {
 	case <-writeStarted:
+	case <-time.After(d):
+	}
+	// Checked again here: when the timer and the notice were both ready, select may have taken the timer.
+	select {
+	case <-writeStarted:
 		if t := time.Now().Add(writeBudget); t.After(deadline) {
 			deadline = t
 		}
-	case <-time.After(d):
+	default:
 	}
 	time.Sleep(time.Until(deadline))
 	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", time.Since(signalled))

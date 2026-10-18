@@ -603,6 +603,26 @@ func TestHardStopWaitsForFinalWrite(t *testing.T) {
 	}
 }
 
+// When the hard stop's timer and an already-started final write are both ready at once, the write
+// still gets its budget. A 1ns hard stop makes both ready when the select runs.
+func TestHardStopWaitsForFinalWriteWhenTimerAlsoReady(t *testing.T) {
+	const budget = 50 * time.Millisecond
+	writeStarted := make(chan struct{})
+	close(writeStarted)
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		start := time.Now()
+		code := runCapturingExit(t, func() int {
+			hardStopAfterSignal(ctx, time.Nanosecond, writeStarted, budget)
+			return -1
+		})
+		if elapsed := time.Since(start); code != exitInterrupted || elapsed < budget {
+			t.Fatalf("run %d: hard stop exited after %s with code %d, want at least %s", i, elapsed, code, budget)
+		}
+	}
+}
+
 // A step re-run from the API status (checkpointing on, but no snapshot saved before the signal) must
 // not keep the interrupt note from the earlier attempt once it runs again.
 func TestRerunStepClearsInterruptedMessage(t *testing.T) {
