@@ -349,3 +349,45 @@ func TestMCPClientManagerStaleRefreshAfterRemovalRereads(t *testing.T) {
 		})
 	}
 }
+
+// A caller that read the config while nothing was cached must not store a client for a server
+// that was deleted while it was building, even though the deletion's Evict found nothing to remove.
+func TestMCPClientManagerStaleRefreshAfterRemovalWithEmptyCache(t *testing.T) {
+	k := fake.NewClientBuilder().WithScheme(refreshScheme()).WithObjects(refreshMCPServer(oldAddress)).Build()
+	f := &pausingFactory{entered: make(chan string, 1), resume: make(chan struct{})}
+	m := NewMCPClientManager(k, f)
+
+	f.pause.Store(true)
+	type result struct {
+		c   MCPClient
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		c, err := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace)
+		done <- result{c, err}
+	}()
+	if got := <-f.entered; got != oldAddress {
+		t.Fatalf("paused caller read %q, want the old address", got)
+	}
+	if err := k.Delete(context.Background(), refreshMCPServer(oldAddress)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace); err == nil {
+		t.Fatal("GetClient succeeded for a deleted server")
+	}
+	close(f.resume)
+
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("paused caller never returned")
+	}
+	m.mu.Lock()
+	_, cached := m.clients[refreshServerKey.String()]
+	m.mu.Unlock()
+	if r.err == nil || cached {
+		t.Fatalf("paused caller got err=%v, cached=%v; want an error and nothing cached", r.err, cached)
+	}
+}

@@ -156,6 +156,12 @@ func (m *MCPClientManager) Evict(namespace, serverName string, c MCPClient) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cur, ok := m.clients[key]
+	if !ok && c == nil {
+		// An unconditional removal with nothing cached still invalidates a refresh that began
+		// earlier: it may have read the server before it was deleted.
+		m.versions[key]++
+		return
+	}
 	if !ok || (c != nil && cur != c) {
 		return
 	}
