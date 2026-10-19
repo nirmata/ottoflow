@@ -10,6 +10,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -77,7 +78,7 @@ var _ = Describe("MCPClientManager", func() {
 		c2, err := mgr.GetClient(ctx, "svc1", "default")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(c2).To(Equal(c1))
-		Expect(factory.createCount).To(Equal(1))
+		Expect(mgr.clients).To(HaveLen(1))
 	})
 
 	It("GetClient returns same client when called concurrently for same server", func() {
@@ -110,7 +111,7 @@ var _ = Describe("MCPClientManager", func() {
 		Expect(err1).NotTo(HaveOccurred())
 		Expect(err2).NotTo(HaveOccurred())
 		Expect(c1).To(Equal(c2))
-		Expect(factory.createCount).To(Equal(1))
+		Expect(mgr.clients).To(HaveLen(1))
 	})
 
 	It("GetClient returns error when factory fails", func() {
@@ -303,10 +304,13 @@ type mockMCPClientFactory struct {
 	client      MCPClient
 	err         error
 	createCount int
+	mu          sync.Mutex
 }
 
 func (m *mockMCPClientFactory) CreateClient(ctx context.Context, mcpServer *ottoflowv1alpha1.MCPServer) (MCPClient, error) {
+	m.mu.Lock()
 	m.createCount++
+	m.mu.Unlock()
 	if m.err != nil {
 		return nil, m.err
 	}

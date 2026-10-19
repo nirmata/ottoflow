@@ -73,6 +73,11 @@ func (m *mcpManagerImpl) GetClient(ctx context.Context, serverName string, names
 	return m.manager.GetClient(ctx, serverName, namespace)
 }
 
+// Evict implements agent.MCPClientEvicter by forwarding to the manager.
+func (m *mcpManagerImpl) Evict(namespace, serverName string, c agent.MCPClient) {
+	m.manager.Evict(namespace, serverName, c)
+}
+
 // Close stops the background eviction goroutine and closes all cached MCP client connections.
 func (m *mcpManagerImpl) Close() error {
 	return m.manager.Close()

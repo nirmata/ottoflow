@@ -9,8 +9,10 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/agent"
 )
 
 // executeMCPToolCall executes an MCP tool call step
@@ -81,6 +84,13 @@ func (e *WorkflowExecutor) executeMCPToolCall(ctx context.Context, workflowRun *
 	// Call the MCP tool
 	toolResult, err := mcpClient.CallTool(ctx, mcpToolCall.Tool, resolvedArgs)
 	if err != nil {
+		// The server dropped the session (e.g. it restarted): the cached client stays dead, so
+		// evict it and let the next call build a new one.
+		if errors.Is(err, transport.ErrSessionTerminated) {
+			if ev, ok := e.mcpManager.(agent.MCPClientEvicter); ok {
+				ev.Evict(workflowRun.Namespace, mcpToolCall.Server, mcpClient)
+			}
+		}
 		return nil, fmt.Errorf("MCP tool call failed: %w", err)
 	}
 
