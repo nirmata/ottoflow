@@ -1460,7 +1460,7 @@ func TestWorkflowRunReconciler_Reconcile_AlreadySucceeded_RunPolicyZeroRetention
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: 0, MaxAllowed: 0},
+			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](0), MaxAllowed: ptr.To[int32](0)},
 		},
 	}
 	completed := metav1.Now()
@@ -1496,7 +1496,7 @@ func TestWorkflowRunReconciler_ApplyRunPolicy_MaxAllowed_DeletesOldest(t *testin
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{MaxAllowed: 2},
+			Run:   &ottoflowv1alpha1.RunPolicy{MaxAllowed: ptr.To[int32](2)},
 		},
 	}
 	oldTime := metav1.NewTime(metav1.Now().Add(-2 * time.Hour))
@@ -1542,7 +1542,7 @@ func TestWorkflowRunReconciler_ApplyRunPolicy_Retention_DeletesOld(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: 60}, // delete completed older than 1h
+			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](60)}, // delete completed older than 1h
 		},
 	}
 	oldTime := metav1.NewTime(metav1.Now().Add(-2 * time.Hour))

@@ -56,7 +56,9 @@ type WorkflowSpec struct {
 	Events *EventConfig `json:"events,omitempty"`
 
 	// Run configures retention and scale limits for WorkflowRuns of this workflow.
+	// When omitted, completed runs are kept for 7 days and at most 50 are retained.
 	// +optional
+	// +kubebuilder:default={}
 	Run *RunPolicy `json:"run,omitempty"`
 
 	// CELCostLimit is the maximum cost budget for CEL expression evaluation in this workflow.
@@ -138,15 +140,21 @@ type ExecutionLimits struct {
 // RunPolicy configures retention and maximum run count for a workflow.
 type RunPolicy struct {
 	// RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).
-	// Completed runs older than this are deleted. Zero or nil means no automatic deletion.
+	// Completed runs older than this are deleted. Omitted means 10080 (7 days).
+	// Set to 0 to disable age-based deletion.
 	// +optional
-	RetentionMinutes int32 `json:"retentionMinutes,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=10080
+	RetentionMinutes *int32 `json:"retentionMinutes,omitempty"`
 
 	// MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).
-	// When exceeded, oldest completed runs are deleted first. Zero or nil means no limit.
+	// When exceeded, oldest completed runs are deleted first. Omitted means 50.
+	// Set to 0 for no limit.
 	// Pending and Running runs are not counted toward this limit when deciding deletions.
 	// +optional
-	MaxAllowed int32 `json:"maxAllowed,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:default=50
+	MaxAllowed *int32 `json:"maxAllowed,omitempty"`
 
 	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.
 	// When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active
