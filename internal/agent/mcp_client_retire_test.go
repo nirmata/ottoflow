@@ -17,6 +17,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
@@ -199,4 +200,152 @@ func mustGetClientFor(t *testing.T, m *MCPClientManager, name string) MCPClient 
 		t.Fatalf("GetClient(%s): %v", name, err)
 	}
 	return c
+}
+
+// Addresses an MCPServer has before and after a config change in the stale-refresh tests.
+const (
+	oldAddress = "http://old"
+	newAddress = "http://new"
+)
+
+// pausingFactory builds stubClients fingerprinted by address. When pause is set, the next
+// CreateClient reports the address it read on entered and blocks until resume is closed.
+type pausingFactory struct {
+	pause   atomic.Bool
+	entered chan string
+	resume  chan struct{}
+}
+
+func (f *pausingFactory) CreateClient(ctx context.Context, s *ottoflowv1alpha1.MCPServer) (MCPClient, error) {
+	addr := s.Spec.Transport.Address
+	if f.pause.CompareAndSwap(true, false) {
+		f.entered <- addr
+		<-f.resume
+	}
+	return &stubClient{fingerprint: addr}, nil
+}
+
+// A caller that read the old config must not replace a client another caller stored from the
+// new config while the first was still building. It reads again, and since the second read
+// matches the stored client, it returns that client.
+func TestMCPClientManagerStaleRefreshDoesNotOverwriteNewerClient(t *testing.T) {
+	k := fake.NewClientBuilder().WithScheme(refreshScheme()).WithObjects(refreshMCPServer(oldAddress)).Build()
+	f := &pausingFactory{entered: make(chan string, 1), resume: make(chan struct{})}
+	m := NewMCPClientManager(k, f)
+	mustGetClient(t, m)
+
+	f.pause.Store(true)
+	done := make(chan MCPClient, 1)
+	go func() {
+		c, _ := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace)
+		done <- c
+	}()
+	if got := <-f.entered; got != oldAddress {
+		t.Fatalf("paused caller read %q, want the old address", got)
+	}
+	updateMCPServer(t, k, func(s *ottoflowv1alpha1.MCPServer) { s.Spec.Transport.Address = newAddress })
+	newer := mustGetClient(t, m)
+	close(f.resume)
+
+	var stale MCPClient
+	select {
+	case stale = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("paused caller never returned")
+	}
+	if stale != newer {
+		t.Fatalf("paused caller returned the client for %q, want the newer cached client", stale.(*stubClient).fingerprint)
+	}
+	if cur := mustGetClient(t, m); cur != newer {
+		t.Fatal("a stale refresh replaced the newer cached client")
+	}
+}
+
+// A caller that read the old config reads again when the cache changed while it was building:
+// a client was stored and then removed, the server was deleted and another call dropped its
+// client, or the config changed and the cached client was evicted as idle. It must not store a
+// client for the old config.
+func TestMCPClientManagerStaleRefreshAfterRemovalRereads(t *testing.T) {
+	cases := []struct {
+		name string
+		// change runs while the first caller is paused after reading the old config.
+		change  func(t *testing.T, k client.Client, m *MCPClientManager)
+		wantErr bool
+	}{
+		{
+			name: "newer client stored, then evicted",
+			change: func(t *testing.T, k client.Client, m *MCPClientManager) {
+				updateMCPServer(t, k, func(s *ottoflowv1alpha1.MCPServer) { s.Spec.Transport.Address = newAddress })
+				m.Evict(refreshServerKey.Namespace, refreshServerKey.Name, mustGetClient(t, m))
+			},
+		},
+		{
+			name: "server deleted",
+			change: func(t *testing.T, k client.Client, m *MCPClientManager) {
+				if err := k.Delete(context.Background(), refreshMCPServer(oldAddress)); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace); err == nil {
+					t.Fatal("GetClient succeeded for a deleted server")
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name: "cached client evicted as idle",
+			change: func(t *testing.T, k client.Client, m *MCPClientManager) {
+				updateMCPServer(t, k, func(s *ottoflowv1alpha1.MCPServer) { s.Spec.Transport.Address = newAddress })
+				m.evictIdle(-1) // -1: every client counts as idle
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			k := fake.NewClientBuilder().WithScheme(refreshScheme()).WithObjects(refreshMCPServer(oldAddress)).Build()
+			f := &pausingFactory{entered: make(chan string, 1), resume: make(chan struct{})}
+			m := NewMCPClientManager(k, f)
+			mustGetClient(t, m)
+
+			f.pause.Store(true)
+			type result struct {
+				c   MCPClient
+				err error
+			}
+			done := make(chan result, 1)
+			go func() {
+				c, err := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace)
+				done <- result{c, err}
+			}()
+			if got := <-f.entered; got != oldAddress {
+				t.Fatalf("paused caller read %q, want the old address", got)
+			}
+			tc.change(t, k, m)
+			close(f.resume)
+
+			var r result
+			select {
+			case r = <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("paused caller never returned")
+			}
+			m.mu.Lock()
+			cached, ok := m.clients[refreshServerKey.String()]
+			m.mu.Unlock()
+			if tc.wantErr {
+				if r.err == nil || ok {
+					t.Fatalf("deleted server: paused caller got err=%v, cached=%v; want an error and nothing cached", r.err, ok)
+				}
+				return
+			}
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if fp := r.c.(*stubClient).fingerprint; fp != newAddress {
+				t.Fatalf("paused caller returned the client for %q, want one for the new address", fp)
+			}
+			if !ok || cached.(*stubClient).fingerprint != newAddress {
+				t.Fatal("cache does not hold a client for the new address")
+			}
+		})
+	}
 }

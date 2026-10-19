@@ -39,6 +39,10 @@ type MCPClientManager struct {
 	evictCancel context.CancelFunc // non-nil after StartEviction; cancelled by Close
 	// fingerprints holds, per cached client, the fingerprint of the config it was built from.
 	fingerprints map[string]string
+	// versions counts, per server, how many times its cached client was stored or removed. A
+	// refresh that sees it move between its read and its store knows the cache changed in the
+	// meantime.
+	versions map[string]uint64
 	// retired holds replaced or evicted clients. Other callers may still be using one, so it is
 	// closed only once retireGrace has passed.
 	retired     []retiredClient
@@ -64,6 +68,7 @@ func NewMCPClientManager(k8sClient client.Client, factory MCPClientFactory) *MCP
 		clients:      make(map[string]MCPClient),
 		lastUsed:     make(map[string]time.Time),
 		fingerprints: make(map[string]string),
+		versions:     make(map[string]uint64),
 		factory:      factory,
 		retireGrace:  DefaultMCPClientIdleTimeout,
 	}
@@ -75,18 +80,40 @@ func NewMCPClientManager(k8sClient client.Client, factory MCPClientFactory) *MCP
 // replaces it and the old client is retired. The reads and the build run outside the lock.
 func (m *MCPClientManager) GetClient(ctx context.Context, serverName string, namespace string) (MCPClient, error) {
 	name := types.NamespacedName{Name: serverName, Namespace: namespace}
+	c, superseded, err := m.refresh(ctx, name, true)
+	if superseded {
+		// Another caller, or idle eviction, stored or removed a client while this one was
+		// reading and building, possibly from a newer config, so read again instead of
+		// overwriting it. The second read does not check again: if a third caller stores a
+		// client between the second read and its store, this call can still store an older
+		// client over it or after it. A later GetClient that reads and builds successfully
+		// corrects it.
+		c, _, err = m.refresh(ctx, name, false)
+	}
+	return c, err
+}
+
+// refresh reads the MCPServer, builds a candidate client and stores it unless the cached client
+// has the same fingerprint. With yieldToNewer set, it stores nothing and reports superseded when
+// the candidate does not match the cached client (or nothing is cached) and the count has moved
+// since this refresh began.
+func (m *MCPClientManager) refresh(ctx context.Context, name types.NamespacedName, yieldToNewer bool) (MCPClient, bool, error) {
 	key := name.String()
+	m.mu.RLock()
+	version := m.versions[key]
+	m.mu.RUnlock()
+
 	mcpServer := &ottoflowv1alpha1.MCPServer{}
 	if err := m.client.Get(ctx, name, mcpServer); err != nil {
 		// A transient API error keeps the cached client; only a deleted server drops it.
 		if apierrors.IsNotFound(err) {
-			m.Evict(namespace, serverName, nil)
+			m.Evict(name.Namespace, name.Name, nil)
 		}
-		return nil, fmt.Errorf("failed to get MCPServer %s/%s: %w", namespace, serverName, err)
+		return nil, false, fmt.Errorf("failed to get MCPServer %s: %w", key, err)
 	}
 	candidate, err := m.factory.CreateClient(ctx, mcpServer)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create MCP client: %w", err)
+		return nil, false, fmt.Errorf("failed to create MCP client: %w", err)
 	}
 	fingerprint := fingerprintOf(candidate) + "|" + string(mcpServer.UID)
 
@@ -94,18 +121,23 @@ func (m *MCPClientManager) GetClient(ctx context.Context, serverName string, nam
 	defer m.mu.Unlock()
 	m.sweepRetiredLocked()
 	now := time.Now()
-	if cur, ok := m.clients[key]; ok {
-		if m.fingerprints[key] == fingerprint {
-			// The candidate has not connected yet, so dropping it releases nothing.
-			m.lastUsed[key] = now
-			return cur, nil
-		}
+	cur, ok := m.clients[key]
+	if ok && m.fingerprints[key] == fingerprint {
+		// The candidate has not connected yet, so dropping it releases nothing.
+		m.lastUsed[key] = now
+		return cur, false, nil
+	}
+	if yieldToNewer && m.versions[key] != version {
+		return nil, true, nil
+	}
+	if ok {
 		m.retired = append(m.retired, retiredClient{c: cur, at: now})
 	}
 	m.clients[key] = candidate
 	m.fingerprints[key] = fingerprint
 	m.lastUsed[key] = now
-	return candidate, nil
+	m.versions[key]++
+	return candidate, false, nil
 }
 
 // fingerprintOf returns the client's config fingerprint, or "" when the client has none (it is
@@ -130,6 +162,7 @@ func (m *MCPClientManager) Evict(namespace, serverName string, c MCPClient) {
 	delete(m.clients, key)
 	delete(m.fingerprints, key)
 	delete(m.lastUsed, key)
+	m.versions[key]++
 	m.retired = append(m.retired, retiredClient{c: cur, at: time.Now()})
 }
 
@@ -163,6 +196,7 @@ func (m *MCPClientManager) evictIdle(maxIdle time.Duration) {
 			if c, ok := m.clients[key]; ok {
 				clientsToClose = append(clientsToClose, idleClient{key: key, client: c})
 				delete(m.clients, key)
+				m.versions[key]++
 			}
 			delete(m.fingerprints, key)
 			delete(m.lastUsed, key)
