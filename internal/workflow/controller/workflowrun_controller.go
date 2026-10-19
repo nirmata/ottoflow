@@ -1347,11 +1347,11 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 	now := time.Now()
 
 	// 1. Retention: delete completed runs older than retentionMinutes
-	if run.RetentionMinutes > 0 {
-		cutoffRetention := now.Add(-time.Duration(run.RetentionMinutes) * time.Minute)
+	if retention := ptr.Deref(run.RetentionMinutes, 0); retention > 0 {
+		cutoffRetention := now.Add(-time.Duration(retention) * time.Minute)
 		for _, wr := range completed {
 			if wr.Status.CompletionTime != nil && wr.Status.CompletionTime.Time.Before(cutoffRetention) {
-				if err := r.Delete(ctx, wr); err != nil {
+				if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 					return false, fmt.Errorf("delete run %s for retention: %w", wr.Name, err)
 				}
 				if wr.UID == current.UID {
@@ -1364,7 +1364,8 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 	}
 
 	// 2. MaxAllowed: keep only the most recent maxAllowed completed runs; delete oldest first
-	if run.MaxAllowed > 0 && len(completed) > int(run.MaxAllowed) {
+	maxAllowed := int(ptr.Deref(run.MaxAllowed, 0))
+	if maxAllowed > 0 && len(completed) > maxAllowed {
 		sort.Slice(completed, func(i, j int) bool {
 			ti, tj := time.Time{}, time.Time{}
 			if completed[i].Status.CompletionTime != nil {
@@ -1375,10 +1376,10 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 			}
 			return ti.Before(tj)
 		})
-		toDelete := len(completed) - int(run.MaxAllowed)
+		toDelete := len(completed) - maxAllowed
 		for i := 0; i < toDelete && i < len(completed); i++ {
 			wr := completed[i]
-			if err := r.Delete(ctx, wr); err != nil {
+			if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 				return false, fmt.Errorf("delete run %s for maxAllowed: %w", wr.Name, err)
 			}
 			if wr.UID == current.UID {

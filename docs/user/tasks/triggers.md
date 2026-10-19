@@ -598,7 +598,7 @@ kubectl get workflowruns -l ottoflow.nirmata.io/workflow=heartbeat,ottoflow.nirm
 kubectl delete workflowruns -l ottoflow.nirmata.io/workflow=heartbeat
 ```
 
-For automatic cleanup, use the Workflow `spec.run.retentionMinutes` and `spec.run.maxAllowed` fields to limit how many completed runs are kept.
+For automatic cleanup, use the Workflow `spec.run.retentionMinutes` and `spec.run.maxAllowed` fields to limit how many completed runs are kept. By default, completed runs are kept for 7 days and at most 50 are retained; set either field to `0` to disable that limit.
 
 ## Samples
 
