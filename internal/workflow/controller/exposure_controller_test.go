@@ -91,7 +91,7 @@ func TestAgentName(t *testing.T) {
 
 func TestBuildAgentObject(t *testing.T) {
 	w := wf("prod", "nightly-report")
-	obj := buildAgentObject(w, "ghcr.io/nirmata/serve-a2a:v1", "serve-a2a")
+	obj := buildAgentObject(w, "ghcr.io/nirmata/serve-a2a:v1", "serve-a2a", false)
 
 	if got := obj.GetAPIVersion(); got != kagentAPIVersion {
 		t.Errorf("apiVersion=%q want %q", got, kagentAPIVersion)
@@ -154,7 +154,7 @@ func TestBuildAgentObject(t *testing.T) {
 func TestBuildAgentObjectCustomDescription(t *testing.T) {
 	w := wf("prod", "nightly-report")
 	w.Spec.Expose.Kagent.Description = "Custom desc"
-	obj := buildAgentObject(w, "img", "sa")
+	obj := buildAgentObject(w, "img", "sa", false)
 	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "description"); got != "Custom desc" {
 		t.Errorf("spec.description=%q want %q", got, "Custom desc")
 	}
@@ -307,4 +307,23 @@ func TestReconcileRoleBinding(t *testing.T) {
 			t.Errorf("RoleBinding changed unexpectedly: %+v", got)
 		}
 	})
+}
+
+func TestBuildAgentObjectAllowUnauthenticatedEnv(t *testing.T) {
+	envOf := func(allow bool) map[string]string {
+		obj := buildAgentObject(wf("prod", "nightly-report"), "img", "sa", allow)
+		list, _, _ := unstructured.NestedSlice(obj.Object, "spec", "byo", "deployment", "env")
+		got := map[string]string{}
+		for _, e := range list {
+			m := e.(map[string]any)
+			got[m["name"].(string)] = m["value"].(string)
+		}
+		return got
+	}
+	if v, ok := envOf(false)["A2A_ALLOW_UNAUTHENTICATED"]; ok {
+		t.Errorf("default must not set A2A_ALLOW_UNAUTHENTICATED, got %q", v)
+	}
+	if got := envOf(true)["A2A_ALLOW_UNAUTHENTICATED"]; got != "true" {
+		t.Errorf("opt-out env = %q, want %q", got, "true")
+	}
 }

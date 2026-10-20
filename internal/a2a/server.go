@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +33,10 @@ const (
 	defaultRunTimeout = 10 * time.Minute
 	heartbeatEvery    = 5 * time.Second
 	maxBodyBytes      = 1 << 20
+	// defaultMaxConcurrentRuns caps active runs when the Workflow sets no
+	// spec.run.maxConcurrentRuns. 10 matches the webhook trigger burst. An explicit 0 still
+	// means unlimited, and an explicit N means N.
+	defaultMaxConcurrentRuns = 10
 
 	methodStream = "message/stream"
 	methodSend   = "message/send"
@@ -55,6 +60,9 @@ type Server struct {
 	wfNS       string
 	publicURL  string
 	runTimeout time.Duration
+	// admitMu serializes the cap check with the create, so overlapping calls in this pod cannot
+	// both pass the count. It does not coordinate with other pods or other run creators.
+	admitMu sync.Mutex
 }
 
 // NewServer builds a Server for the named Workflow. A non-positive runTimeout falls back to
@@ -409,14 +417,21 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 		return nil, fmt.Errorf("workflow %s/%s is not exposed as an A2A agent", s.wfNS, wf.Name)
 	}
 
-	// Honor the same per-workflow concurrency cap cron/event/MCP-created runs honor. Without it
-	// repeated A2A calls launch an unbounded number of runner Jobs.
-	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil && *rp.MaxConcurrentRuns > 0 {
+	// Honor the per-workflow concurrency cap. Without one, repeated A2A calls launch an unbounded
+	// number of runner Jobs, so an unset cap defaults to defaultMaxConcurrentRuns; an explicit 0
+	// opts out (unlimited).
+	limit := int32(defaultMaxConcurrentRuns)
+	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil {
+		limit = *rp.MaxConcurrentRuns
+	}
+	if limit > 0 {
+		s.admitMu.Lock()
+		defer s.admitMu.Unlock()
 		active, err := s.countActiveRuns(ctx, wf.Name)
 		if err != nil {
 			return nil, fmt.Errorf("counting active runs for %s/%s: %w", s.wfNS, wf.Name, err)
 		}
-		if active >= int(*rp.MaxConcurrentRuns) {
+		if active >= int(limit) {
 			return nil, fmt.Errorf("workflow %s/%s is at its concurrency limit (%d running)", s.wfNS, wf.Name, active)
 		}
 	}
@@ -461,8 +476,9 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	return run, nil
 }
 
-// countActiveRuns counts Pending+Running WorkflowRuns for the workflow, matching
-// countActiveWorkflowRuns in the controller. Requires the serve-a2a role to list WorkflowRuns.
+// countActiveRuns counts non-terminal WorkflowRuns for the workflow: Pending, Running, and runs with
+// an empty phase (created by createRun, not yet reconciled), so a burst of calls cannot outrun the
+// controller and exceed the cap. Requires the serve-a2a role to list WorkflowRuns.
 func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := s.client.List(ctx, &list,
@@ -474,7 +490,7 @@ func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error
 	active := 0
 	for i := range list.Items {
 		switch list.Items[i].Status.Phase {
-		case ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
+		case "", ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
 			active++
 		}
 	}

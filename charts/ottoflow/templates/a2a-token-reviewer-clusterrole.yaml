@@ -1,0 +1,27 @@
+{{- if and .Values.rbac.create .Values.serveA2A.enabled }}
+# TokenReview + SubjectAccessReview for serve-a2a pods. Not bound by the chart: the serve-a2a
+# ServiceAccount is created per Workflow namespace by the operator, and TokenReview and
+# SubjectAccessReview are cluster-scoped, so a RoleBinding grants nothing. Bind this role with a
+# ClusterRoleBinding to system:serviceaccount:<workflow-namespace>:serve-a2a for each exposed
+# namespace. Separate from the serve-a2a role so the extra grant is visible and revocable alone.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ottoflow.fullname" . }}-a2a-token-reviewer
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: serve-a2a-rbac
+rules:
+  - apiGroups:
+      - authentication.k8s.io
+    resources:
+      - tokenreviews
+    verbs:
+      - create
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
+{{- end }}
