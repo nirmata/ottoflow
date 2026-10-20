@@ -22,8 +22,9 @@
 #     --set-json 'agentExecutor.env=[{"name":"AZURE_OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"name":"llm-credentials","key":"azure-openai-api-key"}}}]'
 #
 # You will also need AZURE_OPENAI_ENDPOINT set (or override it per-Agent via
-# `spec.config.endpoint` — see agent-custom-endpoint.yaml for that pattern
-# and its caveats, e.g. the scheme being forced to https).
+# `spec.config.endpoint`, once the operator has allowlisted its origin via
+# AGENT_LLM_ENDPOINT_ALLOWLIST — see agent-custom-endpoint.yaml for that
+# pattern and its caveats, e.g. the endpoint having to be https://).
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:

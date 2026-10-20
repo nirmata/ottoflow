@@ -145,7 +145,11 @@ server), or override it per run with `--provider`/`--model` as shown above. API
 keys come from the **process environment** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `GEMINI_API_KEY`, `AZURE_OPENAI_API_KEY` — not from `Agent.spec.config`. In-cluster,
 set them on the agent-executor pod via `agentExecutor.env` in the Helm chart; in
-local mode they come from your shell.
+local mode they come from your shell. Because those keys are shared by every Agent,
+an Agent's `spec.config.endpoint` is accepted only for an origin the operator lists in
+`AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`; in local
+mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. See
+`samples/workflows/features/agent-custom-endpoint.yaml`.
 
 <!-- demo GIF: images/demo.gif — not committed yet; record it with `make demo`
      (needs vhs+ttyd+ffmpeg and a kind cluster, see images/demo.tape). Once the

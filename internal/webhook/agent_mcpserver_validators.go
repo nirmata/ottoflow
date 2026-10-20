@@ -18,7 +18,10 @@ import (
 )
 
 // agentConfigKeysReadByDefaultExecutor lists the spec.config keys the built-in
-// DefaultAgentExecutor actually consumes (see internal/agent/default_executor.go).
+// DefaultAgentExecutor recognises (see internal/agent/default_executor.go). endpoint and
+// skipVerifySSL="true" get their own warnings below: the executor refuses them unless the
+// operator's endpoint allowlist admits the endpoint, and that allowlist lives in the
+// agent-executor process, not in this webhook, so the webhook can only warn.
 //
 // Unrecognised keys are reported as warnings, never errors: spec.config is a free-form
 // map and an alternative AgentExecutor implementation may legitimately read keys this
@@ -53,9 +56,18 @@ func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 			unknown = append(unknown, k)
 			continue
 		}
-		if k == "skipVerifySSL" && val != "true" && val != "false" {
+		switch {
+		case k == "skipVerifySSL" && val == "true":
+			warnings = append(warnings, "spec.config.skipVerifySSL=\"true\" is no longer honored: the agent run "+
+				"will FAIL. To reach an endpoint with a private CA, set SSL_CERT_FILE or SSL_CERT_DIR on the "+
+				"agent-executor, which keeps TLS verification on.")
+		case k == "skipVerifySSL" && val != "false":
 			warnings = append(warnings, fmt.Sprintf(
 				"spec.config.skipVerifySSL must be \"true\" or \"false\"; got %q, which is treated as false", val))
+		case k == "endpoint" && val != "":
+			warnings = append(warnings, "spec.config.endpoint is honored only if it is origin-only "+
+				"(scheme://host[:port]) and the agent-executor operator has allowlisted that origin "+
+				"(AGENT_LLM_ENDPOINT_ALLOWLIST / Helm agentExecutor.llmEndpointAllowlist); otherwise the agent run will FAIL.")
 		}
 	}
 

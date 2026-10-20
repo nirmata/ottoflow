@@ -25,13 +25,13 @@ type mockLLMClientFactory struct {
 	err        error
 	called     bool
 	providerID string
-	optsCount  int
+	opts       []gollm.Option // captured so a test can apply them and assert co.URL
 }
 
 func (m *mockLLMClientFactory) NewClient(ctx context.Context, providerID string, opts ...gollm.Option) (gollm.Client, error) {
 	m.called = true
 	m.providerID = providerID
-	m.optsCount = len(opts)
+	m.opts = opts
 	if m.err != nil {
 		return nil, m.err
 	}

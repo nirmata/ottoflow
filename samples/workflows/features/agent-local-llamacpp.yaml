@@ -8,11 +8,18 @@
 #   - gollm's local provider talks to a llama.cpp server and reads its host
 #     from the LLAMACPP_HOST process environment variable INSIDE the
 #     agent-executor pod (default: http://127.0.0.1:8080/ when unset).
-#   - Agent.spec.config.endpoint is IGNORED by the local provider — it is
-#     only honored by azure-openai. Point the llama.cpp server elsewhere by
-#     setting LLAMACPP_HOST via the Helm chart's `agentExecutor.env`
+#   - Agent.spec.config.endpoint is IGNORED by the local provider, even when
+#     the operator has allowlisted its origin via AGENT_LLM_ENDPOINT_ALLOWLIST
+#     — it is only honored by azure-openai. Point the llama.cpp server
+#     elsewhere by setting LLAMACPP_HOST via the Helm chart's
+#     `agentExecutor.env`
 #     (charts/ottoflow/templates/agent-executor-deployment.yaml) instead.
-#   - Agent.spec.config.skipVerifySSL IS honored by the local provider.
+#   - Agent.spec.config.skipVerifySSL="true" is rejected for every provider,
+#     local included: the agent run fails. To reach a llama.cpp server with a
+#     private CA, mount its CA bundle and set SSL_CERT_FILE or SSL_CERT_DIR on
+#     the agent-executor process instead; as a last resort, set
+#     LLM_SKIP_VERIFY_SSL=true on that process, a process-wide setting not
+#     scoped to this Agent.
 #
 # One-time setup (point at a llama.cpp server reachable from the
 # agent-executor pod):

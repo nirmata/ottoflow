@@ -54,6 +54,15 @@ const MetadataKeyLLMEnv = "llmEnv"
 // testExecURLBase overrides the exec endpoint base URL for tests (empty in production).
 var testExecURLBase string
 
+// SECURITY: values for these keys come from the workflow run, via the X-LLM-Env header, so
+// they are tenant-controlled. Never copy them into the agent-executor's process environment
+// (os.Setenv), and do not add a public provider's endpoint or TLS variable here (a *_BASE_URL or
+// *_ENDPOINT name, LLAMACPP_HOST, LLM_SKIP_VERIFY_SSL, AGENT_LLM_ENDPOINT_ALLOWLIST): LLM clients
+// read such variables from the process environment, so forwarding them is one step away from
+// letting a run choose where the operator's LLM credentials are sent. NIRMATA_URL is for the
+// nirmata provider, which this build does not serve. llm_env_invariant_test.go checks the
+// os.Setenv rule and keeps the last two names out of this list.
+//
 // LLMEnvAllowlist is the list of env var names the runner forwards to the agent-executor
 // via the X-LLM-Env header (credentials and LLM configuration). Only these keys are sent.
 // Also used by the controller to filter keys from the well-known LLM credentials Secret.

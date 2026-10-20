@@ -37,9 +37,21 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			wantCount: 0,
 		},
 		{
-			name:      "keys the default executor reads are accepted silently",
-			config:    map[string]string{"endpoint": "https://llm.example.com", "skipVerifySSL": "true"},
+			name:      "skipVerifySSL=false is accepted silently",
+			config:    map[string]string{"skipVerifySSL": "false"},
 			wantCount: 0,
+		},
+		{
+			name:         "skipVerifySSL=true is reported as no longer honored",
+			config:       map[string]string{"skipVerifySSL": "true"},
+			wantCount:    1,
+			wantContains: []string{"skipVerifySSL", "no longer honored", "FAIL"},
+		},
+		{
+			name:         "endpoint is reported as allowlist-gated",
+			config:       map[string]string{"endpoint": "https://llm.example.com"},
+			wantCount:    1,
+			wantContains: []string{"endpoint", "AGENT_LLM_ENDPOINT_ALLOWLIST", "origin-only", "FAIL"},
 		},
 		{
 			// The CRD doc-comment advertises apiKey/baseURL, but no executor in this build
