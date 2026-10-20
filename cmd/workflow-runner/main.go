@@ -203,6 +203,13 @@ func mustGetTargetClients(
 			fmt.Sprintf("Failed to resolve target cluster: %v", err))
 		klog.Fatalf("failed to resolve target cluster: %v", err)
 	}
+	// Stdio MCP servers inherit this process's environment, so point their KUBECONFIG at the
+	// target too. This must stay after mustGetControlPlane: config.GetConfig reads KUBECONFIG.
+	if err := cluster.ExportKubeConfigForClusterRef(workflowRun.Spec.ClusterRef); err != nil {
+		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
+			fmt.Sprintf("Failed to export target kubeconfig: %v", err))
+		klog.Fatalf("failed to export target kubeconfig: %v", err)
+	}
 	targetClient, err := cluster.ClientFromRESTConfig(targetRestConfig, scheme)
 	if err != nil {
 		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,

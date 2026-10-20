@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
@@ -105,9 +106,9 @@ func ClientForClusterRef(
 	return ClientFromRESTConfig(restConfig, scheme)
 }
 
-// kubeConfigBytesFromMountDir probes for a mounted kubeconfig file under dir, trying
+// kubeConfigPathFromMountDir probes for a mounted kubeconfig file under dir, trying
 // dataKey if set, else the defaultKubeConfigKeys in order (mirrors the probe order used
-// against a live Secret's Data map in kubeConfigBytesFromSecret). Returns nil bytes if no
+// against a live Secret's Data map in kubeConfigBytesFromSecret). Returns an empty path if no
 // file is found at any of the tried keys.
 //
 // dataKey is WorkflowRun.spec.clusterRef.kubeConfigSecretRef.key — a free-form CRD string
@@ -118,20 +119,73 @@ func ClientForClusterRef(
 // A rejected key can never have named a key in a real Secret, so no working configuration
 // is refused; the error names the offending value rather than silently probing the
 // default keys, which would mask a typo as "kubeconfig not found".
-func kubeConfigBytesFromMountDir(dir, dataKey string) ([]byte, []string, error) {
+func kubeConfigPathFromMountDir(dir, dataKey string) (string, []string, error) {
 	triedKeys := defaultKubeConfigKeys
 	if dataKey != "" {
 		if err := secretmount.ValidateDataKey(dataKey); err != nil {
-			return nil, nil, fmt.Errorf("clusterRef.kubeConfigSecretRef.key is unusable: %w", err)
+			return "", nil, fmt.Errorf("clusterRef.kubeConfigSecretRef.key is unusable: %w", err)
 		}
 		triedKeys = []string{dataKey}
 	}
 	for _, key := range triedKeys {
-		if b, err := os.ReadFile(filepath.Join(dir, key)); err == nil {
-			return b, triedKeys, nil
+		path := filepath.Join(dir, key)
+		if _, err := os.Stat(path); err == nil {
+			return path, triedKeys, nil
 		}
 	}
-	return nil, triedKeys, nil
+	return "", triedKeys, nil
+}
+
+// kubeConfigBytesFromMountDir reads the file kubeConfigPathFromMountDir finds, so the file the
+// runner reads is the one ExportKubeConfigForClusterRef exports. Returns nil bytes if none is found.
+func kubeConfigBytesFromMountDir(dir, dataKey string) ([]byte, []string, error) {
+	path, triedKeys, err := kubeConfigPathFromMountDir(dir, dataKey)
+	if err != nil || path == "" {
+		return nil, triedKeys, err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, triedKeys, fmt.Errorf("read mounted kubeconfig %s: %w", path, err)
+	}
+	return b, triedKeys, nil
+}
+
+// ExportKubeConfigForClusterRef sets KUBECONFIG in this process's environment to the kubeconfig
+// file clusterRef resolves to, with the same precedence as RestConfigForClusterRef in the
+// in-cluster runner. Stdio MCP servers inherit the process environment, so they then act on the
+// run's target cluster instead of the in-cluster default. A nil or local clusterRef leaves
+// KUBECONFIG unchanged. An MCPServer's own spec.env KUBECONFIG still wins, because it is
+// appended after the inherited environment.
+//
+// Call it only after the control-plane client is built: controller-runtime's config.GetConfig
+// reads KUBECONFIG, so a later call would load the target cluster instead.
+func ExportKubeConfigForClusterRef(clusterRef *ottoflowv1alpha1.ClusterRef) error {
+	if clusterRef == nil || (clusterRef.Local != nil && *clusterRef.Local) {
+		return nil
+	}
+	if clusterRef.KubeConfigFilePath != "" {
+		return ExportKubeConfigPath(clusterRef.KubeConfigFilePath)
+	}
+	if ref := clusterRef.KubeConfigSecretRef; ref != nil {
+		path, triedKeys, err := kubeConfigPathFromMountDir(kubeconfigMountDir, ref.Key)
+		if err != nil {
+			return err
+		}
+		if path == "" {
+			return fmt.Errorf("kubeconfig not found in mounted secret directory %s (tried keys %v)", kubeconfigMountDir, triedKeys)
+		}
+		return ExportKubeConfigPath(path)
+	}
+	return nil
+}
+
+// ExportKubeConfigPath sets KUBECONFIG to path in this process's environment, so child
+// processes such as stdio MCP servers use the same kubeconfig. An empty path is a no-op.
+func ExportKubeConfigPath(path string) error {
+	if path == "" {
+		return nil
+	}
+	return os.Setenv(clientcmd.RecommendedConfigPathEnvVar, path)
 }
 
 // RestConfigFromKubeConfigSecret loads kubeconfig bytes from a Secret and returns a rest.Config.

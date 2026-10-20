@@ -38,6 +38,7 @@ import (
 	"github.com/nirmata/ottoflow/cli/internal/display"
 	cliexec "github.com/nirmata/ottoflow/cli/internal/executor"
 	clioutput "github.com/nirmata/ottoflow/cli/internal/output"
+	"github.com/nirmata/ottoflow/internal/workflow/cluster"
 )
 
 var (
@@ -791,6 +792,11 @@ func kubeconfigGenuinelyAbsent(cfgErr error) bool {
 }
 
 func getKubeConfig() (*rest.Config, error) {
+	// Stdio MCP servers inherit this process's environment, so point their KUBECONFIG at the
+	// --kubeconfig cluster too. Without the flag they already follow $KUBECONFIG or the default.
+	if err := cluster.ExportKubeConfigPath(kubeconfig); err != nil {
+		return nil, err
+	}
 	kubeconfigPath := kubeconfigLoadingRules().GetDefaultFilename()
 	if kubeconfigPath != "" {
 		return clientcmd.BuildConfigFromFlags("", kubeconfigPath)
