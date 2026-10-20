@@ -132,6 +132,10 @@ func init() {
 }
 
 func runWorkflow(cmd *cobra.Command, args []string) error {
+	if err := display.ValidateOutputFormat(outputFormat); err != nil {
+		return err
+	}
+
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
