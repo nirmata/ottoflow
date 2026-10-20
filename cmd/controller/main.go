@@ -293,6 +293,7 @@ func main() {
 	// Shared event recorder — used by both the WorkflowRun reconciler and the callback server
 	// so K8s events (CallbackReceived, CallbackTimeout, etc.) are emitted from the same source.
 	eventRecorder := mgr.GetEventRecorder("workflowrun-controller")
+	scheduler.Recorder = eventRecorder
 
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
