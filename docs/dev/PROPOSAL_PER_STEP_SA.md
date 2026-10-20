@@ -51,7 +51,7 @@ immediately. Full identity isolation: all Kubernetes calls within the step, incl
 macros, use the per-step SA.  
 **Cons**: Requires adding `targetRESTConfig *rest.Config` to `WorkflowExecutor` so the minted
 bearer token can be used to construct a new scoped `client.Client`.  
-**Decision**: Implemented (see below).
+**Decision**: Recommended — not yet implemented (design below).
 
 ---
 
