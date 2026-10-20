@@ -95,7 +95,11 @@ func buildSessionToolsFromMCP(ctx context.Context, mcpTools []string, namespace 
 		}
 		metaList, err := client.ListTools(ctx)
 		if err != nil {
-			_ = client.Close()
+			// The client is shared with other conversations: drop it from the cache instead of
+			// closing it, so the next execution builds a new one.
+			if ev, ok := provider.(MCPClientEvicter); ok {
+				ev.Evict(namespace, serverName, client)
+			}
 			return nil, fmt.Errorf("list tools from MCP server %q: %w", serverName, err)
 		}
 		for _, meta := range metaList {
