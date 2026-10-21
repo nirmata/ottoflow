@@ -174,6 +174,9 @@ func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServe
 		if cfg.Timeout <= 0 {
 			cfg.Timeout = 90
 		}
+		if path := kubeConfigPathFromContext(ctx); path != "" {
+			cfg.Env = append(cfg.Env, "KUBECONFIG="+path)
+		}
 		// Resolve env from MCPServer spec
 		for _, ev := range mcpServer.Spec.Env {
 			val, present, err := resolveEnvValue(ctx, k8sClient, mcpServer.Namespace, &ev, useAPISecretAccess)

@@ -39,6 +39,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/agent"
 	"github.com/nirmata/ottoflow/internal/logging"
 	"github.com/nirmata/ottoflow/internal/tracing"
 	"github.com/nirmata/ottoflow/internal/workflow/cluster"
@@ -111,6 +112,8 @@ func main() {
 
 	targetClient, metricsClient, kubeClient, prometheusClient := mustGetTargetClients(
 		ctx, controlClient, workflowRun, cfg.prometheusURL, cfg.jobName, cfg.podName)
+	kubeConfigPath := mustGetTargetKubeConfigPath(ctx, controlClient, workflowRun, cfg.jobName, cfg.podName)
+	ctx = agent.WithKubeConfigPath(ctx, kubeConfigPath)
 	mustPersistRunningStatus(ctx, controlClient, cfg.runKey, workflowRun, cfg.jobName, cfg.podName)
 
 	exec := mustNewWorkflowExecutor(
@@ -189,6 +192,21 @@ func mustLoadWorkflow(
 	return workflow
 }
 
+func mustGetTargetKubeConfigPath(
+	ctx context.Context,
+	controlClient client.Client,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	jobName, podName string,
+) string {
+	path, err := cluster.KubeConfigPathForClusterRef(workflowRun.Spec.ClusterRef)
+	if err != nil {
+		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
+			fmt.Sprintf("Failed to resolve target kubeconfig: %v", err))
+		klog.Fatalf("failed to resolve target kubeconfig: %v", err)
+	}
+	return path
+}
+
 func mustGetTargetClients(
 	ctx context.Context,
 	controlClient client.Client,
@@ -202,13 +220,6 @@ func mustGetTargetClients(
 		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
 			fmt.Sprintf("Failed to resolve target cluster: %v", err))
 		klog.Fatalf("failed to resolve target cluster: %v", err)
-	}
-	// Stdio MCP servers inherit this process's environment, so point their KUBECONFIG at the
-	// target too. This must stay after mustGetControlPlane: config.GetConfig reads KUBECONFIG.
-	if err := cluster.ExportKubeConfigForClusterRef(workflowRun.Spec.ClusterRef); err != nil {
-		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
-			fmt.Sprintf("Failed to export target kubeconfig: %v", err))
-		klog.Fatalf("failed to export target kubeconfig: %v", err)
 	}
 	targetClient, err := cluster.ClientFromRESTConfig(targetRestConfig, scheme)
 	if err != nil {

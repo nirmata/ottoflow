@@ -17,9 +17,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/agent"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 	"github.com/nirmata/ottoflow/test/stdiomcp"
 )
 
@@ -28,7 +30,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestExportKubeConfigForClusterRef(t *testing.T) {
+func TestKubeConfigPathForClusterRef(t *testing.T) {
 	dir := t.TempDir()
 	// Only the second default key exists, so the probe order is exercised.
 	mounted := filepath.Join(dir, "kubeconfig")
@@ -47,7 +49,7 @@ func TestExportKubeConfigForClusterRef(t *testing.T) {
 		want       string
 		wantErr    bool
 	}{
-		{name: "nil clusterRef leaves KUBECONFIG alone", clusterRef: nil, want: ""},
+		{name: "nil clusterRef returns no path", clusterRef: nil, want: ""},
 		{
 			name:       "local wins over a file path, as in RestConfigForClusterRef",
 			clusterRef: &ottoflowv1alpha1.ClusterRef{Local: &local, KubeConfigFilePath: "/etc/target/kubeconfig"},
@@ -87,23 +89,21 @@ func TestExportKubeConfigForClusterRef(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Developer shells usually set KUBECONFIG; start from empty so only the export shows.
-			t.Setenv("KUBECONFIG", "")
-			err := ExportKubeConfigForClusterRef(tt.clusterRef)
+			got, err := KubeConfigPathForClusterRef(tt.clusterRef)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("ExportKubeConfigForClusterRef() error = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("KubeConfigPathForClusterRef() error = %v, wantErr %v", err, tt.wantErr)
 			}
-			if got := os.Getenv("KUBECONFIG"); got != tt.want {
-				t.Errorf("KUBECONFIG = %q, want %q", got, tt.want)
+			if got != tt.want {
+				t.Errorf("path = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-// A stdio MCP server started after the export, through the same client factory the runner uses,
-// sees the target kubeconfig; an explicit KUBECONFIG in the MCPServer's spec.env still wins.
-func TestExportedKubeConfigReachesStdioMCPServer(t *testing.T) {
-	t.Setenv("KUBECONFIG", "")
+// A stdio MCP server started through the runner's MCP manager gets the path the context carries
+// as KUBECONFIG, not the shell's; an explicit KUBECONFIG in the MCPServer's spec.env still wins.
+func TestKubeConfigPathReachesStdioMCPServer(t *testing.T) {
+	t.Setenv("KUBECONFIG", "/ambient")
 	dir := t.TempDir()
 	mounted := filepath.Join(dir, "config")
 	if err := os.WriteFile(mounted, []byte(validKubeconfig), 0600); err != nil {
@@ -112,22 +112,24 @@ func TestExportedKubeConfigReachesStdioMCPServer(t *testing.T) {
 	useMountDir(t, dir)
 
 	run := workflowRunWithKubeConfigSecretRef("")
-	if err := ExportKubeConfigForClusterRef(run.Spec.ClusterRef); err != nil {
-		t.Fatalf("ExportKubeConfigForClusterRef: %v", err)
+	path, err := KubeConfigPathForClusterRef(run.Spec.ClusterRef)
+	if err != nil {
+		t.Fatalf("KubeConfigPathForClusterRef: %v", err)
 	}
+	ctx := agent.WithKubeConfigPath(context.Background(), path)
 
-	if got, want := callStdioKubeConfigTool(t, nil), "KUBECONFIG="+mounted; got != want {
+	if got, want := callStdioKubeConfigTool(t, ctx, nil), "KUBECONFIG="+mounted; got != want {
 		t.Errorf("stdio MCP server saw %q, want %q", got, want)
 	}
 	specEnv := []corev1.EnvVar{{Name: "KUBECONFIG", Value: "/from/spec"}}
-	if got, want := callStdioKubeConfigTool(t, specEnv), "KUBECONFIG=/from/spec"; got != want {
+	if got, want := callStdioKubeConfigTool(t, ctx, specEnv), "KUBECONFIG=/from/spec"; got != want {
 		t.Errorf("with spec.env KUBECONFIG, stdio MCP server saw %q, want %q", got, want)
 	}
 }
 
 // callStdioKubeConfigTool starts this test binary as a stdio MCPServer with env added to its
-// spec.env, and returns what its tool reports.
-func callStdioKubeConfigTool(t *testing.T, env []corev1.EnvVar) string {
+// spec.env, through the runner's MCP manager, and returns what its tool reports.
+func callStdioKubeConfigTool(t *testing.T, ctx context.Context, env []corev1.EnvVar) string {
 	t.Helper()
 	exe, err := os.Executable()
 	if err != nil {
@@ -140,13 +142,17 @@ func callStdioKubeConfigTool(t *testing.T, env []corev1.EnvVar) string {
 			Env:       append([]corev1.EnvVar{{Name: stdiomcp.ServeEnv, Value: "1"}}, env...),
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	c, err := agent.NewDefaultMCPClientFactory(nil, false).CreateClient(ctx, server)
+	manager, err := executor.NewMCPManager(fake.NewClientBuilder().WithScheme(newResolveTestScheme(t)).WithObjects(server).Build(), false)
 	if err != nil {
-		t.Fatalf("CreateClient: %v", err)
+		t.Fatalf("NewMCPManager: %v", err)
 	}
-	defer func() { _ = c.Close() }()
+	defer func() { _ = manager.Close() }()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	c, err := manager.GetClient(ctx, server.Name, server.Namespace)
+	if err != nil {
+		t.Fatalf("GetClient: %v", err)
+	}
 	result, err := c.CallTool(ctx, stdiomcp.Tool, nil)
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
