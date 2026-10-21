@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
@@ -137,7 +136,7 @@ func kubeConfigPathFromMountDir(dir, dataKey string) (string, []string, error) {
 }
 
 // kubeConfigBytesFromMountDir reads the file kubeConfigPathFromMountDir finds, so the file the
-// runner reads is the one ExportKubeConfigForClusterRef exports. Returns nil bytes if none is found.
+// runner reads is the one KubeConfigPathForClusterRef returns. Returns nil bytes if none is found.
 func kubeConfigBytesFromMountDir(dir, dataKey string) ([]byte, []string, error) {
 	path, triedKeys, err := kubeConfigPathFromMountDir(dir, dataKey)
 	if err != nil || path == "" {
@@ -150,42 +149,27 @@ func kubeConfigBytesFromMountDir(dir, dataKey string) ([]byte, []string, error) 
 	return b, triedKeys, nil
 }
 
-// ExportKubeConfigForClusterRef sets KUBECONFIG in this process's environment to the kubeconfig
-// file clusterRef resolves to, with the same precedence as RestConfigForClusterRef in the
-// in-cluster runner. Stdio MCP servers inherit the process environment, so they then act on the
-// run's target cluster instead of the in-cluster default. A nil or local clusterRef leaves
-// KUBECONFIG unchanged. An MCPServer's own spec.env KUBECONFIG still wins, because it is
-// appended after the inherited environment.
-//
-// Call it only after the control-plane client is built: controller-runtime's config.GetConfig
-// reads KUBECONFIG, so a later call would load the target cluster instead.
-func ExportKubeConfigForClusterRef(clusterRef *ottoflowv1alpha1.ClusterRef) error {
+// KubeConfigPathForClusterRef returns the kubeconfig file clusterRef resolves to, with the same
+// precedence as RestConfigForClusterRef in the in-cluster runner. Stdio MCP servers get it as
+// their KUBECONFIG (see agent.WithKubeConfigPath). A nil or local clusterRef returns "".
+func KubeConfigPathForClusterRef(clusterRef *ottoflowv1alpha1.ClusterRef) (string, error) {
 	if clusterRef == nil || (clusterRef.Local != nil && *clusterRef.Local) {
-		return nil
+		return "", nil
 	}
 	if clusterRef.KubeConfigFilePath != "" {
-		return ExportKubeConfigPath(clusterRef.KubeConfigFilePath)
+		return clusterRef.KubeConfigFilePath, nil
 	}
 	if ref := clusterRef.KubeConfigSecretRef; ref != nil {
 		path, triedKeys, err := kubeConfigPathFromMountDir(kubeconfigMountDir, ref.Key)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if path == "" {
-			return fmt.Errorf("kubeconfig not found in mounted secret directory %s (tried keys %v)", kubeconfigMountDir, triedKeys)
+			return "", fmt.Errorf("kubeconfig not found in mounted secret directory %s (tried keys %v)", kubeconfigMountDir, triedKeys)
 		}
-		return ExportKubeConfigPath(path)
+		return path, nil
 	}
-	return nil
-}
-
-// ExportKubeConfigPath sets KUBECONFIG to path in this process's environment, so child
-// processes such as stdio MCP servers use the same kubeconfig. An empty path is a no-op.
-func ExportKubeConfigPath(path string) error {
-	if path == "" {
-		return nil
-	}
-	return os.Setenv(clientcmd.RecommendedConfigPathEnvVar, path)
+	return "", nil
 }
 
 // RestConfigFromKubeConfigSecret loads kubeconfig bytes from a Secret and returns a rest.Config.
