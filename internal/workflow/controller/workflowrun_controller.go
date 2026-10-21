@@ -1189,7 +1189,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	volumes = append(volumes, secretVolumes...)
 	volumeMounts = append(volumeMounts, secretVolumeMounts...)
-	notChecked, err := r.checkSecretMounts(ctx, workflowRun.Namespace, secretVolumes, secretVolumeOrigins)
+	notChecked, err := r.checkSecretMounts(ctx, workflowRun.Namespace, secretVolumes, secretVolumeOrigins, runnerCopiedSecretNames(volumes))
 	if err != nil {
 		return nil, err
 	}

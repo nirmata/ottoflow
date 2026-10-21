@@ -288,10 +288,32 @@ func TestCheckSecretMounts_NamespaceIsTheRunsNamespace(t *testing.T) {
 	c := e.client()
 	r := &WorkflowRunReconciler{Client: c}
 	vols := []corev1.Volume{{Name: "v", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "s"}}}}
-	if _, err := r.checkSecretMounts(context.Background(), "tenant", vols, map[string]string{"v": "o"}); err == nil {
+	if _, err := r.checkSecretMounts(context.Background(), "tenant", vols, map[string]string{"v": "o"}, nil); err == nil {
 		t.Fatal("want NotFound failure")
 	}
 	if e.gets["tenant/s"] != 1 || e.reviews["tenant/s"] != 1 {
 		t.Fatalf("review/Get must target the run namespace: %v %v", e.reviews, e.gets)
+	}
+}
+
+func TestSecretMountCheck_SecretAnExplicitVolumeNamesIsLeftToTheCopyStep(t *testing.T) {
+	e := &mountCheckEnv{review: "allow"}
+	wf, wr := externalAgentFixture()
+	wr.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{Job: &ottoflowv1alpha1.WorkflowRunJobSpec{
+		ServiceAccountName: "runner-sa", // explicit: ensureRunnerAccess returns early
+		Volumes:            []corev1.Volume{{Name: "creds", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "agent-token"}}}},
+	}}
+	src := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "agent-token", Namespace: "ottoflow"}, Data: map[string][]byte{"token": []byte("v")}}
+	r, c := e.reconciler(nil, RunnerConfig{SecretSourceNamespace: "ottoflow"}, wf, wr, src)
+	_, _ = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)})
+	got := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(wr), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Fatalf("run failed: %+v", got.Status)
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: defaultNamespace, Name: "agent-token"}, &corev1.Secret{}); err != nil {
+		t.Fatalf("Secret not copied: %v", err)
 	}
 }

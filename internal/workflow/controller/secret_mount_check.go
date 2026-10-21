@@ -41,7 +41,7 @@ func secretMountFailureReason(err error) ottoflowv1alpha1.WorkflowRunFailureReas
 // cannot check (review denied or inconclusive, any read error other than NotFound) are returned by
 // origin: the kubelet mounts with node credentials, so the controller's own read says nothing there.
 // Optional volumes are skipped entirely. Messages name only the origin, Secret and the missing key.
-func (r *WorkflowRunReconciler) checkSecretMounts(ctx context.Context, namespace string, volumes []corev1.Volume, origins map[string]string) ([]string, error) {
+func (r *WorkflowRunReconciler) checkSecretMounts(ctx context.Context, namespace string, volumes []corev1.Volume, origins map[string]string, copied map[string]struct{}) ([]string, error) {
 	var notChecked []string
 	for _, v := range volumes {
 		s := v.Secret
@@ -56,6 +56,9 @@ func (r *WorkflowRunReconciler) checkSecretMounts(ctx context.Context, namespace
 		sec := &corev1.Secret{}
 		if err := r.directReader().Get(ctx, key, sec); err != nil {
 			if apierrors.IsNotFound(err) {
+				if _, ok := copied[s.SecretName]; ok {
+					continue // an explicit volume names it: ensureRunnerSecrets copies it or fails the run
+				}
 				return nil, fmt.Errorf("%w: %s: Secret %q not found in namespace %q", errRunnerRefUnresolved, origins[v.Name], key.Name, namespace)
 			}
 			klog.V(2).InfoS("pre-check read of runner Secret failed; leaving it to the kubelet", "namespace", namespace, "secret", key.Name, "err", err)
@@ -69,6 +72,18 @@ func (r *WorkflowRunReconciler) checkSecretMounts(ctx context.Context, namespace
 		}
 	}
 	return notChecked, nil
+}
+
+// runnerCopiedSecretNames returns the Secret names ensureRunnerSecrets copies on a miss: those of
+// the Job's non-minted Secret volumes.
+func runnerCopiedSecretNames(volumes []corev1.Volume) map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, v := range volumes {
+		if v.Secret != nil && v.Secret.SecretName != "" && !strings.HasPrefix(v.Name, generatedSecretVolumePrefix) {
+			names[v.Secret.SecretName] = struct{}{}
+		}
+	}
+	return names
 }
 
 // recordUncheckedSecretMounts emits one Normal Event per build attempt that left mounts unchecked.
