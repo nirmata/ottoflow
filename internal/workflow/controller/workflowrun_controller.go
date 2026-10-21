@@ -211,7 +211,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretAccessDeniedReason(err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretMountFailureReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -1189,6 +1189,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	volumes = append(volumes, secretVolumes...)
 	volumeMounts = append(volumeMounts, secretVolumeMounts...)
+	notChecked, err := r.checkSecretMounts(ctx, workflowRun.Namespace, secretVolumes, secretVolumeOrigins)
+	if err != nil {
+		return nil, err
+	}
+	r.recordUncheckedSecretMounts(workflowRun, notChecked)
 
 	jobName := workflowRunnerJobName(workflowRun.Name)
 	runnerEnv := []corev1.EnvVar{
