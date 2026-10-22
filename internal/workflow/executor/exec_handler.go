@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -110,7 +111,7 @@ func (h *ExecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Execute agent and extract outputs.
 	response, tokenUsage, extractedOutputs, err := executeAndExtract(execCtx, h.agentExecutor.agentExecutor, agentCRD, req.Prompt, req.Context, namespace)
 	if err != nil {
-		writeExecError(w, "agent execution failed: "+err.Error(), http.StatusInternalServerError)
+		writeExecError(w, "agent execution failed: "+err.Error()+secretAccessHint(err), http.StatusInternalServerError)
 		return
 	}
 
@@ -123,6 +124,18 @@ func (h *ExecHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		klog.V(2).InfoS("Failed to encode exec response", "error", err)
 	}
+}
+
+// secretAccessHint names the Helm grant, but only for a denied Secret read.
+func secretAccessHint(err error) string {
+	var st apierrors.APIStatus
+	if !errors.As(err, &st) || !apierrors.IsForbidden(err) {
+		return ""
+	}
+	if d := st.Status().Details; d == nil || d.Kind != "secrets" || d.Group != "" {
+		return ""
+	}
+	return ". To let the agent-executor read this Secret, set rbac.secretAccess.agentExecutor in the Helm values (a Secret in the install namespace needs a hand-written Role instead); see docs/user/rbac-secret-access.md"
 }
 
 // executeAndExtract calls ExecuteAgent then runs output extraction if configured.
