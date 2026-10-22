@@ -153,6 +153,7 @@ func createCELEnvironment(
 		celapi.Variable("expressions", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("variables", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("steps", celapi.MapType(celapi.StringType, celapi.MapType(celapi.StringType, celapi.DynType))),
+		celapi.Variable("stepStatus", celapi.MapType(celapi.StringType, celapi.MapType(celapi.StringType, celapi.DynType))),
 		celapi.Variable("outputs", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("agentResponse", celapi.StringType),
 		celapi.Variable("agentOutputs", celapi.DynType),
@@ -319,6 +320,13 @@ func (e *CELEvaluator) BuildVariableMap(context map[string]interface{}) map[stri
 		vars["steps"] = steps
 	} else {
 		vars["steps"] = make(map[string]interface{})
+	}
+
+	// Add stepStatus - accessible as stepStatus.step-name.{phase,succeeded,failed,error}
+	if stepStatus, ok := context["stepStatus"].(map[string]interface{}); ok {
+		vars["stepStatus"] = stepStatus
+	} else {
+		vars["stepStatus"] = make(map[string]interface{})
 	}
 
 	// Add outputs - accessible as outputs.name (workflow-level outputs, for metric labels)

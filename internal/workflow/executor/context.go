@@ -99,7 +99,28 @@ func (cm *ContextManager) ReadContext(ctx context.Context) (map[string]interface
 	for k, v := range cm.inMemoryContext {
 		contextCopy[k] = v
 	}
+	contextCopy["stepStatus"] = cm.stepStatusProjection()
 	return contextCopy, nil
+}
+
+// stepStatusProjection exposes only terminal steps, so referencing an unfinished step fails with "no such key".
+func (cm *ContextManager) stepStatusProjection() map[string]interface{} {
+	out := make(map[string]interface{})
+	if cm.workflowRun == nil {
+		return out
+	}
+	for name, st := range cm.workflowRun.Status.StepStatuses {
+		switch st.Phase {
+		case ottoflowv1alpha1.StepPhaseSucceeded, ottoflowv1alpha1.StepPhaseFailed, ottoflowv1alpha1.StepPhaseSkipped:
+			out[name] = map[string]interface{}{
+				"phase":     string(st.Phase),
+				"succeeded": st.Phase == ottoflowv1alpha1.StepPhaseSucceeded,
+				"failed":    st.Phase == ottoflowv1alpha1.StepPhaseFailed,
+				"error":     st.Error,
+			}
+		}
+	}
+	return out
 }
 
 // WriteStepOutputs writes step outputs directly to the variables map (no namespacing)
