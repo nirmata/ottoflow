@@ -293,3 +293,35 @@ func TestStepStatus_ChildWorkflowInScopedCtxReadsOwnStatus(t *testing.T) {
 		t.Fatalf("child report step should read its own collect status, got %v", out)
 	}
 }
+
+func TestStepStatus_ForEachWorkflowRefChildReadsOwnStatus(t *testing.T) {
+	sub := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "sub", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{
+				{Name: "collect", Outputs: []ottoflowv1alpha1.Output{{Name: "c", Expression: `"x"`}}},
+				{Name: "report", DependsOn: []string{"collect"}, Outputs: []ottoflowv1alpha1.Output{{Name: "r", Expression: `stepStatus.collect.succeeded`}}},
+			},
+			Outputs: []ottoflowv1alpha1.Output{{Name: "r", Expression: `variables.r`}},
+		},
+	}
+	run := newTestWorkflowRun("parent")
+	ex, err := NewWorkflowExecutor(fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(sub).Build(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{
+			Name: "fe",
+			ForEach: &ottoflowv1alpha1.StepForEach{
+				Items:          `["a","b"]`,
+				MaxConcurrency: 1, // parallel items race on executeWorkflowReference's StepStatuses writes (pre-existing)
+				Step:           &ottoflowv1alpha1.StepForEachStep{WorkflowRef: &ottoflowv1alpha1.StepWorkflowRef{Name: "sub"}},
+			},
+		}}},
+	}
+	if err := ex.ExecuteWorkflow(context.Background(), wf, run); err != nil {
+		t.Fatalf("forEach workflowRef child failed: %v", err)
+	}
+}
