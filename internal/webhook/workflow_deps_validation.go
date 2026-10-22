@@ -16,7 +16,8 @@ import (
 )
 
 // steps.<stepName> or steps.<stepName>.field..., and stepStatus.<stepName>...
-var stepsRefRe = regexp.MustCompile(`(?:steps|stepStatus)\.([a-z][a-zA-Z0-9]*)`)
+// The leading group rejects nested member names such as variables.payload.stepStatus.x.
+var stepsRefRe = regexp.MustCompile(`(?:^|[^.\w])(?:steps|stepStatus)\.([a-z][a-zA-Z0-9]*)`)
 
 // variables.<name>
 var variablesRefRe = regexp.MustCompile(`variables\.([a-zA-Z][a-zA-Z0-9]*)`)
@@ -176,7 +177,8 @@ func hasProducerDependency(stepName string, producers []string, deps map[string]
 func extractStepRefs(exprs []string) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, s := range exprs {
-		for _, m := range stepsRefRe.FindAllStringSubmatch(s, -1) {
+		stripped := celStringLiteralRe.ReplaceAllString(s, `""`)
+		for _, m := range stepsRefRe.FindAllStringSubmatch(stripped, -1) {
 			if len(m) >= 2 {
 				out[m[1]] = struct{}{}
 			}

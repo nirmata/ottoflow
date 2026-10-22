@@ -1053,3 +1053,13 @@ func TestValidateStepDependencies_StepStatusRefWithDependsOn(t *testing.T) {
 		t.Errorf("expected no error when dependsOn is set: %v", err)
 	}
 }
+
+func TestValidateStepDependencies_StepStatusFalsePositives(t *testing.T) {
+	for _, expr := range []string{`"stepStatus.first.failed"`, `variables.payload.stepStatus.first.failed`, `"x" + variables.a.steps.first`} {
+		wf := stepStatusWorkflow(nil)
+		wf.Spec.Steps[1].Outputs[0].Expression = expr
+		if err := ValidateStepDependencies(&wf.Spec); err != nil {
+			t.Errorf("%s: unexpected error %v", expr, err)
+		}
+	}
+}

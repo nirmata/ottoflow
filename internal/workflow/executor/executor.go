@@ -939,7 +939,9 @@ func (e *WorkflowExecutor) executeWorkflowReference(ctx context.Context, workflo
 		return nil, fmt.Errorf("failed to create executor for sub-workflow: %w", err)
 	}
 
-	if err := childExec.ExecuteWorkflow(ctx, subWorkflow, childRun); err != nil {
+	// The child has its own context; the caller's forEach scope would shadow it (incl. stepStatus).
+	childCtx := context.WithValue(ctx, scopedContextKey, nil)
+	if err := childExec.ExecuteWorkflow(childCtx, subWorkflow, childRun); err != nil {
 		if workflowRun.Status.StepStatuses == nil {
 			workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
 		}

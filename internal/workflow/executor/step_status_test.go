@@ -265,3 +265,31 @@ func TestStepStatus_ForEachItemsDoNotRace(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStepStatus_ChildWorkflowInScopedCtxReadsOwnStatus(t *testing.T) {
+	sub := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "sub", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{
+				{Name: "collect", Outputs: []ottoflowv1alpha1.Output{{Name: "c", Expression: `"x"`}}},
+				{Name: "report", DependsOn: []string{"collect"}, Outputs: []ottoflowv1alpha1.Output{{Name: "r", Expression: `stepStatus.collect.succeeded`}}},
+			},
+			Outputs: []ottoflowv1alpha1.Output{{Name: "r", Expression: `variables.r`}},
+		},
+	}
+	run := newTestWorkflowRun("parent")
+	ex, err := NewWorkflowExecutor(fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(sub).Build(), run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Frozen parent snapshot as a forEach item holds it: no "collect" key.
+	scoped := map[string]interface{}{"inputs": map[string]interface{}{}, "variables": map[string]interface{}{}, "steps": map[string]interface{}{}, "stepStatus": map[string]interface{}{}}
+	ctx := context.WithValue(context.Background(), scopedContextKey, scoped)
+	out, err := ex.executeWorkflowReference(ctx, run, ottoflowv1alpha1.Step{Name: "call", WorkflowRef: &ottoflowv1alpha1.StepWorkflowRef{Name: "sub"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["r"] != true {
+		t.Fatalf("child report step should read its own collect status, got %v", out)
+	}
+}
