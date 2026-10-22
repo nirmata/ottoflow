@@ -13,7 +13,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	// Import client auth plugins for kubeconfig exec auth.
@@ -61,11 +64,51 @@ type runnerConfig struct {
 	jobName       string
 	podName       string
 	prometheusURL string
+	hardStop      time.Duration
 }
 
+const (
+	interruptedMessage = "interrupted by SIGTERM"
+	// exitInterrupted is 128+SIGTERM. It must be non-zero: the controller reads exit 0 as "run complete".
+	exitInterrupted = 143
+	// persistTimeout bounds a post-signal write. The interrupted path shares one budget for the
+	// checkpoint flush and the status update; the failure and success paths use it per write.
+	persistTimeout = 5 * time.Second
+	// otelFlushTimeout bounds the span flush deferred in run().
+	otelFlushTimeout = 5 * time.Second
+	// defaultHardStop is how long after the signal the runner force-exits, whatever it is doing.
+	defaultHardStop = workflowexecutor.RunnerShutdownHardStop
+	// hardStopFlushTimeout caps klog's flush on that forced exit (klog.ExitFlushTimeout is 10s).
+	hardStopFlushTimeout = 2 * time.Second
+)
+
+// finalWriteStarted is closed once ExecuteWorkflow returns, so the hard stop leaves the final status
+// write its budget.
+var (
+	finalWriteStarted = make(chan struct{})
+	startFinalWrite   = sync.OnceFunc(func() { close(finalWriteStarted) })
+)
+
+// Shutdown budget, measured from the signal, against the runner pod's terminationGracePeriodSeconds
+// (RunnerTerminationGracePeriod, 30s, set by the controller):
+//   - normal interrupted path: ExecuteWorkflow returns, then the shared flush+write budget (5s) and the
+//     deferred OTel flush (5s) run, so it ends 10s after ExecuteWorkflow returns;
+//   - the hard stop bounds all of it: it fires defaultHardStop after the signal, or persistTimeout after
+//     ExecuteWorkflow returns if that is later, and exits within hardStopFlushTimeout. The worst case is a
+//     return just before the hard stop: 15s + 5s + 2s = 22s, 8s inside the grace period.
+// Raising the hard stop (--shutdown-hard-stop or OTTOFLOW_SHUTDOWN_HARD_STOP) eats that margin: keep it at
+// most the grace period minus 15s.
+
 func main() {
+	// os.Exit would skip defers, so run() holds them (span End, OTel flush, executor Close).
+	os.Exit(run())
+}
+
+func run() int {
 	cfg := parseRunnerFlags()
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	go hardStopAfterSignal(ctx, cfg.hardStop, finalWriteStarted, persistTimeout)
 
 	// Initialize OTel TracerProvider first — it registers the W3C propagator globally,
 	// which must be set before we call Extract below.
@@ -79,7 +122,7 @@ func main() {
 	// Flush before process exit so in-flight spans drain to the collector.
 	// defer order (LIFO): rootSpan.End registered after → runs first, then flush.
 	defer func() {
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), otelFlushTimeout)
 		defer cancel()
 		_ = flush(flushCtx)
 	}()
@@ -118,8 +161,86 @@ func main() {
 
 	exec := mustNewWorkflowExecutor(
 		ctx, controlClient, targetClient, metricsClient, kubeClient, prometheusClient, workflowRun)
-	exec.SetCheckpointManager(workflowexecutor.NewCheckpointManager(controlClient, workflowRun))
-	runWorkflowToCompletion(ctx, exec, workflow, workflowRun, controlClient, cfg)
+	cm := workflowexecutor.NewCheckpointManager(controlClient, workflowRun)
+	exec.SetCheckpointManager(cm)
+	return runWorkflowToCompletion(ctx, exec, cm, workflow, workflowRun, controlClient, cfg)
+}
+
+// hardStopAfterSignal force-exits d after ctx is cancelled, in case a step ignores the ctx. Once
+// writeStarted is closed it waits at least writeBudget from then, so a step that returns late does not
+// cut off the final status write. It reads no shared state (executor goroutines write
+// workflowRun.Status), so it cannot save step statuses; it only bounds how long the runner lingers.
+func hardStopAfterSignal(
+	ctx context.Context, d time.Duration, writeStarted <-chan struct{}, writeBudget time.Duration,
+) {
+	<-ctx.Done()
+	signalled := time.Now()
+	deadline := signalled.Add(d)
+	select {
+	case <-writeStarted:
+	case <-time.After(d):
+	}
+	// Checked again here: when the timer and the notice were both ready, select may have taken the timer.
+	select {
+	case <-writeStarted:
+		if t := time.Now().Add(writeBudget); t.After(deadline) {
+			deadline = t
+		}
+	default:
+	}
+	time.Sleep(time.Until(deadline))
+	klog.ErrorS(ctx.Err(), "runner did not stop after the interrupt; forcing exit", "after", time.Since(signalled))
+	klog.FlushAndExit(hardStopFlushTimeout, exitInterrupted)
+}
+
+// markInterrupted rewrites the status the executor left after a root-ctx cancel. Every non-Pending
+// step goes back to Pending: a retry that restores a checkpoint replaces these statuses with the
+// snapshot's, and one that does not starts from an empty context, where a step kept Succeeded would
+// be skipped without its outputs. Call it only when the root ctx is done. Each step's message keeps the
+// phase it had reached, since a run that is not retried ends with these statuses.
+func markInterrupted(status *ottoflowv1alpha1.WorkflowRunStatus) {
+	for name, s := range status.StepStatuses {
+		if s.Phase == ottoflowv1alpha1.StepPhasePending {
+			continue
+		}
+		s.Message = fmt.Sprintf("%s (was %s)", interruptedMessage, s.Phase)
+		s.Phase = ottoflowv1alpha1.StepPhasePending
+		s.Error = ""
+		s.CompletionTime = nil
+		status.StepStatuses[name] = s
+	}
+	status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+	status.Message = interruptedMessage
+	status.AuditSnapshotError = ""
+}
+
+// boundedCtx returns a fresh ctx that keeps ctx's values but not its cancellation, so a write
+// still reaches the API server after SIGTERM, limited to persistTimeout.
+func boundedCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
+}
+
+func persistBounded(
+	ctx context.Context, controlClient client.Client, runKey client.ObjectKey, status ottoflowv1alpha1.WorkflowRunStatus,
+) error {
+	writeCtx, cancel := boundedCtx(ctx)
+	defer cancel()
+	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status)
+}
+
+// hardStopDefault returns the hard stop the controller passed in v, or defaultHardStop when v is unset
+// or invalid.
+func hardStopDefault(v string) time.Duration {
+	if v == "" {
+		return defaultHardStop
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		klog.ErrorS(err, "invalid hard stop; using the default", "env", workflowexecutor.RunnerShutdownHardStopEnv,
+			"value", v, "default", defaultHardStop)
+		return defaultHardStop
+	}
+	return d
 }
 
 func parseRunnerFlags() runnerConfig {
@@ -131,6 +252,10 @@ func parseRunnerFlags() runnerConfig {
 		"Job name (runner pod identity; set by controller when running in-cluster)")
 	flag.StringVar(&podName, "pod-name", os.Getenv("POD_NAME"),
 		"Pod name (runner pod identity; set by controller when running in-cluster)")
+	var hardStop time.Duration
+	flag.DurationVar(&hardStop, "shutdown-hard-stop",
+		hardStopDefault(os.Getenv(workflowexecutor.RunnerShutdownHardStopEnv)),
+		"Force exit this long after SIGTERM if the run has not stopped (keep below the pod grace period)")
 	flag.Parse()
 	if runName == "" || runNamespace == "" {
 		klog.Fatalf("workflow-run-name and workflow-run-namespace are required")
@@ -147,6 +272,7 @@ func parseRunnerFlags() runnerConfig {
 		prometheusURL: prometheusURL,
 		jobName:       jobName,
 		podName:       podName,
+		hardStop:      hardStop,
 	}
 }
 
@@ -496,13 +622,20 @@ func mustPersistRunningStatus(
 	jobName, podName string,
 ) {
 	now := metav1.Now()
-	workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{
+	execution := &ottoflowv1alpha1.WorkflowRunExecutionStatus{
 		Phase:     string(ottoflowv1alpha1.WorkflowRunPhaseRunning),
 		JobName:   jobName,
 		PodName:   podName,
 		Message:   "Runner pod started",
 		StartTime: &now,
 	}
+	// Keep the controller's retry bookkeeping: loadCheckpointIfNeeded reads Attempts to detect a
+	// retry, and handleFailedJob compares it with maxRestartAttempts.
+	if prev := workflowRun.Status.Execution; prev != nil {
+		execution.Attempts = prev.Attempts
+		execution.LastTerminationReason = prev.LastTerminationReason
+	}
+	workflowRun.Status.Execution = execution
 	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
 		keys := logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name)
 		klog.ErrorS(err, "failed to persist initial WorkflowRun status", keys...)
@@ -546,13 +679,16 @@ func mustNewWorkflowExecutor(
 func runWorkflowToCompletion(
 	ctx context.Context,
 	exec *workflowexecutor.WorkflowExecutor,
+	cm *workflowexecutor.CheckpointManager,
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	controlClient client.Client,
 	cfg runnerConfig,
-) {
+) int {
 	defer exec.Close() //nolint:errcheck
-	if err := exec.ExecuteWorkflow(ctx, workflow, workflowRun); err != nil {
+	err := exec.ExecuteWorkflow(ctx, workflow, workflowRun)
+	startFinalWrite()
+	if err != nil {
 		// waitForCallback pause: exit with code 0 so the Job is not marked failed.
 		// The controller will recreate the Job once the callback arrives.
 		if errors.Is(err, workflowexecutor.ErrAwaitingCallback) {
@@ -560,6 +696,13 @@ func runWorkflowToCompletion(
 				logging.KeyPhase, string(workflowRun.Status.Phase))
 			klog.InfoS("WorkflowRun paused awaiting callback; runner exiting cleanly", keys...)
 			klog.FlushAndExit(klog.ExitFlushTimeout, 0)
+		}
+		// Interrupted (SIGTERM): save the steps as interrupted rather than failed so a retry re-runs them.
+		// A failure the executor saw before the cancel stays Failed. err == nil with ctx done means the
+		// run finished, and takes the success path below.
+		if ctx.Err() != nil && !errors.Is(err, workflowexecutor.ErrFailedBeforeCancel) {
+			persistInterrupted(ctx, cm, controlClient, cfg, workflow, workflowRun, err)
+			return exitInterrupted
 		}
 		persistExecutionFailure(ctx, controlClient, cfg.runKey, workflowRun, cfg.jobName, cfg.podName, err.Error())
 		keys := append(logging.KeysForRun(workflow.Name, cfg.runNamespace, cfg.runName),
@@ -571,6 +714,34 @@ func runWorkflowToCompletion(
 	keys := append(logging.KeysForRun(workflow.Name, cfg.runNamespace, cfg.runName),
 		logging.KeyPhase, string(workflowRun.Status.Phase))
 	klog.InfoS("WorkflowRun completed", keys...)
+	return 0
+}
+
+func persistInterrupted(
+	ctx context.Context,
+	cm *workflowexecutor.CheckpointManager,
+	controlClient client.Client,
+	cfg runnerConfig,
+	workflow *ottoflowv1alpha1.Workflow,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	cause error,
+) {
+	keys := logging.KeysForRun(workflow.Name, cfg.runNamespace, cfg.runName)
+	klog.InfoS("interrupted; saving step statuses", append(keys, "cause", cause.Error())...)
+	// Rewrite a copy: checkpoint saves still in flight read the live StepStatuses map.
+	status := workflowRun.Status.DeepCopy()
+	markInterrupted(status)
+	// One budget for both writes, so the interrupted path costs at most persistTimeout.
+	// Status first: Flush only waits on saves that use their own 30s ctx, so a slow checkpoint
+	// save must not use up the budget the status write needs.
+	writeCtx, cancel := boundedCtx(ctx)
+	defer cancel()
+	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, *status); err != nil {
+		klog.ErrorS(err, "failed to persist interrupted status", keys...)
+	}
+	if err := cm.Flush(writeCtx); err != nil {
+		klog.ErrorS(err, "failed to flush checkpoint on interrupt", keys...)
+	}
 }
 
 func persistExecutionFailure(
@@ -589,7 +760,7 @@ func persistExecutionFailure(
 	workflowRun.Status.Execution.PodName = podName
 	workflowRun.Status.Execution.Message = message
 	workflowRun.Status.Execution.CompletionTime = &end
-	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	if err := persistBounded(ctx, controlClient, runKey, workflowRun.Status); err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, "failed")
 		klog.ErrorS(err, "workflow failed and failed to persist status", keys...)
@@ -604,6 +775,10 @@ func persistExecutionSuccess(
 	jobName, podName string,
 ) {
 	end := metav1.Now()
+	// A resumed run still carries the marker markInterrupted wrote; a normal success writes no message.
+	if workflowRun.Status.Message == interruptedMessage {
+		workflowRun.Status.Message = ""
+	}
 	if workflowRun.Status.Execution == nil {
 		workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{}
 	}
@@ -612,7 +787,7 @@ func persistExecutionSuccess(
 	workflowRun.Status.Execution.PodName = podName
 	workflowRun.Status.Execution.Message = workflowRun.Status.Message
 	workflowRun.Status.Execution.CompletionTime = &end
-	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	if err := persistBounded(ctx, controlClient, runKey, workflowRun.Status); err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, string(workflowRun.Status.Phase))
 		klog.ErrorS(err, "workflow succeeded but failed to persist final status", keys...)
@@ -627,6 +802,12 @@ func updateExecutionFailure(
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	jobName, podName, message string,
 ) {
+	// A SIGTERM during startup must not write Failed: that would block a checkpoint retry.
+	// Skip the write; the caller still exits non-zero and the controller decides.
+	if ctx.Err() != nil {
+		klog.InfoS("interrupted during startup; not recording failure", "message", message)
+		return
+	}
 	now := metav1.Now()
 	if jobName == "" {
 		jobName = os.Getenv("JOB_NAME")
@@ -658,12 +839,20 @@ func persistWorkflowRunStatus(
 	runKey client.ObjectKey,
 	status ottoflowv1alpha1.WorkflowRunStatus,
 ) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	// RetryOnConflict returns nil when ctx ends mid-retry, though nothing was written. Keep the
+	// closure's last error and return it then.
+	var inner error
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &ottoflowv1alpha1.WorkflowRun{}
-		if err := controlClient.Get(ctx, runKey, latest); err != nil {
-			return err
+		if inner = controlClient.Get(ctx, runKey, latest); inner != nil {
+			return inner
 		}
 		latest.Status = status
-		return controlClient.Status().Update(ctx, latest)
+		inner = controlClient.Status().Update(ctx, latest)
+		return inner
 	})
+	if err == nil && inner != nil {
+		return inner
+	}
+	return err
 }

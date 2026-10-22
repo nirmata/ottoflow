@@ -15,6 +15,7 @@ import (
 	"hash/fnv"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -258,6 +259,13 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 			}
 		} else {
 			job = createdJob
+			if createdJob.Spec.PodReplacementPolicy == nil {
+				warnPodReplacementPolicyDropped.Do(func() {
+					logger.Info("the API server dropped the runner Job's podReplacementPolicy (JobPodReplacementPolicy "+
+						"feature gate off?); a retry may start while an interrupted runner is still writing its status",
+						"job", jobKey)
+				})
+			}
 		}
 	}
 
@@ -366,6 +374,10 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 
 	return nil, "", fmt.Errorf("failed to get Workflow %s: %w", workflowKey, err)
 }
+
+// warnPodReplacementPolicyDropped logs once per process when the API server dropped the runner Job's
+// podReplacementPolicy.
+var warnPodReplacementPolicyDropped sync.Once
 
 func workflowRunnerJobName(runName string) string {
 	base := strings.ToLower(fmt.Sprintf("%s-runner", runName))
@@ -1201,6 +1213,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
+		{Name: executor.RunnerShutdownHardStopEnv, Value: executor.RunnerShutdownHardStop.String()},
 	}
 	if secretMountsJSON != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: secretmount.EnvVar, Value: secretMountsJSON})
@@ -1263,6 +1276,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttlSecondsAfterFinished,
 			ActiveDeadlineSeconds:   activeDeadlineSeconds,
+			// Count a deleted pod as failed only once it has exited. The default counts it at once, so
+			// the retry Job started while the interrupted runner was still writing its status.
+			PodReplacementPolicy: ptr.To(batchv1.Failed),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: runnerPodLabels,
@@ -1308,6 +1324,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 							},
 						},
 					},
+					TerminationGracePeriodSeconds: ptr.To(int64(executor.RunnerTerminationGracePeriod / time.Second)),
 				},
 			},
 		},
