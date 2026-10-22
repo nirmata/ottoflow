@@ -85,7 +85,15 @@ spec:
                (has(i.status.containerStatuses) &&
                 i.status.containerStatuses.exists(c, int(c.restartCount) > 3 ||
                   (has(c.state) && has(c.state.waiting) && has(c.state.waiting.reason) &&
-                    c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]))))
+                    c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]))) ||
+               (has(i.status.phase) && i.status.phase == "Running" &&
+                has(i.status.containerStatuses) &&
+                i.status.containerStatuses.exists(c, !c.ready)) ||
+               (has(i.status.initContainerStatuses) &&
+                i.status.initContainerStatuses.exists(c, has(c.state) &&
+                  ((has(c.state.waiting) && has(c.state.waiting.reason) &&
+                    c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]) ||
+                   (has(c.state.terminated) && int(c.state.terminated.exitCode) != 0)))))
             ).map(i, i.metadata.name)
           images: |-
             inputs.includeImages == "true" ?
