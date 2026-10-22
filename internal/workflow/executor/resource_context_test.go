@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync/atomic"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -28,7 +29,7 @@ import (
 
 // pagedListClient serves total ConfigMaps in pages honouring Limit/Continue, counting List calls.
 // Pages are sliced from one pre-built slice so a read-ahead producer outruns the consumer.
-func pagedListClient(scheme *runtime.Scheme, total int, pages *int) client.Client {
+func pagedListClient(scheme *runtime.Scheme, total int, pages *atomic.Int64) client.Client {
 	all := make([]unstructured.Unstructured, total)
 	for i := range all {
 		all[i].SetAPIVersion("v1")
@@ -47,7 +48,7 @@ func pagedListClient(scheme *runtime.Scheme, total int, pages *int) client.Clien
 			if lo.Limit > 0 && start+int(lo.Limit) < total {
 				end = start + int(lo.Limit)
 			}
-			*pages++
+			pages.Add(1)
 			ul := list.(*unstructured.UnstructuredList)
 			ul.Items = all[start:end]
 			if end < total {
@@ -194,7 +195,7 @@ var _ = Describe("resourceContext", func() {
 	})
 
 	It("ListResources returns exactly listMaxItems items without error", func() {
-		pages := 0
+		var pages atomic.Int64
 		rc = &resourceContext{client: pagedListClient(scheme, listMaxItems, &pages), namespace: "ns"}
 
 		list, err := rc.ListResources("v1", "configmaps", "ns", nil)
@@ -203,18 +204,18 @@ var _ = Describe("resourceContext", func() {
 	})
 
 	It("ListResources fails closed above listMaxItems and bounds the pages fetched", func() {
-		pages := 0
+		var pages atomic.Int64
 		total := listMaxItems + 11*listPageSize
 		rc = &resourceContext{client: pagedListClient(scheme, total, &pages), namespace: "ns"}
 
 		list, err := rc.ListResources("v1", "configmaps", "ns", nil)
 		Expect(err).To(MatchError(ContainSubstring("more than 10000 items")))
 		Expect(list).To(BeNil())
-		Expect(pages).To(BeNumerically("<=", int(math.Ceil(float64(listMaxItems+1)/listPageSize))+1))
+		Expect(pages.Load()).To(BeNumerically("<=", int(math.Ceil(float64(listMaxItems+1)/listPageSize))+1))
 	})
 
 	It("resource.List() fails the CEL expression above listMaxItems", func() {
-		pages := 0
+		var pages atomic.Int64
 		ev, err := NewCELEvaluator(pagedListClient(scheme, listMaxItems+1, &pages), nil)
 		Expect(err).NotTo(HaveOccurred())
 
