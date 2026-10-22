@@ -292,7 +292,6 @@ more `make` variables are worth knowing about:
 | `HELM_CHART_PATH` | `./charts/ottoflow` | Chart location used by Helm-based `make` targets |
 | `HELM_RELEASE_NAME` | `ottoflow` | Release name used by Helm-based `make` targets |
 | `HELM_NAMESPACE` | `ottoflow` | Install namespace used by Helm-based `make` targets |
-| `ENVTEST_K8S_VERSION` | `1.29.0` | Kubernetes test-binary version `make test` downloads via `setup-envtest` |
 
 ---
 

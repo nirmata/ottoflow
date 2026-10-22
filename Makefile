@@ -9,8 +9,6 @@ IMAGE_TAG ?= $(if $(GIT_EXACT_TAG),$(GIT_EXACT_TAG),0.0.0-g$(GIT_SHORT_SHA))
 # Image override for deploy (when set, overrides chart defaults). Leave empty to use chart values.
 IMG ?=
 WORKFLOW_RUNNER_IMG ?=
-# ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.29.0
 
 # Helm chart configuration
 HELM_CHART_PATH ?= ./charts/ottoflow
@@ -149,8 +147,8 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet ## Run tests.
+	go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 	@echo "---"
 	@go tool cover -func=cover.out | tail -1
 
@@ -481,7 +479,6 @@ $(LOCALBIN):
 KUBECTL ?= kubectl
 KUSTOMIZE ?= $(LOCALBIN)/kustomize-$(KUSTOMIZE_VERSION)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
-ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 CRD_REF_DOCS ?= $(LOCALBIN)/crd-ref-docs
 KO ?= $(LOCALBIN)/ko-$(KO_VERSION)
@@ -491,7 +488,6 @@ HELM ?= $(shell which helm 2>/dev/null || echo $(LOCALBIN)/helm-$(HELM_VERSION))
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.3.0
 CONTROLLER_TOOLS_VERSION ?= v0.20.0
-ENVTEST_VERSION ?= release-0.17
 GOLANGCI_LINT_VERSION ?= v2.11.4
 CRD_REF_DOCS_VERSION ?= v0.3.0
 KO_VERSION ?= v0.17.1
@@ -506,11 +502,6 @@ $(KUSTOMIZE): $(LOCALBIN)
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
 	test -s $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION) || { GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION) && mv $(LOCALBIN)/controller-gen $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION) ; }
-
-.PHONY: envtest
-envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
-$(ENVTEST): $(LOCALBIN)
-	test -s $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION) || { GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION) && mv $(LOCALBIN)/setup-envtest $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION) ; }
 
 .PHONY: golangci-lint
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
