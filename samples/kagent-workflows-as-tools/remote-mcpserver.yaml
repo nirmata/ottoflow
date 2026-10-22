@@ -93,11 +93,17 @@ spec:
                 i.status.initContainerStatuses.exists(c, has(c.state) &&
                   ((has(c.state.waiting) && has(c.state.waiting.reason) &&
                     c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]) ||
-                   (has(c.state.terminated) && int(c.state.terminated.exitCode) != 0)))))
+                   (has(c.state.terminated) && int(c.state.terminated.exitCode) != 0)))) ||
+               (has(i.status.conditions) &&
+                i.status.conditions.exists(c, c.type == "PodScheduled" && c.status == "False" &&
+                  has(c.reason) && c.reason == "Unschedulable")))
             ).map(i, i.metadata.name)
           images: |-
             inputs.includeImages == "true" ?
-              items.map(i, i.spec.containers.map(c, c.image)).flatten().distinct() : []
+              items.map(i, (i.spec.containers +
+                (has(i.spec.initContainers) ? i.spec.initContainers : []) +
+                (has(i.spec.ephemeralContainers) ? i.spec.ephemeralContainers : [])
+              ).map(c, c.image)).flatten().distinct() : []
   outputs:
     - name: podCount
       expression: variables.podCount
