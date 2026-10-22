@@ -27,6 +27,7 @@ func TestValidateStepDependencies_LiteralsAndStructuredValues(t *testing.T) {
 		{name: "json string value is an expression", value: `{"failed":"stepStatus.first.failed"}`, wantErr: true},
 		{name: "json steps value is an expression", value: `{"a":["steps.first.results"]}`, wantErr: true},
 		{name: "json value with only a literal is text", value: `{"a":"'steps.first.x'"}`},
+		{name: "json literal text is not an expression", value: `{"a":"please read steps.first.x as plain text"}`},
 		{name: "json key is not an expression", value: `{"steps.first.x":1}`},
 	}
 	for _, tc := range cases {

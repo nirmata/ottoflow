@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/cel-go/cel"
+
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
 
@@ -492,6 +494,18 @@ func collectCELStringsFromOpenReport(ref *ottoflowv1alpha1.StepOpenReport) []str
 	return out
 }
 
+var celParseEnv, _ = cel.NewEnv()
+
+// evaluatedAsCEL mirrors the executor's EvaluateOutputValue: a string is tried as CEL only if it contains
+// '.', '(' or '[' and otherwise (or if it does not parse) stays literal text.
+func evaluatedAsCEL(s string) bool {
+	if !strings.ContainsAny(s, ".([") {
+		return false
+	}
+	_, iss := celParseEnv.Parse(s)
+	return iss.Err() == nil
+}
+
 // jsonStringValues returns the string values (not keys) of a JSON document, so each is scanned as a
 // CEL expression on its own. Scanning the serialized JSON would strip those values as literals.
 func jsonStringValues(raw []byte) []string {
@@ -504,7 +518,9 @@ func jsonStringValues(raw []byte) []string {
 	walk = func(x interface{}) {
 		switch t := x.(type) {
 		case string:
-			out = append(out, t)
+			if evaluatedAsCEL(t) {
+				out = append(out, t)
+			}
 		case []interface{}:
 			for _, e := range t {
 				walk(e)
