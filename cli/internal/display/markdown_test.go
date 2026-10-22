@@ -60,6 +60,9 @@ func TestFormatOutputValue(t *testing.T) {
 			if tt.wantWord == nil && got != tt.wantExac {
 				t.Fatalf("FormatOutputValue() = %q, want %q", got, tt.wantExac)
 			}
+			if tt.wantWord != nil && got == strings.TrimSpace(tt.value.(string)) {
+				t.Fatalf("FormatOutputValue() = %q, want rendered output, not the trimmed input", got)
+			}
 			for _, w := range tt.wantWord {
 				if !strings.Contains(got, w) {
 					t.Fatalf("FormatOutputValue() = %q, want it to contain %q", got, w)
