@@ -15,8 +15,8 @@ import (
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
 
-// steps.<stepName> or steps.<stepName>.field...
-var stepsRefRe = regexp.MustCompile(`steps\.([a-z][a-zA-Z0-9]*)`)
+// steps.<stepName> or steps.<stepName>.field..., and stepStatus.<stepName>...
+var stepsRefRe = regexp.MustCompile(`(?:steps|stepStatus)\.([a-z][a-zA-Z0-9]*)`)
 
 // variables.<name>
 var variablesRefRe = regexp.MustCompile(`variables\.([a-zA-Z][a-zA-Z0-9]*)`)

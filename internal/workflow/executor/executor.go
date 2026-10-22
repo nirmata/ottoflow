@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -432,6 +433,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	// Set current workflow so forEach (and other steps) can invoke progress callback with workflow for CLI display
 	e.currentWorkflow = workflow
 	defer func() { e.currentWorkflow = nil }()
+	e.contextManager.workflowRun = workflowRun
 
 	// Set rate limiter for outbound calls (MCP, agent) when spec limits are set
 	if workflow.Spec.ExecutionLimits != nil && workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute != nil && *workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute > 0 {
@@ -990,11 +992,15 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 	outputsMap := make(map[string]interface{})
 	contextData["outputs"] = outputsMap
 
+	// stepStatus goes only on a per-evaluation copy so the live context stays unchanged.
+	evalContext := maps.Clone(contextData)
+	evalContext["stepStatus"] = e.contextManager.stepStatusProjection()
+
 	// Evaluate outputs
 	outputs := make(map[string]apiextensionsv1.JSON)
 	for _, outputDef := range workflow.Spec.Outputs {
 		// Build variable map (includes outputs from previous iterations)
-		vars := e.celEvaluator.BuildVariableMap(contextData)
+		vars := e.celEvaluator.BuildVariableMap(evalContext)
 
 		var result interface{}
 		var err error
@@ -1044,7 +1050,7 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 
 		// Emit custom metric if output has metric config (vars now includes this output)
 		if outputDef.Metric != nil {
-			metricVars := e.celEvaluator.BuildVariableMap(contextData)
+			metricVars := e.celEvaluator.BuildVariableMap(evalContext)
 			metrics.EmitOutputMetric(ctx, result, outputDef, workflowName, namespace, metricVars, e.celEvaluator)
 		}
 	}

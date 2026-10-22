@@ -1024,3 +1024,32 @@ func TestValidateExternalAgentRef_AllowInsecureHTTP(t *testing.T) {
 		})
 	}
 }
+
+func stepStatusWorkflow(dependsOn []string) *ottoflowv1alpha1.Workflow {
+	return &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{
+				{Name: "first", Outputs: []ottoflowv1alpha1.Output{{Name: "x", Expression: `"ok"`}}},
+				{
+					Name:      "second",
+					DependsOn: dependsOn,
+					Outputs:   []ottoflowv1alpha1.Output{{Name: "out", Expression: `stepStatus.first.failed`}},
+				},
+			},
+		},
+	}
+}
+
+func TestValidateStepDependencies_StepStatusRefWithoutDependsOn(t *testing.T) {
+	err := ValidateStepDependencies(&stepStatusWorkflow(nil).Spec)
+	if err == nil || !strings.Contains(err.Error(), `does not list "first" in dependsOn`) {
+		t.Fatalf("expected missing dependsOn error, got %v", err)
+	}
+}
+
+func TestValidateStepDependencies_StepStatusRefWithDependsOn(t *testing.T) {
+	if err := ValidateStepDependencies(&stepStatusWorkflow([]string{"first"}).Spec); err != nil {
+		t.Errorf("expected no error when dependsOn is set: %v", err)
+	}
+}
