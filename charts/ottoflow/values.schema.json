@@ -1,155 +1,632 @@
 {
   "$schema": "http://json-schema.org/schema#",
+  "title": "OttoFlow Helm values",
+  "description": "Every key the chart reads. additionalProperties is false wherever the key set is the chart's own, so a value set at a path no template reads fails the install instead of doing nothing.",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "global": {
+    "agentExecutor": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "imageRegistry": {
-          "type": "string",
-          "description": "Global Docker image registry"
+        "affinity": {
+          "type": "object"
         },
-        "imagePullPolicy": {
-          "type": "string",
-          "enum": ["Always", "IfNotPresent", "Never"],
-          "description": "Global image pull policy"
+        "args": {
+          "type": "array"
         },
-        "imagePullSecrets": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Global image pull secrets"
-        }
-      }
-    },
-    "controller": {
-      "type": "object",
-      "properties": {
+        "callerNamespace": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "command": {
+          "type": "array"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "env": {
+          "type": "array"
+        },
+        "fullnameOverride": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "goMemLimit": {
+          "type": "string"
+        },
         "image": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
+            "fullOverride": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            },
             "registry": {
-              "type": "string",
-              "description": "Controller image registry"
+              "type": "string"
             },
             "repository": {
-              "type": "string",
-              "description": "Controller image repository"
+              "type": "string"
             },
             "tag": {
-              "type": "string",
-              "description": "Controller image tag"
-            },
-            "fullOverride": {
-              "type": "string",
-              "description": "Override full image name"
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
             }
           }
         },
+        "livenessProbe": {
+          "type": "object"
+        },
+        "llmCredentialsSecret": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "nameOverride": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "podLabels": {
+          "type": "object"
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "readinessProbe": {
+          "type": "object"
+        },
         "replicaCount": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Number of controller replicas"
+          "type": "integer"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
+        },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": {
+              "type": "integer"
+            },
+            "type": {
+              "type": "string"
+            }
+          }
         },
         "serviceAccount": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
+            "annotations": {
+              "type": "object"
+            },
             "create": {
-              "type": "boolean",
-              "description": "Create service account"
+              "type": "boolean"
             },
             "name": {
-              "type": "string",
-              "description": "Service account name"
-            },
-            "annotations": {
-              "type": "object",
-              "description": "Service account annotations"
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
             }
           }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer"
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "internal": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "secretName": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "tolerations": {
+          "type": "array"
+        }
+      }
+    },
+    "commonAnnotations": {
+      "type": "object"
+    },
+    "commonLabels": {
+      "type": "object"
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "affinity": {
+          "type": "object"
+        },
+        "args": {
+          "type": "array"
+        },
+        "command": {
+          "type": "array"
+        },
+        "env": {
+          "type": "array"
+        },
+        "fullnameOverride": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fullOverride": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            },
+            "nameOverride": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            },
+            "registry": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "livenessProbe": {
+          "type": "object"
+        },
+        "mcp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "addr": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "service": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "port": {
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "serviceMonitor": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "interval": {
+                  "type": "string"
+                },
+                "labels": {
+                  "type": "object"
+                },
+                "scrapeTimeout": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "nameOverride": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "nodeSelector": {
+          "type": "object"
+        },
+        "podAnnotations": {
+          "type": "object"
+        },
+        "podLabels": {
+          "type": "object"
+        },
+        "podSecurityContext": {
+          "type": "object"
+        },
+        "prometheusURL": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "readinessProbe": {
+          "type": "object"
+        },
+        "replicaCount": {
+          "type": "integer"
         },
         "resources": {
+          "type": "object"
+        },
+        "securityContext": {
+          "type": "object"
+        },
+        "serviceAccount": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "limits": {
-              "type": "object",
-              "properties": {
-                "cpu": {
-                  "type": "string"
-                },
-                "memory": {
-                  "type": "string"
-                }
-              }
+            "annotations": {
+              "type": "object"
             },
-            "requests": {
+            "create": {
+              "type": "boolean"
+            },
+            "name": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer"
+        },
+        "tolerations": {
+          "type": "array"
+        },
+        "webhookTrigger": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "addr": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "service": {
               "type": "object",
+              "additionalProperties": false,
               "properties": {
-                "cpu": {
-                  "type": "string"
+                "enabled": {
+                  "type": "boolean"
                 },
-                "memory": {
+                "port": {
+                  "type": "integer"
+                },
+                "type": {
                   "type": "string"
                 }
               }
             }
           }
         }
-      },
-      "required": ["image"]
-    },
-    "rbac": {
-      "type": "object",
-      "properties": {
-        "create": {
-          "type": "boolean",
-          "description": "Create RBAC resources"
-        },
-        "leaderElection": {
-          "type": "object",
-          "properties": {
-            "create": {
-              "type": "boolean",
-              "description": "Create leader election RBAC"
-            }
-          }
-        }
       }
     },
-    "networkPolicy": {
+    "global": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "create": {
-          "type": "boolean",
-          "description": "Create NetworkPolicy"
-        }
-      }
-    },
-    "crds": {
-      "type": "object",
-      "properties": {
-        "install": {
-          "type": "boolean",
-          "description": "Install CRDs"
+        "imagePullPolicy": {
+          "type": "string"
         },
-        "mode": {
-          "type": "string",
-          "enum": ["install", "skip"],
-          "description": "CRD installation mode"
+        "imagePullSecrets": {
+          "type": "array"
+        },
+        "imageRegistry": {
+          "type": "string"
         }
       }
     },
     "namespace": {
       "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "create": {
-          "type": "boolean",
-          "description": "Create namespace"
+          "type": "boolean"
         },
-        "name": {
-          "type": "string",
-          "description": "Namespace name"
+        "egress": {
+          "type": "array"
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterRole": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extraResources": {
+              "type": "array"
+            }
+          }
+        },
+        "coreClusterRole": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extraResources": {
+              "type": "array"
+            }
+          }
+        },
+        "create": {
+          "type": "boolean"
+        },
+        "leaderElection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "create": {
+              "type": "boolean"
+            }
+          }
+        },
+        "runnerClusterRole": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extraResources": {
+              "type": "array"
+            }
+          }
+        },
+        "viewClusterRole": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extraResources": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    },
+    "serveA2A": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterRole": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fullOverride": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            },
+            "registry": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "serviceAccountName": {
+          "type": "string"
+        }
+      }
+    },
+    "webhook": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "annotations": {
+          "type": "object"
+        },
+        "caBundle": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "failurePolicy": {
+          "type": "string"
+        },
+        "timeoutSeconds": {
+          "type": "integer"
+        }
+      }
+    },
+    "workflowRunner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "agentExecutorCASecret": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "clusterRole": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "fullOverride": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            },
+            "registry": {
+              "type": "string"
+            },
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": [
+                "string",
+                "integer",
+                "boolean"
+              ]
+            }
+          }
+        },
+        "imagePullPolicy": {
+          "type": "string"
+        },
+        "imagePullSecrets": {
+          "type": "array"
+        },
+        "llmCredentialsSecret": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "podLabelsPartOf": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "serviceAccountName": {
+          "type": [
+            "string",
+            "integer",
+            "boolean"
+          ]
+        },
+        "ttlSecondsAfterFinished": {
+          "type": "integer"
         }
       }
     }
