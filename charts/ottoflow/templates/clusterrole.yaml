@@ -25,6 +25,15 @@ metadata:
     rbac.ottoflow.io/aggregate-to-controller: "true"
     rbac.ottoflow.io/aggregate-instance: {{ include "ottoflow.fullname" . }}
 rules:
+  # SubjectAccessReview - the WorkflowRun admission webhook asks whether the
+  # submitter may run as the ServiceAccount a run names, and the MCP server
+  # asks whether a caller may invoke workflows.
+  - apiGroups:
+      - authorization.k8s.io
+    resources:
+      - subjectaccessreviews
+    verbs:
+      - create
   # OttoFlow CRDs - read-only for agents, mcpservers, steptemplates
   - apiGroups:
       - ottoflow.nirmata.io
