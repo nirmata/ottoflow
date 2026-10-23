@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ type RunnerConfig struct {
 	RunnerServiceAccount    string // default: controller-manager
 	RunnerClusterRole       string // required; validated non-empty at controller startup (no default)
 	AgentExecutorCallerRole string // empty disables RBAC-based agent-executor auth
+	// RunnerConfigMapWriterRole is the ClusterRole bound per run namespace for runner ConfigMap writes; empty disables.
+	RunnerConfigMapWriterRole string
 	// AgentExecutorCASecret names the certificate manager's agent-executor CA Secret in
 	// AgentExecutorNamespace. Its certificate (tls.crt, never tls.key) is published as a
 	// ConfigMap of the same name in each namespace that runs a workflow with an agent step, and
@@ -258,6 +261,11 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 			}
 		} else {
 			job = createdJob
+		}
+	} else if sa := job.Spec.Template.Spec.ServiceAccountName; sa != "" && !workflowRunUsesExplicitRunnerServiceAccount(workflowRun) {
+		// Existing Job may predate the writer binding; log and fall through so Job supervision below still runs.
+		if err := r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, sa); err != nil {
+			logger.V(2).Info("failed to ensure runner ConfigMap writer RoleBinding", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "error", err.Error())
 		}
 	}
 
@@ -512,7 +520,7 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 	} else {
 		// Only update bindings that we manage; avoid overwriting user-managed ClusterRoleBindings with the same name
 		const partOfLabel = "app.kubernetes.io/part-of"
-		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != "ottoflow" {
+		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != ottoflowPartOf {
 			return fmt.Errorf("ClusterRoleBinding %s exists but is not managed by OttoFlow (missing label %s=ottoflow); refusing to update", clusterRoleBindingName, partOfLabel)
 		}
 
@@ -575,7 +583,61 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		}
 	}
 
-	return nil
+	return r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, serviceAccountName)
+}
+
+func runnerConfigMapWriterBindingName(serviceAccountName string) string {
+	return "ottoflow-runner-configmap-writer-" + serviceAccountName
+}
+
+// ensureRunnerConfigMapWriter binds the runner SA to the ConfigMap-write ClusterRole in its own namespace only.
+func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context, namespace, serviceAccountName string) error {
+	roleName := r.RunnerConfig.RunnerConfigMapWriterRole
+	if roleName == "" {
+		return nil
+	}
+	const partOfLabel = "app.kubernetes.io/part-of"
+	key := types.NamespacedName{Namespace: namespace, Name: runnerConfigMapWriterBindingName(serviceAccountName)}
+	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: namespace}}
+	existing := &rbacv1.RoleBinding{}
+	switch err := r.Get(ctx, key, existing); {
+	case err == nil:
+		if existing.Labels[partOfLabel] != ottoflowPartOf {
+			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (missing label %s=%s); refusing to update", key.Namespace, key.Name, partOfLabel, ottoflowPartOf)
+		}
+		if existing.RoleRef.Name == roleName {
+			if slices.Equal(existing.Subjects, subjects) {
+				return nil
+			}
+			existing.Subjects = subjects
+			return r.Update(ctx, existing)
+		}
+		// RoleRef is immutable: recreate.
+		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+	case !apierrors.IsNotFound(err):
+		return err
+	}
+
+	// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
+	sa := &corev1.ServiceAccount{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: serviceAccountName}, sa); err != nil {
+		return err
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      key.Name,
+			Namespace: namespace,
+			Labels:    map[string]string{partOfLabel: ottoflowPartOf},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1", Kind: "ServiceAccount", Name: sa.Name, UID: sa.UID,
+			}},
+		},
+		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName},
+		Subjects: subjects,
+	}
+	return client.IgnoreAlreadyExists(r.Create(ctx, rb))
 }
 
 func (r *WorkflowRunReconciler) ensureAgentExecutorCallerBinding(ctx context.Context, namespace, serviceAccountName, roleName string) error {
