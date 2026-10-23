@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,6 +41,7 @@ const (
 
 	methodStream = "message/stream"
 	methodSend   = "message/send"
+	methodGet    = "tasks/get"
 
 	// A2A event kind discriminators (match the @a2a-js/sdk type guards the kagent UI uses).
 	kindTask           = "task"
@@ -98,6 +100,7 @@ type rpcRequest struct {
 }
 
 type rpcParams struct {
+	ID      string `json:"id"`
 	Message struct {
 		Parts []struct {
 			Kind string `json:"kind"`
@@ -170,7 +173,7 @@ type artifactUpdateEvent struct {
 	LastChunk bool     `json:"lastChunk"`
 }
 
-// taskResult is the terminal Task returned by the non-streaming message/send.
+// taskResult is the Task returned by message/send and tasks/get.
 type taskResult struct {
 	ID        string     `json:"id"`
 	ContextID string     `json:"contextId"`
@@ -217,6 +220,8 @@ func (s *Server) handleRPC(w http.ResponseWriter, r *http.Request) {
 		s.handleStream(w, r, &req)
 	case methodSend:
 		s.handleSend(w, r, &req)
+	case methodGet:
+		s.handleGet(w, r, &req)
 	default:
 		writeRPCError(w, req.ID, -32601, fmt.Sprintf("unsupported method %q", req.Method))
 	}
@@ -271,8 +276,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, req *rpcRe
 	send(statusEvt)
 }
 
-// handleSend runs the workflow to completion and returns a single terminal Task
-// (non-streaming). Cheap fallback for A2A clients that don't stream.
+// handleSend runs the workflow and returns a single Task (non-streaming), terminal unless the
+// deadline hits first. Cheap fallback for A2A clients that don't stream.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
 	ctx := r.Context()
 	run, err := s.createRun(ctx, promptText(req))
@@ -305,6 +310,53 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, req *rpcRequ
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rpcEnvelope{JSONRPC: "2.0", ID: req.ID, Result: task}); err != nil {
 		klog.Errorf("encoding message/send response: %v", err)
+	}
+}
+
+// handleGet reads state-less: only runs serve-a2a created for this workflow, else the same -32001.
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
+	ctx := r.Context()
+	notFound := func() { writeRPCError(w, req.ID, -32001, "Task not found") }
+	wf, err := s.exposedWorkflow(ctx)
+	if err != nil {
+		writeRPCError(w, req.ID, -32603, err.Error())
+		return
+	}
+	if req.Params.ID == "" {
+		notFound()
+		return
+	}
+	var run ottoflowv1alpha1.WorkflowRun
+	if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.wfNS, Name: req.Params.ID}, &run); err != nil {
+		if apierrors.IsNotFound(err) {
+			notFound()
+			return
+		}
+		writeRPCError(w, req.ID, -32603, err.Error())
+		return
+	}
+	if run.Labels["ottoflow.nirmata.io/workflow"] != wf.Name ||
+		run.Labels["ottoflow.nirmata.io/created-by"] != "serve-a2a" {
+		notFound()
+		return
+	}
+
+	task := taskResult{
+		ID: run.Name, ContextID: string(run.UID), Kind: kindTask,
+		Status:    taskStatus{State: stateWorking, Timestamp: now()},
+		Artifacts: []artifact{},
+	}
+	switch run.Status.Phase {
+	case ottoflowv1alpha1.WorkflowRunPhaseSucceeded, ottoflowv1alpha1.WorkflowRunPhaseFailed:
+		state, text, name := resolveOutcome(&run)
+		task.Status.State = state
+		task.Artifacts = []artifact{{
+			ArtifactID: run.Name + "-" + name, Name: name, Parts: []textPart{{Kind: "text", Text: text}},
+		}}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(rpcEnvelope{JSONRPC: "2.0", ID: req.ID, Result: task}); err != nil {
+		klog.Errorf("encoding tasks/get response: %v", err)
 	}
 }
 
@@ -365,7 +417,7 @@ func stillRunningText(runName, ns string, d time.Duration) string {
 		runName, d, ns, runName)
 }
 
-// buildStillRunningEvents is the streaming terminal pair for a deadline hit: an artifact carrying
+// buildStillRunningEvents is the streaming closing pair for a deadline hit: an artifact carrying
 // the honest notice, and a final status that is NOT "failed" — the run continues and may succeed.
 func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (artifactUpdateEvent, statusUpdateEvent) {
 	text := stillRunningText(taskID, ns, d)
@@ -377,7 +429,7 @@ func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (art
 	}
 	statusEvt := statusUpdateEvent{
 		TaskID: taskID, ContextID: contextID, Kind: kindStatusUpdate,
-		Status: taskStatus{State: stateCompleted, Timestamp: now()}, Final: true,
+		Status: taskStatus{State: stateWorking, Timestamp: now()}, Final: true,
 	}
 	return artifactEvt, statusEvt
 }
@@ -387,7 +439,7 @@ func buildStillRunningTask(runName, contextID, ns string, d time.Duration) taskR
 	text := stillRunningText(runName, ns, d)
 	return taskResult{
 		ID: runName, ContextID: contextID, Kind: kindTask,
-		Status:    taskStatus{State: stateCompleted, Timestamp: now()},
+		Status:    taskStatus{State: stateWorking, Timestamp: now()},
 		Artifacts: []artifact{{ArtifactID: runName + "-notice", Name: "notice", Parts: []textPart{{Kind: "text", Text: text}}}},
 	}
 }
@@ -402,9 +454,7 @@ func (s *Server) getWorkflow(ctx context.Context) (*ottoflowv1alpha1.Workflow, e
 	return &wf, nil
 }
 
-// createRun creates a WorkflowRun for the target Workflow. Status is left empty; the
-// WorkflowRun controller sets Phase=Pending and drives execution (see workflowrun_controller.go).
-func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.WorkflowRun, error) {
+func (s *Server) exposedWorkflow(ctx context.Context) (*ottoflowv1alpha1.Workflow, error) {
 	wf, err := s.getWorkflow(ctx)
 	if err != nil {
 		return nil, err
@@ -415,6 +465,16 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	// Mirrors the MCP tool server's re-check so opting out actually stops new runs.
 	if !wf.Spec.Expose.IsKagentEnabled() {
 		return nil, fmt.Errorf("workflow %s/%s is not exposed as an A2A agent", s.wfNS, wf.Name)
+	}
+	return wf, nil
+}
+
+// createRun creates a WorkflowRun for the target Workflow. Status is left empty; the
+// WorkflowRun controller sets Phase=Pending and drives execution (see workflowrun_controller.go).
+func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.WorkflowRun, error) {
+	wf, err := s.exposedWorkflow(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Honor the per-workflow concurrency cap. Without one, repeated A2A calls launch an unbounded
