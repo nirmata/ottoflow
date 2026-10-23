@@ -303,6 +303,7 @@ func main() {
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
 	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, ":8084")
+	callbackServer.ControllerNamespace = namespace
 	if err := mgr.Add(callbackServer); err != nil {
 		setupLog.Error(err, "unable to add callback server to manager")
 		os.Exit(1)
