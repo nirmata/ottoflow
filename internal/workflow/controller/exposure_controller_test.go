@@ -12,12 +12,14 @@ import (
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -307,6 +309,29 @@ func TestReconcileRoleBinding(t *testing.T) {
 			t.Errorf("RoleBinding changed unexpectedly: %+v", got)
 		}
 	})
+}
+
+func TestReconcileEmptyImageTearsDown(t *testing.T) {
+	w := wf("prod", "report")
+	w.Finalizers = []string{a2aExposureFinalizer}
+	agent := buildAgentObject(w, "img", "sa", false)
+	r := newExposureReconciler(t, w, agent)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(w)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	err := r.Get(context.Background(), client.ObjectKeyFromObject(agent), agent)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("Get Agent err = %v, want NotFound after teardown", err)
+	}
+	var got ottoflowv1alpha1.Workflow
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(w), &got); err != nil {
+		t.Fatalf("getting Workflow: %v", err)
+	}
+	if len(got.Finalizers) != 0 {
+		t.Errorf("finalizers = %v, want none", got.Finalizers)
+	}
 }
 
 func TestBuildAgentObjectAllowUnauthenticatedEnv(t *testing.T) {
