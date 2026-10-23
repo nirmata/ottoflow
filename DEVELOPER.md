@@ -255,8 +255,8 @@ pull requests. Its jobs:
   (CRD API reference, CLI reference) are stale or uncommitted.
 - **validate-samples** — builds the CLI, then `ottoflow validate --workflow-dir samples`.
 - **test** — `make test` (with cached envtest binaries for Kubernetes 1.29.0).
-- **images** — on pushes to `main` (not on PRs or tags), builds all four
-  container images with `ko`.
+- **images** — on pushes to `main` (not on PRs or tags), builds and pushes all four
+  container images with `ko` to `ghcr.io/nirmata/ottoflow`.
 
 ### Code Generation
 
