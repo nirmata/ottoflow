@@ -203,14 +203,16 @@ func keepDeclaredProperties(logger logr.Logger, out map[string]interface{}, sche
 	if schema == nil {
 		return
 	}
-	var s struct {
-		Properties map[string]json.RawMessage `json:"properties"`
+	var s map[string]interface{}
+	if json.Unmarshal(schema.Raw, &s) != nil {
+		return
 	}
-	if json.Unmarshal(schema.Raw, &s) != nil || s.Properties == nil {
+	props, ok := s["properties"].(map[string]interface{})
+	if !ok {
 		return
 	}
 	maps.DeleteFunc(out, func(k string, _ interface{}) bool {
-		if _, ok := s.Properties[k]; ok {
+		if _, ok := props[k]; ok {
 			return false
 		}
 		logger.V(1).Info("Dropping undeclared callback key", "key", k)

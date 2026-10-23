@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -146,6 +147,26 @@ func TestExecuteWaitForCallback_RecoveryWithOutputs(t *testing.T) {
 	// PendingCallback should be cleared
 	if wr.Status.PendingCallback != nil {
 		t.Error("expected PendingCallback to be cleared after consuming outputs")
+	}
+}
+
+func TestWaitForCallback_KeepDeclaredPropertiesExactKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		schema string
+		want   int
+	}{
+		"exact key filters":          {`{"properties":{"a":{}}}`, 1},
+		"wrong-case key not matched": {`{"Properties":{"a":{}}}`, 2},
+		"boolean sub-schema":         {`{"properties":{"a":true}}`, 1},
+		"null properties":            {`{"properties":null}`, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := map[string]interface{}{"a": 1, "b": 2}
+			keepDeclaredProperties(logr.Discard(), out, &apiextensionsv1.JSON{Raw: []byte(tc.schema)})
+			if len(out) != tc.want {
+				t.Errorf("len(out) = %d, want %d: %v", len(out), tc.want, out)
+			}
+		})
 	}
 }
 
