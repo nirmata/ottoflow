@@ -43,6 +43,9 @@ import (
 	executor "github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
+// defaultRunnerActiveDeadlineSeconds bounds a runner Job when neither the run nor its Workflow sets activeDeadlineSeconds.
+const defaultRunnerActiveDeadlineSeconds int64 = 3600
+
 // RunnerConfig holds controller configuration for the workflow runner Job (images, RBAC, secrets).
 // Values are set from process flags in cmd/controller/main.go.
 type RunnerConfig struct {
@@ -1080,7 +1083,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	var nodeSelector map[string]string
 	var tolerations []corev1.Toleration
 	var affinity *corev1.Affinity
-	var activeDeadlineSeconds *int64
+	activeDeadlineSeconds := ptr.To(defaultRunnerActiveDeadlineSeconds)
+	if workflow != nil && workflow.Spec.Execution != nil && workflow.Spec.Execution.Job != nil &&
+		workflow.Spec.Execution.Job.ActiveDeadlineSeconds != nil {
+		activeDeadlineSeconds = workflow.Spec.Execution.Job.ActiveDeadlineSeconds
+	}
 
 	if jobSpec != nil && jobSpec.Job != nil {
 		if err := jobSpec.Job.Validate(); err != nil {
@@ -1098,7 +1105,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		if jobSpec.Job.TTLSecondsAfterFinished != nil {
 			ttlSecondsAfterFinished = *jobSpec.Job.TTLSecondsAfterFinished
 		}
-		activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		if jobSpec.Job.ActiveDeadlineSeconds != nil {
+			activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		}
 		// Reserved names are refused before the author's entries are merged, so the run fails at
 		// build time — before reconcileJobExecution creates anything for it — rather than letting
 		// a duplicate silently replace a controller-owned value (see reservedRunnerEnvNames).

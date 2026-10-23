@@ -950,6 +950,54 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 	}
 }
 
+func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_ActiveDeadlineSeconds(t *testing.T) {
+	tests := []struct {
+		name  string
+		run   *int64
+		image string
+		wf    *int64
+		want  int64
+	}{
+		{"run-set", ptr.To(int64(7200)), "", nil, 7200},
+		{"workflow-set", nil, "", ptr.To(int64(5400)), 5400},
+		{"neither-set", nil, "", nil, 3600},
+		{"both-set", ptr.To(int64(7200)), "", ptr.To(int64(5400)), 7200},
+		{"run-job-no-deadline", nil, "custom", ptr.To(int64(5400)), 5400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-run", Namespace: "default"},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: "default"},
+				},
+			}
+			if tt.run != nil || tt.image != "" {
+				wr.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+					Job: &ottoflowv1alpha1.WorkflowRunJobSpec{ActiveDeadlineSeconds: tt.run, Image: tt.image},
+				}
+			}
+			wf := &ottoflowv1alpha1.Workflow{}
+			if tt.wf != nil {
+				wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+					Job: &ottoflowv1alpha1.WorkflowRunJobSpec{ActiveDeadlineSeconds: tt.wf},
+				}
+			}
+			r := &WorkflowRunReconciler{Client: fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), Scheme: unitTestScheme}
+			job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.Spec.ActiveDeadlineSeconds == nil {
+				t.Fatal("ActiveDeadlineSeconds is nil")
+			}
+			if got := *job.Spec.ActiveDeadlineSeconds; got != tt.want {
+				t.Errorf("ActiveDeadlineSeconds = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorkflowRunReconciler_Reconcile_NotFound_Ignores(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
