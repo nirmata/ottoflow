@@ -303,9 +303,11 @@ status:
 
 **Accessing callback outputs** in downstream steps:
 ```
-steps.awaitApproval.outputs.approved    # true/false
-steps.awaitApproval.outputs.reviewer    # "alice@example.com"
+variables.approved    # true/false
+variables.reviewer    # "alice@example.com"
 ```
+
+Callback fields are written flat as `variables.<key>` and overwrite any existing variable of that name. If `outputSchema` declares `properties`, only those keys are written (an empty `properties: {}` therefore drops every key); without a `properties` object (or with an `outputSchema` that is not a JSON object), every top-level key of the callback body is written. A key is also absent when the callback body omits it, or when a `Continue` timeout resumes the step with empty outputs. Declare `properties` to bound what the callback caller can set.
 
 **Constraints:**
 - Only one `waitForCallback` can be active at a time per WorkflowRun (single `pendingCallback` slot).

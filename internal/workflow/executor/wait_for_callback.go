@@ -12,8 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
 
+	"github.com/go-logr/logr"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
@@ -32,7 +35,7 @@ var ErrAwaitingCallback = errors.New("awaiting callback")
 //
 // There are three paths through this function:
 //  1. Recovery path: PendingCallback exists for this step AND outputs are populated
-//     → unmarshal outputs, clear PendingCallback via K8s patch, return outputs.
+//     → unmarshal outputs, write them to variables, clear PendingCallback via K8s patch, return outputs.
 //  2. Recovery path: PendingCallback exists for this step AND no outputs (still waiting)
 //     → return ErrAwaitingCallback so the runner exits with code 0 again.
 //  3. New path: no PendingCallback for this step
@@ -63,6 +66,10 @@ func (e *WorkflowExecutor) executeWaitForCallback(ctx context.Context, workflowR
 				return nil, fmt.Errorf("failed to parse callback outputs: %w", err)
 			}
 			logger.Info("Callback received, resuming step", "stepName", step.Name)
+			keepDeclaredProperties(logger, outputs, wfc.OutputSchema)
+			if err := e.contextManager.WriteStepOutputs(ctx, step.Name, outputs); err != nil {
+				return nil, fmt.Errorf("failed to write callback outputs: %w", err)
+			}
 
 			// Clear PendingCallback via K8s status patch so the controller knows we've consumed it.
 			// This MUST succeed before we proceed — a crash here leaves K8s showing an active
@@ -186,5 +193,27 @@ func clearPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflo
 			return err
 		}
 		return c.Status().Patch(ctx, current, client.RawPatch(types.MergePatchType, []byte(patch)))
+	})
+}
+
+// keepDeclaredProperties drops keys of out not declared in outputSchema.properties.
+// Nothing is dropped when the schema is absent, unparseable or has no properties object
+// (the callback server skips validation in the same cases).
+func keepDeclaredProperties(logger logr.Logger, out map[string]interface{}, schema *apiextensionsv1.JSON) {
+	if schema == nil {
+		return
+	}
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if json.Unmarshal(schema.Raw, &s) != nil || s.Properties == nil {
+		return
+	}
+	maps.DeleteFunc(out, func(k string, _ interface{}) bool {
+		if _, ok := s.Properties[k]; ok {
+			return false
+		}
+		logger.V(1).Info("Dropping undeclared callback key", "key", k)
+		return true
 	})
 }
