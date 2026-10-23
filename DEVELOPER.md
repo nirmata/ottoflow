@@ -6,15 +6,16 @@ This guide is for developers contributing to OttoFlow or integrating it into the
 
 ## 🏗️ Architecture
 
-### The Three Images
+### The Four Images
 
-OttoFlow ships three container images. Understanding which image does what is critical for development, debugging, and deployments.
+OttoFlow ships four container images. Understanding which image does what is critical for development, debugging, and deployments.
 
 | Image | Binary source | Kubernetes resource | Role |
 |---|---|---|---|
 | `ghcr.io/nirmata/ottoflow/controller` | `cmd/controller/` | Deployment (persistent) | Kubernetes operator: reconciles CRDs, spawns runner Jobs, manages TLS certs, serves admission webhooks |
 | `ghcr.io/nirmata/ottoflow/agent-executor` | `cmd/agent-executor/` | Deployment (persistent) | HTTPS service: executes LLM/agent steps called by runner pods via `POST /api/exec/{ns}/{agent}` |
 | `ghcr.io/nirmata/ottoflow/workflow-runner` | `cmd/workflow-runner/` | Job pod (ephemeral) | Workflow execution engine: evaluates CEL, runs all step types, calls agent-executor for LLM steps |
+| `ghcr.io/nirmata/ottoflow/serve-a2a` | `cmd/serve-a2a/` | kagent BYO Agent pod (per exposed Workflow, optional) | A2A server: exposes one Workflow as an A2A agent by creating a WorkflowRun per message and returning its progress or result |
 
 **The workflow-runner image contains all CEL evaluation logic and step execution code.** The controller and agent-executor do not evaluate CEL.
 
@@ -192,7 +193,7 @@ IMAGE_TAG=0.0.1 make ko-push-manager
 
 With `KO_DOCKER_REPO=ghcr.io/nirmata/ottoflow` and `IMAGE_TAG=0.0.1`, the image is `ghcr.io/nirmata/ottoflow/controller:0.0.1`. Set `controller.image.fullOverride` in Helm to that image, and you can use `--workflow-runner-image-pull-secrets` in `controller.args`.
 
-To build (or push) all three images — `controller`, `agent-executor`, and `workflow-runner` — at once instead of just the controller, use `make ko-build`/`make ko-push` in place of the `-manager`-suffixed targets above.
+To build (or push) all four images — `controller`, `agent-executor`, `workflow-runner`, and `serve-a2a` — at once instead of just the controller, use `make ko-build`/`make ko-push` in place of the `-manager`-suffixed targets above.
 
 ### Running Locally
 
@@ -254,7 +255,7 @@ pull requests. Its jobs:
   (CRD API reference, CLI reference) are stale or uncommitted.
 - **validate-samples** — builds the CLI, then `ottoflow validate --workflow-dir samples`.
 - **test** — `make test` (with cached envtest binaries for Kubernetes 1.29.0).
-- **images** — on pushes to `main` (not on PRs or tags), builds and pushes all three
+- **images** — on pushes to `main` (not on PRs or tags), builds and pushes all four
   container images with `ko` to `ghcr.io/nirmata/ottoflow`.
 
 ### Code Generation
