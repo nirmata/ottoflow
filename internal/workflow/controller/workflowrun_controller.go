@@ -327,6 +327,10 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 }
 
 func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
+	return resolveWorkflow(ctx, r.Client, r.ControllerNamespace, workflowRun)
+}
+
+func resolveWorkflow(ctx context.Context, c client.Client, controllerNamespace string, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
 	workflowRef := workflowRun.Spec.WorkflowRef
 	workflowNamespace := workflowRef.Namespace
 	if workflowNamespace == "" {
@@ -338,7 +342,7 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 		Name:      workflowRef.Name,
 		Namespace: workflowNamespace,
 	}
-	err := r.Get(ctx, workflowKey, workflow)
+	err := c.Get(ctx, workflowKey, workflow)
 	if err == nil {
 		return workflow, workflowNamespace, nil
 	}
@@ -347,20 +351,20 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 	// has a ControllerNamespace configured, try that namespace. Common case: an upstream
 	// caller hardcodes workflowRef.namespace=ottoflow but the install lives in a
 	// different namespace.
-	if apierrors.IsNotFound(err) && r.ControllerNamespace != "" && r.ControllerNamespace != workflowNamespace {
+	if apierrors.IsNotFound(err) && controllerNamespace != "" && controllerNamespace != workflowNamespace {
 		fallbackKey := types.NamespacedName{
 			Name:      workflowRef.Name,
-			Namespace: r.ControllerNamespace,
+			Namespace: controllerNamespace,
 		}
 		fallback := &ottoflowv1alpha1.Workflow{}
-		if fbErr := r.Get(ctx, fallbackKey, fallback); fbErr == nil {
+		if fbErr := c.Get(ctx, fallbackKey, fallback); fbErr == nil {
 			klog.Warningf("Workflow %s not found; falling back to controller namespace %q. The upstream caller should set workflowRef.namespace=%q to make this lookup explicit.",
-				workflowKey, r.ControllerNamespace, r.ControllerNamespace)
-			return fallback, r.ControllerNamespace, nil
+				workflowKey, controllerNamespace, controllerNamespace)
+			return fallback, controllerNamespace, nil
 		} else if !apierrors.IsNotFound(fbErr) {
 			// Transient fallback error (e.g. API server timeout): the caller must requeue, not
 			// terminally fail the run on what would otherwise be treated as a NotFound.
-			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, r.ControllerNamespace, fbErr)
+			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, controllerNamespace, fbErr)
 		}
 	}
 
