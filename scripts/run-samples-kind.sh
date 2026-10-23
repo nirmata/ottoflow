@@ -56,7 +56,7 @@ echo ""
 echo "--- 2. resource-query-example ---"
 kubectl run test-pod --image=nginx --labels=app=nginx --dry-run=client -o yaml | kubectl apply -n default -f -
 kubectl wait -n default --for=condition=Ready pod/test-pod --timeout=120s
-"$CLI_BIN" run resource-query-example --workflow-dir "$WORKFLOW_DIR" -o table
+"$CLI_BIN" run resource-query-example --workflow-dir "$WORKFLOW_DIR" --input podName=test-pod --input namespace=default --input appName=nginx -o table
 echo ""
 
 # 3. Prometheus-query-example (the CLI rejects it up front without --prometheus-url)
