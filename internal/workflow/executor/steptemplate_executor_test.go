@@ -332,6 +332,28 @@ var _ = Describe("StepTemplate Step Execution", func() {
 			Expect(step.Expressions[0].Expression).To(Equal("1+1"))
 		})
 
+		It("copies every ExternalAgentRef field and substitutes Prompt", func() {
+			ref := &ottoflowv1alpha1.StepExternalAgentRef{
+				URL:               "http://kagent-controller.kagent.svc:8083",
+				Protocol:          "a2a",
+				Prompt:            "{{.p}}",
+				Timeout:           "30s",
+				AllowInsecureHTTP: true,
+				Auth:              &ottoflowv1alpha1.ExternalAgentAuth{SecretRef: &ottoflowv1alpha1.SecretReference{Name: "tok", Key: "token"}},
+				CASecretRef:       &ottoflowv1alpha1.NamespacedSecretRef{Name: "ca", Namespace: "kagent"},
+			}
+			templateStep := ottoflowv1alpha1.StepTemplateStep{ExternalAgentRef: ref}
+			step, err := workflowExecutor.instantiateStepTemplate(templateStep, "s1", map[string]interface{}{"p": "hi"})
+			Expect(err).NotTo(HaveOccurred())
+
+			want := ref.DeepCopy()
+			want.Prompt = "hi"
+			Expect(step.ExternalAgentRef).To(Equal(want))
+			Expect(step.ExternalAgentRef.Auth).NotTo(BeIdenticalTo(ref.Auth))
+			Expect(step.ExternalAgentRef.Auth.SecretRef).NotTo(BeIdenticalTo(ref.Auth.SecretRef))
+			Expect(step.ExternalAgentRef.CASecretRef).NotTo(BeIdenticalTo(ref.CASecretRef))
+		})
+
 		It("substitutes Outputs with Value.Raw", func() {
 			templateStep := ottoflowv1alpha1.StepTemplateStep{
 				Outputs: []ottoflowv1alpha1.Output{
