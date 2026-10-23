@@ -14,6 +14,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 const gcRole = "ottoflow-role"
@@ -103,5 +104,33 @@ func TestLegacyRunnerBindingGC_DisabledWhenFlagEmpty(t *testing.T) {
 	left := runGC(t, "", "", gcBinding(legacy, "controller-manager", true))
 	if !left[legacy] {
 		t.Errorf("binding %q deleted with GC disabled", legacy)
+	}
+}
+
+func TestLegacyRunnerBindingGC_KeepsChartBindingWithCollidingName(t *testing.T) {
+	name := workflowRunnerRoleBindingName("ns", "controller-manager")
+	b := gcBinding(name, "controller-manager", true)
+	b.Labels["app.kubernetes.io/component"] = "rbac"
+	if left := runGC(t, gcRole, "", b); !left[name] {
+		t.Errorf("chart binding %q was deleted", name)
+	}
+}
+
+func TestLegacyRunnerBindingGC_DeleteIsPreconditioned(t *testing.T) {
+	name := workflowRunnerRoleBindingName("ns", "controller-manager")
+	b := gcBinding(name, "controller-manager", true)
+	b.UID = "uid-1"
+	var got client.DeleteOptions
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(b).WithInterceptorFuncs(interceptor.Funcs{
+		Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			got.ApplyOptions(opts)
+			return nil
+		},
+	}).Build()
+	if err := NewLegacyRunnerBindingGC(c, gcRole, "").Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got.Preconditions == nil || got.Preconditions.UID == nil || *got.Preconditions.UID != "uid-1" || got.Preconditions.ResourceVersion == nil {
+		t.Errorf("delete lacked UID/resourceVersion preconditions: %+v", got.Preconditions)
 	}
 }

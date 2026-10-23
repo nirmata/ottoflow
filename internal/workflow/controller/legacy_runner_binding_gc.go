@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -52,8 +53,11 @@ func (g *LegacyRunnerBindingGC) Start(ctx context.Context) error {
 		if !g.isLegacy(crb) {
 			continue
 		}
-		if err := client.IgnoreNotFound(g.client.Delete(ctx, crb)); err != nil {
-			logger.Error(err, "deleting legacy runner ClusterRoleBinding", "name", crb.Name)
+		pre := client.Preconditions{UID: &crb.UID, ResourceVersion: &crb.ResourceVersion}
+		if err := g.client.Delete(ctx, crb, pre); err != nil {
+			if !apierrors.IsNotFound(err) {
+				logger.Error(err, "deleting legacy runner ClusterRoleBinding", "name", crb.Name)
+			}
 			continue
 		}
 		logger.Info("deleted legacy runner ClusterRoleBinding", "name", crb.Name, "subject", crb.Subjects[0].Name)
@@ -62,7 +66,7 @@ func (g *LegacyRunnerBindingGC) Start(ctx context.Context) error {
 }
 
 func (g *LegacyRunnerBindingGC) isLegacy(crb *rbacv1.ClusterRoleBinding) bool {
-	if len(crb.Subjects) != 1 || crb.RoleRef.Name != g.legacyRole {
+	if crb.Labels["app.kubernetes.io/component"] == "rbac" || len(crb.Subjects) != 1 || crb.RoleRef.Name != g.legacyRole {
 		return false
 	}
 	s := crb.Subjects[0]
