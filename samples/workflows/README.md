@@ -617,7 +617,7 @@ expressions:
 ### 31. Prometheus Query Step Examples (`prometheus-query-example.yaml`, `prometheus-query-simple.yaml`)
 Demonstrates the **prometheusQuery** step type (first-class PromQL queries with template variables).
 
-**prometheus-query-example:** Combines `resourceQuery` (list pods) with `prometheusQuery` (CPU usage). Step 1 runs on any cluster; step 2 requires a Prometheus URL.
+**prometheus-query-example:** Combines `resourceQuery` (list pods) with `prometheusQuery` (CPU usage). Via the CLI (`--workflow-dir` / `-f`) the workflow is rejected up front unless `--prometheus-url` is set.
 
 **prometheus-query-simple:** Single-step workflow that queries the `up` metric.
 
@@ -630,7 +630,7 @@ Demonstrates the **prometheusQuery** step type (first-class PromQL queries with 
 
 **Usage (run on kind):**
 ```bash
-# From repo root; prometheusQuery steps will fail without PROMETHEUS_URL
+# From repo root; the prometheusQuery samples are skipped without PROMETHEUS_URL
 ./scripts/run-samples-kind.sh
 PROMETHEUS_URL=http://localhost:9090 ./scripts/run-samples-kind.sh   # if Prometheus is port-forwarded
 ```
