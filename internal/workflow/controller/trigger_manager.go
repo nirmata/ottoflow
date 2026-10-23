@@ -641,12 +641,12 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	tm.dedupMu.Unlock()
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
-	if workflow.Spec.Run != nil && workflow.Spec.Run.MaxConcurrentRuns != nil && *workflow.Spec.Run.MaxConcurrentRuns > 0 {
+	if limit := effectiveMaxConcurrentRuns(workflow); limit > 0 {
 		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
 		if err != nil {
 			return fmt.Errorf("count active WorkflowRuns: %w", err)
 		}
-		if active >= int(*workflow.Spec.Run.MaxConcurrentRuns) {
+		if active >= int(limit) {
 			return nil // Skip creating; event is dropped
 		}
 	}
@@ -854,12 +854,12 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 	}
 
 	// Gate 4: MaxConcurrentRuns.
-	if workflow.Spec.Run != nil && workflow.Spec.Run.MaxConcurrentRuns != nil && *workflow.Spec.Run.MaxConcurrentRuns > 0 {
+	if limit := effectiveMaxConcurrentRuns(workflow); limit > 0 {
 		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
 		if err != nil {
 			return nil, 0, fmt.Errorf("count active WorkflowRuns: %w", err)
 		}
-		if active >= int(*workflow.Spec.Run.MaxConcurrentRuns) {
+		if active >= int(limit) {
 			return nil, WebhookConcurrencyLimited, nil
 		}
 	}
