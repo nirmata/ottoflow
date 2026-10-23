@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/go-cmp/cmp"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -1615,6 +1616,7 @@ func TestTriggerManager_CreateWorkflowRunFromEvent_SuccessCreatesRun(t *testing.
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
 		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}},
 	}
+	wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{Job: &ottoflowv1alpha1.WorkflowRunJobSpec{Env: []corev1.EnvVar{{Name: "LLM_TOKEN", Value: "test-value"}}}}
 	// Use Unstructured so CEL inputMapping can traverse the object fields.
 	obj := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "v1",
@@ -1648,6 +1650,9 @@ func TestTriggerManager_CreateWorkflowRunFromEvent_SuccessCreatesRun(t *testing.
 	// CEL evaluated object.metadata.name → "p1"
 	if run.Spec.InputValues["podName"] != "p1" {
 		t.Errorf("InputValues[podName] = %q, want %q", run.Spec.InputValues["podName"], "p1")
+	}
+	if diff := cmp.Diff(wf.Spec.Execution, run.Spec.Execution); diff != "" {
+		t.Errorf("run execution (-want +got):\n%s", diff)
 	}
 	if run.Status.Trigger == nil || run.Status.Trigger.Type != "Event" {
 		t.Errorf("Trigger = %v", run.Status.Trigger)
