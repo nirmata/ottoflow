@@ -269,5 +269,8 @@ func TestControllerArgsLegacyRunnerClusterRole(t *testing.T) {
 		if !strings.Contains(output, "- "+tc.want+"\n") {
 			t.Errorf("rendered chart (values %q) has no controller arg %q", tc.values, tc.want)
 		}
+		if !strings.Contains(output, "- --legacy-runner-service-account=controller-manager\n") {
+			t.Errorf("rendered chart (values %q) has no --legacy-runner-service-account arg", tc.values)
+		}
 	}
 }

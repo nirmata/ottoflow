@@ -77,7 +77,7 @@ func main() {
 	var workflowRunnerImage string
 	var workflowRunnerServiceAccount string
 	var workflowRunnerClusterRole string
-	var legacyRunnerClusterRole string
+	var legacyRunnerClusterRole, legacyRunnerServiceAccount string
 	var agentExecutorCallerClusterRole string
 	var workflowRunnerAgentExecutorCASecret string
 	var secretSourceNamespace string
@@ -125,6 +125,9 @@ func main() {
 	flag.StringVar(&legacyRunnerClusterRole, "legacy-runner-cluster-role", os.Getenv("LEGACY_RUNNER_CLUSTER_ROLE"),
 		"This release's controller ClusterRole (<release>-role). At startup the leader deletes runner "+
 			"ClusterRoleBindings bound to it that predate the per-workflow runner ServiceAccount; empty disables (optional).")
+	flag.StringVar(&legacyRunnerServiceAccount, "legacy-runner-service-account",
+		os.Getenv("LEGACY_RUNNER_SERVICE_ACCOUNT"),
+		"This release's controller ServiceAccount; only its legacy runner bindings are deleted; empty disables (optional).")
 	flag.StringVar(&agentExecutorCallerClusterRole, "agent-executor-caller-cluster-role",
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
@@ -358,7 +361,7 @@ func main() {
 	}
 
 	if err := mgr.Add(workflowcontroller.NewLegacyRunnerBindingGC(
-		mgr.GetClient(), legacyRunnerClusterRole, workflowRunnerServiceAccount)); err != nil {
+		mgr.GetClient(), legacyRunnerClusterRole, legacyRunnerServiceAccount, workflowRunnerServiceAccount)); err != nil {
 		setupLog.Error(err, "unable to add legacy runner binding GC to manager")
 		os.Exit(1)
 	}

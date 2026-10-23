@@ -31,7 +31,7 @@ func gcBinding(name, saName string, labelled bool) *rbacv1.ClusterRoleBinding {
 func runGC(t *testing.T, flagRole, runnerSA string, objs ...client.Object) map[string]bool {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(objs...).Build()
-	if err := NewLegacyRunnerBindingGC(c, flagRole, runnerSA).Start(context.Background()); err != nil {
+	if err := NewLegacyRunnerBindingGC(c, flagRole, "controller-manager", runnerSA).Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var list rbacv1.ClusterRoleBindingList
@@ -99,6 +99,14 @@ func TestLegacyRunnerBindingGC_KeepsEscapeHatchBinding(t *testing.T) {
 	}
 }
 
+func TestLegacyRunnerBindingGC_KeepsOtherReleaseRunnerOnSharedRole(t *testing.T) {
+	live := workflowRunnerRoleBindingName("ns", "other-sa")
+	left := runGC(t, gcRole, "", gcBinding(live, "other-sa", true))
+	if !left[live] {
+		t.Errorf("other release's live runner binding %q on the shared role was deleted", live)
+	}
+}
+
 func TestLegacyRunnerBindingGC_DisabledWhenFlagEmpty(t *testing.T) {
 	legacy := workflowRunnerRoleBindingName("ns", "controller-manager")
 	left := runGC(t, "", "", gcBinding(legacy, "controller-manager", true))
@@ -127,7 +135,7 @@ func TestLegacyRunnerBindingGC_DeleteIsPreconditioned(t *testing.T) {
 			return nil
 		},
 	}).Build()
-	if err := NewLegacyRunnerBindingGC(c, gcRole, "").Start(context.Background()); err != nil {
+	if err := NewLegacyRunnerBindingGC(c, gcRole, "controller-manager", "").Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got.Preconditions == nil || got.Preconditions.UID == nil || *got.Preconditions.UID != "uid-1" || got.Preconditions.ResourceVersion == nil {

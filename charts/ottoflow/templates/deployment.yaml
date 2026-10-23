@@ -68,6 +68,7 @@ spec:
         - --workflow-runner-service-account={{ .Values.workflowRunner.serviceAccountName }}
         - --workflow-runner-cluster-role={{ include "ottoflow.workflowRunnerClusterRole" . }}
         - --legacy-runner-cluster-role={{ include "ottoflow.fullname" . }}-role
+        - --legacy-runner-service-account={{ if .Values.controller.serviceAccount.name }}{{ .Values.controller.serviceAccount.name }}{{ else }}controller-manager{{ end }}
         {{- if .Values.workflowRunner.podLabelsPartOf }}
         - --workflow-runner-pod-labels-part-of={{ .Values.workflowRunner.podLabelsPartOf }}
         {{- end }}
