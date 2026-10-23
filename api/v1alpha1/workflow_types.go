@@ -158,8 +158,7 @@ type RunPolicy struct {
 
 	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.
 	// When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active
-	// runs >= MaxConcurrentRuns; for those, zero or nil means no limit.
-	// serve-a2a (A2A calls) differs: nil means 10, an explicit 0 means no limit, and N means N.
+	// runs >= MaxConcurrentRuns. Nil means 10, an explicit 0 means no limit, and N means N.
 	// +optional
 	MaxConcurrentRuns *int32 `json:"maxConcurrentRuns,omitempty"`
 }
