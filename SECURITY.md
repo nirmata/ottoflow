@@ -30,8 +30,8 @@ Release archives publish a `checksums.txt`; verify a download before running it:
 sha256sum --ignore-missing -c checksums.txt
 ```
 
-Every change is scanned by [CodeQL](.github/workflows/codeql.yml) and kept current
-by [Dependabot](.github/dependabot.yml).
+Every change to Go code is scanned by [CodeQL](.github/workflows/codeql.yml), and
+dependencies are kept current by [Dependabot](.github/dependabot.yml).
 
 <!-- TODO: cosign signatures, SBOMs, and SLSA provenance are not yet produced by the
      release pipeline. Add them to the supply-chain story here once the release

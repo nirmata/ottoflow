@@ -47,7 +47,7 @@ want free-form agents, use one of those instead.
 - ✅ **Kubernetes and CNCF integrations** — query API resources, PromQL, Kagent using A2A, otel, and more.
 - ✅ **Compiled CEL expressions** — sandboxed execution with full K8s and [Kyverno CEL](https://github.com/kyverno/sdk) library support
 - ✅ **Multiple step types** — ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
-- ✅ **Context optimization** — agent steps receive agregated computed summaries, never raw data dumps.
+- ✅ **Context optimization** — agent steps receive aggregated computed summaries, never raw data dumps.
 - ✅ **Retry & conditional execution** — retry policies and `matchConditions` gating per step.
 - ✅ **CLI with local mode** — execute workflows locally against your kubecontext.
 - ✅ **Extensive samples** — ready-to-run workflows under [`samples/`](samples/).
