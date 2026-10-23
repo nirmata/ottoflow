@@ -1158,6 +1158,7 @@ spec:
         # against the aggregate totals (totalCPURequests/totalMemoryRequests), which are
         # computed directly from pod specs and don't depend on the metrics join, to tell
         # the two cases apart.
+        # The totals' phase filter is fail-open (TestCostAnalyzer_RequestTotals_PhaseFilterFailOpen).
         - name: metricsSourceResolved
           expression: >-
             variables.metricsSource == "no-requests" &&

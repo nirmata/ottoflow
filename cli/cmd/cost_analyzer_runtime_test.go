@@ -598,3 +598,95 @@ func TestCostAnalyzer_ComputeWorkloadRemediations_CostBudget(t *testing.T) {
 		t.Fatalf("expected %d distinct workloads, got %d", numWorkloads, len(remediations))
 	}
 }
+
+// requestPod builds a pod with one container requesting cpu and memory; a nil status omits it.
+func requestPod(name string, status map[string]interface{}, cpu, mem string) map[string]interface{} {
+	p := map[string]interface{}{
+		"metadata": map[string]interface{}{"name": name, "namespace": "default"},
+		"spec": map[string]interface{}{"containers": []interface{}{
+			map[string]interface{}{"name": "c", "resources": map[string]interface{}{
+				"requests": map[string]interface{}{"cpu": cpu, "memory": mem},
+			}},
+		}},
+	}
+	if status != nil {
+		p["status"] = status
+	}
+	return p
+}
+
+// TestCostAnalyzer_RequestTotals_PhaseFilterFailOpen pins that the request totals only drop pods
+// explicitly in Succeeded/Failed, and that the requests guardrail treats any non-zero total as
+// "filtered-most-pods". A tightened phase predicate fails the exact-sum asserts.
+func TestCostAnalyzer_RequestTotals_PhaseFilterFailOpen(t *testing.T) {
+	wf, err := loadWorkflowFromFile("../../samples/workflows/production/cost-analyzer.yaml")
+	if err != nil {
+		t.Fatalf("load cost-analyzer.yaml: %v", err)
+	}
+	eval := newTestCELEvaluator(t, nil)
+	phase := func(p string) map[string]interface{} { return map[string]interface{}{"phase": p} }
+
+	pods := []interface{}{
+		requestPod("no-status", nil, "500m", "1Mi"),
+		requestPod("no-phase", map[string]interface{}{}, "100m", "2Mi"),
+		requestPod("unknown", phase("Unknown"), "250m", "4Mi"),
+		requestPod("running", phase("Running"), "1", "8Mi"),
+		requestPod("pending", phase("Pending"), "2", "16Mi"),
+		requestPod("succeeded", phase("Succeeded"), "4", "32Mi"),
+		requestPod("failed", phase("Failed"), "8", "64Mi"),
+	}
+	step := findStep(t, wf, "analyzeClusterUtilization")
+	vars := buildVars(map[string]interface{}{}, map[string]interface{}{"pods": pods, "nodes": []interface{}{}})
+	results, err := eval.EvaluateStepExpressions(context.Background(), step, vars)
+	if err != nil {
+		t.Fatalf("EvaluateStepExpressions(analyzeClusterUtilization): %v", err)
+	}
+	outputs, err := eval.EvaluateStepOutputs(context.Background(), step, vars)
+	if err != nil {
+		t.Fatalf("EvaluateStepOutputs(analyzeClusterUtilization): %v", err)
+	}
+	outCPU, _ := outputs["totalCPURequestsCores"].(float64)
+	outGB, _ := outputs["totalMemoryRequestsGB"].(float64)
+	cpu, _ := results["totalCPURequests"].(float64)
+	mem, _ := results["totalMemoryRequests"].(float64)
+	if !approxEqual(cpu, 3.85, 1e-9) {
+		t.Errorf("totalCPURequests = %v, want 3.85 (all but Succeeded/Failed)", cpu)
+	}
+	if !approxEqual(mem, 31*1048576, 1) {
+		t.Errorf("totalMemoryRequests = %v, want %d (all but Succeeded/Failed)", mem, 31*1048576)
+	}
+
+	var guard string
+	for _, e := range findStep(t, wf, "computeSavings").Expressions {
+		if e.Name == "metricsSourceResolved" {
+			guard = e.Expression
+		}
+	}
+	if guard == "" {
+		t.Fatal("metricsSourceResolved expression not found in computeSavings")
+	}
+	for _, tc := range []struct {
+		name   string
+		cpu, g float64
+		want   string
+	}{
+		{"cpu and memory (step outputs)", outCPU, outGB, "filtered-most-pods"},
+		{"memory only", 0, 1, "filtered-most-pods"},
+		{"cpu only", 1, 0, "filtered-most-pods"},
+		{"no requests", 0, 0, "no-requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := eval.EvaluateExpression(context.Background(), guard, buildVars(
+				map[string]interface{}{},
+				map[string]interface{}{
+					"metricsSource": "no-requests", "totalCPURequestsCores": tc.cpu, "totalMemoryRequestsGB": tc.g,
+				}))
+			if err != nil {
+				t.Fatalf("EvaluateExpression(metricsSourceResolved): %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("metricsSourceResolved = %v, want %s", got, tc.want)
+			}
+		})
+	}
+}
