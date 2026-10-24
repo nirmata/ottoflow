@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package chart
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,7 +22,7 @@ func TestMCPAddrDiffersFromCallbackAddr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`NewCallbackServer\(.*"(:\d+)"\)`).FindStringSubmatch(string(src))
+	m := regexp.MustCompile(`NewCallbackServer\(.*"([^"]*:\d+)"\)`).FindStringSubmatch(string(src))
 	if m == nil {
 		t.Fatal("callback server address literal not found in cmd/controller/main.go")
 	}
@@ -30,7 +31,15 @@ func TestMCPAddrDiffersFromCallbackAddr(t *testing.T) {
 	if mcp == nil {
 		t.Fatal("--mcp-addr not rendered with controller.mcp.enabled=true")
 	}
-	if mcp[1] == m[1] {
-		t.Errorf("default --mcp-addr %s equals the callback server address", mcp[1])
+	_, mcpPort, err := net.SplitHostPort(mcp[1])
+	if err != nil {
+		t.Fatalf("--mcp-addr %q: %v", mcp[1], err)
+	}
+	_, callbackPort, err := net.SplitHostPort(m[1])
+	if err != nil {
+		t.Fatalf("callback address %q: %v", m[1], err)
+	}
+	if mcpPort == callbackPort {
+		t.Errorf("default --mcp-addr %s shares a port with the callback server address %s", mcp[1], m[1])
 	}
 }
