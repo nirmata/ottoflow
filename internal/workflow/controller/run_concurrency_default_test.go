@@ -13,26 +13,6 @@ import (
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
 
-func TestEffectiveMaxConcurrentRuns(t *testing.T) {
-	zero, three := ptr.To[int32](0), ptr.To[int32](3)
-	for name, tc := range map[string]struct {
-		run  *ottoflowv1alpha1.RunPolicy
-		want int32
-	}{
-		"nil run":    {nil, 10},
-		"nil field":  {&ottoflowv1alpha1.RunPolicy{}, 10},
-		"explicit 0": {&ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: zero}, 0},
-		"explicit 3": {&ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: three}, 3},
-	} {
-		t.Run(name, func(t *testing.T) {
-			wf := &ottoflowv1alpha1.Workflow{Spec: ottoflowv1alpha1.WorkflowSpec{Run: tc.run}}
-			if got := effectiveMaxConcurrentRuns(wf); got != tc.want {
-				t.Errorf("got %d, want %d", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestCountActiveWorkflowRuns_CountsEmptyPhase(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"}}

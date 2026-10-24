@@ -166,6 +166,15 @@ type RunPolicy struct {
 // DefaultMaxConcurrentRuns applies when MaxConcurrentRuns is nil.
 const DefaultMaxConcurrentRuns int32 = 10
 
+// EffectiveMaxConcurrentRuns returns MaxConcurrentRuns, or DefaultMaxConcurrentRuns when the
+// policy or field is nil. Zero or less means no limit.
+func (r *RunPolicy) EffectiveMaxConcurrentRuns() int32 {
+	if r == nil || r.MaxConcurrentRuns == nil {
+		return DefaultMaxConcurrentRuns
+	}
+	return *r.MaxConcurrentRuns
+}
+
 // EventConfig configures event emission for workflow runs.
 type EventConfig struct {
 	// Enabled turns Kubernetes event emission on or off. When nil or true, events are emitted per Level.

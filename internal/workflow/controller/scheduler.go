@@ -166,7 +166,7 @@ func (s *Scheduler) handleCronFire(key string) {
 	}
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
-	if limit := effectiveMaxConcurrentRuns(workflow); limit > 0 {
+	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		active, err := countActiveWorkflowRuns(ctx, s.client, workflow)
 		if err != nil {
 			logger.Error(err, "Failed to count active WorkflowRuns")
@@ -184,14 +184,6 @@ func (s *Scheduler) handleCronFire(key string) {
 		return
 	}
 	logger.Info("Created WorkflowRun from cron trigger")
-}
-
-// effectiveMaxConcurrentRuns returns spec.run.maxConcurrentRuns, or the default when unset. Zero or less means no limit.
-func effectiveMaxConcurrentRuns(workflow *ottoflowv1alpha1.Workflow) int32 {
-	if workflow.Spec.Run == nil || workflow.Spec.Run.MaxConcurrentRuns == nil {
-		return ottoflowv1alpha1.DefaultMaxConcurrentRuns
-	}
-	return *workflow.Spec.Run.MaxConcurrentRuns
 }
 
 // countActiveWorkflowRuns returns the number of WorkflowRuns (not yet picked up, Pending or Running) for the workflow.

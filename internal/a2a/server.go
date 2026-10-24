@@ -416,11 +416,7 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	// Honor the per-workflow concurrency cap. Without one, repeated A2A calls launch an unbounded
 	// number of runner Jobs, so an unset cap defaults to DefaultMaxConcurrentRuns; an explicit 0
 	// opts out (unlimited).
-	limit := ottoflowv1alpha1.DefaultMaxConcurrentRuns
-	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil {
-		limit = *rp.MaxConcurrentRuns
-	}
-	if limit > 0 {
+	if limit := wf.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		s.admitMu.Lock()
 		defer s.admitMu.Unlock()
 		active, err := s.countActiveRuns(ctx, wf.Name)
