@@ -67,6 +67,9 @@ spec:
         - --workflow-runner-image={{ include "ottoflow.workflowRunnerImage" . }}
         - --workflow-runner-service-account={{ .Values.workflowRunner.serviceAccountName }}
         - --workflow-runner-cluster-role={{ include "ottoflow.workflowRunnerClusterRole" . }}
+        {{- if .Values.rbac.create }}
+        - --runner-configmap-writer-cluster-role={{ include "ottoflow.fullname" . }}-runner-configmap-writer
+        {{- end }}
         {{- if .Values.workflowRunner.podLabelsPartOf }}
         - --workflow-runner-pod-labels-part-of={{ .Values.workflowRunner.podLabelsPartOf }}
         {{- end }}
