@@ -13,7 +13,7 @@ Authorization is **RBAC-based**: the executor allows any identity that has a spe
 Every request to the agent executor (except health checks) must include a **Bearer token** (the caller’s ServiceAccount token). The executor then:
 
 1. **Validates the token** using the Kubernetes **TokenReview** API. This proves the token is valid and returns the identity (e.g. `system:serviceaccount:namespace:name`).
-2. **Checks authorization** using **SubjectAccessReview**: “Can this identity `invoke` `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in namespace N?” (N is configurable, typically the release namespace.) Only identities that have been granted this permission through a ClusterRole bound with a ClusterRoleBinding or a RoleBinding (the check is namespaced, so either passes) are allowed.
+2. **Checks authorization** using **SubjectAccessReview**: “Can this identity `invoke` `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in namespace N?” (N is configurable, typically the release namespace.) Only identities that have been granted this permission through a ClusterRole or Role bound with a ClusterRoleBinding or a RoleBinding (the check is namespaced, so either passes) are allowed.
 
 So: **authentication** is “who are you?” (TokenReview), and **authorization** is “are you allowed to call the agent executor?” (SAR).
 
@@ -61,7 +61,7 @@ The executor’s “caller namespace” (used in the SAR check) should match whe
 
 ### 5. Audit Who Has the Caller Role
 
-Periodically list ClusterRoleBindings and RoleBindings (in the checked namespace) that reference the agent-executor-caller ClusterRole. Only the controller and runner SAs should be bound. Remove any bindings that are no longer needed (e.g. after decommissioning a namespace).
+Periodically list ClusterRoleBindings and RoleBindings (in the checked namespace) that reference the agent-executor-caller ClusterRole, and any Role or ClusterRole granting `invoke` on `callers.gate.ottoflow.nirmata.io`. Only the controller and runner SAs should be bound; identities with wildcard permissions (such as `cluster-admin`) also pass. Remove any bindings that are no longer needed (e.g. after decommissioning a namespace).
 
 ### 6. Multi-Tenant or Multi-Namespace Setups
 

@@ -49,7 +49,7 @@ const serviceAccountContextKey contextKey = "serviceAccount"
 // TokenReviewAndSARAuthenticator authenticates by validating the bearer token (TokenReview)
 // and then checking that the identity has a specific RBAC permission (SubjectAccessReview).
 // This allows operators to manage "who can call the agent executor" via Kubernetes RBAC
-// (ClusterRole + ClusterRoleBindings) instead of an explicit allowlist in the binary.
+// (a ClusterRole or Role, bound in the checked namespace) instead of an explicit allowlist in the binary.
 type TokenReviewAndSARAuthenticator struct {
 	k8sClient      kubernetes.Interface
 	checkNamespace string
@@ -136,7 +136,8 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 		return "", fmt.Errorf("permission check failed: %w", err)
 	}
 	if !sarResult.Status.Allowed {
-		klog.Warningf("ServiceAccount %s not allowed to call agent executor (SAR denied)", saName)
+		klog.Warningf("ServiceAccount %s denied: no %s on %s.%s/%s in namespace %s (SAR denied)",
+			saName, CallerVerb, CallerResource, CallerAPIGroup, a.checkResource, a.checkNamespace)
 		return "", fmt.Errorf("service account %s not allowed", saName)
 	}
 

@@ -10,10 +10,12 @@ package chart
 import (
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"testing"
 
+	rbacv1 "k8s.io/api/rbac/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
 	"github.com/nirmata/ottoflow/internal/auth"
@@ -47,7 +49,14 @@ func TestNoCRDServesCallerAPIGroup(t *testing.T) {
 	}
 }
 
-func TestNoRenderedClusterRoleGrantsAllGroupsAllResources(t *testing.T) {
+var callerRoles = map[string]bool{
+	"ottoflow-agent-executor-caller": true,
+	"ottoflow-mcp-caller":            true,
+	"ottoflow-a2a-caller":            true,
+}
+
+// Only the caller roles may grant the gate permission, wildcards included.
+func TestOnlyCallerRolesGrantCallerPermission(t *testing.T) {
 	renders := map[string][]string{
 		"default": nil,
 		"enabled": {
@@ -56,20 +65,45 @@ func TestNoRenderedClusterRoleGrantsAllGroupsAllResources(t *testing.T) {
 			"--set", "serveA2A.enabled=true",
 		},
 	}
+	verb := []string{auth.CallerVerb}
 	for name, args := range renders {
 		t.Run(name, func(t *testing.T) {
-			roles := renderedClusterRoles(t, renderDocs(t, args...))
-			if name == "enabled" {
-				if _, ok := roles["ottoflow-a2a-caller"]; !ok {
-					t.Fatal("enabled values did not render ottoflow-a2a-caller; the --set paths are stale")
+			rules := map[string][]rbacv1.PolicyRule{}
+			aggregated := map[string]bool{}
+			for _, d := range renderDocs(t, args...) {
+				var o struct {
+					Kind     string              `json:"kind"`
+					Metadata metav1.ObjectMeta   `json:"metadata"`
+					Rules    []rbacv1.PolicyRule `json:"rules"`
+				}
+				if err := yaml.Unmarshal([]byte(d), &o); err != nil {
+					t.Fatal(err)
+				}
+				if o.Kind == "ClusterRole" || o.Kind == "Role" {
+					key := o.Kind + "/" + o.Metadata.Name
+					rules[key] = append(rules[key], o.Rules...)
+					for l := range o.Metadata.Labels {
+						aggregated[key] = aggregated[key] || strings.Contains(l, "aggregate-to")
+					}
 				}
 			}
-			for _, role := range roles {
-				for _, rule := range role.Rules {
-					if slices.Contains(rule.APIGroups, "*") && slices.Contains(rule.Resources, "*") {
-						t.Errorf("ClusterRole %s grants apiGroups * with resources * (shipped roles must not): %+v",
-							role.Name, rule)
+			if name == "enabled" {
+				for role := range callerRoles {
+					if _, ok := rules["ClusterRole/"+role]; !ok {
+						t.Fatalf("enabled values did not render %s; the --set paths are stale", role)
 					}
+				}
+			}
+			for role, rs := range rules {
+				granted := false
+				for _, r := range rs {
+					granted = granted || len(grantedVerbs(r, auth.CallerAPIGroup, auth.CallerResource, verb)) > 0
+				}
+				if granted != callerRoles[strings.TrimPrefix(role, "ClusterRole/")] {
+					t.Errorf("%s grants the caller permission = %v, want the opposite", role, granted)
+				}
+				if granted && aggregated[role] {
+					t.Errorf("%s grants the caller permission and aggregates into other roles", role)
 				}
 			}
 		})
