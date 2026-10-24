@@ -253,3 +253,24 @@ func TestRunnerRoleAggregationIsPerRelease(t *testing.T) {
 			values["rel-a"])
 	}
 }
+
+// TestControllerArgsLegacyRunnerClusterRole verifies the controller Deployment passes its own
+// ClusterRole name (<fullname>-role) as --legacy-runner-cluster-role, including under fullnameOverride.
+func TestControllerArgsLegacyRunnerClusterRole(t *testing.T) {
+	overrideValues := writeSecretAccessValues(t, "controller:\n  fullnameOverride: x\n")
+	for _, tc := range []struct{ values, want string }{
+		{"", "--legacy-runner-cluster-role=ottoflow-role"},
+		{overrideValues, "--legacy-runner-cluster-role=x-role"},
+	} {
+		output, err := helmTemplate(t, "ottoflow", tc.values)
+		if err != nil {
+			t.Fatalf("helm template failed: %v", err)
+		}
+		if !strings.Contains(output, "- "+tc.want+"\n") {
+			t.Errorf("rendered chart (values %q) has no controller arg %q", tc.values, tc.want)
+		}
+		if !strings.Contains(output, "- --legacy-runner-service-account=controller-manager\n") {
+			t.Errorf("rendered chart (values %q) has no --legacy-runner-service-account arg", tc.values)
+		}
+	}
+}
