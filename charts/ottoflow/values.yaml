@@ -145,7 +145,7 @@ controller:
     # means no listener and no endpoint.
     enabled: false
     # addr is the listen address for the MCP server. The endpoint is /mcp.
-    addr: ":8084"
+    addr: ":8090"
     service:
       enabled: true
       type: ClusterIP
