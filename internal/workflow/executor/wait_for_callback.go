@@ -196,6 +196,12 @@ func clearPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflo
 	})
 }
 
+// SchemaProperties returns the "properties" object of a parsed JSON schema.
+func SchemaProperties(s map[string]interface{}) (map[string]interface{}, bool) {
+	props, ok := s["properties"].(map[string]interface{})
+	return props, ok
+}
+
 // keepDeclaredProperties drops keys of out not declared in outputSchema.properties.
 // Nothing is dropped when the schema is absent, unparseable or has no properties object
 // (the callback server skips validation in the same cases).
@@ -207,7 +213,7 @@ func keepDeclaredProperties(logger logr.Logger, out map[string]interface{}, sche
 	if json.Unmarshal(schema.Raw, &s) != nil {
 		return
 	}
-	props, ok := s["properties"].(map[string]interface{})
+	props, ok := SchemaProperties(s)
 	if !ok {
 		return
 	}

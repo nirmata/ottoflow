@@ -159,6 +159,7 @@ func TestWaitForCallback_KeepDeclaredPropertiesExactKey(t *testing.T) {
 		"wrong-case key not matched": {`{"Properties":{"a":{}}}`, 2},
 		"boolean sub-schema":         {`{"properties":{"a":true}}`, 1},
 		"null properties":            {`{"properties":null}`, 2},
+		"non-object properties":      {`{"properties":"x"}`, 2},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := map[string]interface{}{"a": 1, "b": 2}
