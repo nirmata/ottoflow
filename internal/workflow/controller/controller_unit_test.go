@@ -803,6 +803,39 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_UpdateExisting(t
 	}
 }
 
+func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_RoleRefChangeRecreates(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
+	existing := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "old-role"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "other", Namespace: ns}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(existing).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.UpdateOption) error {
+			if crb, ok := o.(*rbacv1.ClusterRoleBinding); ok {
+				old := &rbacv1.ClusterRoleBinding{}
+				if err := c.Get(ctx, types.NamespacedName{Name: crb.Name}, old); err == nil && old.RoleRef != crb.RoleRef {
+					return apierrors.NewInvalid(schema.GroupKind{Group: rbacv1.GroupName, Kind: "ClusterRoleBinding"}, crb.Name, nil)
+				}
+			}
+			return c.Update(ctx, o, opts...)
+		},
+	}).Build()
+	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); err != nil {
+		t.Fatal(err)
+	}
+	got := &rbacv1.ClusterRoleBinding{}
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RoleRef.Name != "agent-caller" || len(got.Subjects) != 1 || got.Subjects[0].Name != "my-sa" {
+		t.Errorf("binding = roleRef %+v subjects %+v", got.RoleRef, got.Subjects)
+	}
+}
+
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace

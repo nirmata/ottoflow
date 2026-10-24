@@ -10,6 +10,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -336,5 +338,172 @@ func TestEnsureRunnerConfigMapWriter_SteadyStateSkipsSARead(t *testing.T) {
 	}).Build()
 	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// failOn fails one verb on objects accepted by match(obj, name); every other call passes through.
+func failOn(verb string, match func(client.Object, string) bool, err error) interceptor.Funcs {
+	var f interceptor.Funcs
+	switch verb {
+	case "get":
+		f.Get = func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+			if match(o, k.Name) {
+				return err
+			}
+			return c.Get(ctx, k, o, opts...)
+		}
+	case "create":
+		f.Create = func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.CreateOption) error {
+			if match(o, o.GetName()) {
+				return err
+			}
+			return c.Create(ctx, o, opts...)
+		}
+	case "update":
+		f.Update = func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.UpdateOption) error {
+			if match(o, o.GetName()) {
+				return err
+			}
+			return c.Update(ctx, o, opts...)
+		}
+	case "delete":
+		f.Delete = func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.DeleteOption) error {
+			if match(o, o.GetName()) {
+				return err
+			}
+			return c.Delete(ctx, o, opts...)
+		}
+	}
+	return f
+}
+
+func isCRB(name string) func(client.Object, string) bool {
+	return func(o client.Object, n string) bool { _, ok := o.(*rbacv1.ClusterRoleBinding); return ok && n == name }
+}
+
+func isSA(o client.Object, _ string) bool { _, ok := o.(*corev1.ServiceAccount); return ok }
+
+func callerBinding(role string, subjects []rbacv1.Subject, name string) *rbacv1.ClusterRoleBinding {
+	b := buildRunnerClusterRoleBinding(name, role, cmWriterSA, cmWriterNS)
+	if subjects != nil {
+		b.Subjects = subjects
+	}
+	return b
+}
+
+// Every API call in ensureRunnerAccess keeps Forbidden/Invalid terminal and requeues other failures.
+func TestEnsureRunnerAccess_CallSiteClassification(t *testing.T) {
+	gr := schema.GroupResource{Resource: "clusterrolebindings"}
+	mainName := workflowRunnerRoleBindingName(cmWriterNS, cmWriterSA)
+	callerName := agentExecutorCallerRoleBindingName(cmWriterNS, cmWriterSA)
+	other := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "other", Namespace: cmWriterNS}}
+	exists := apierrors.NewAlreadyExists(gr, mainName)
+	sa := cmWriterSAObj()
+	type site struct {
+		objs       []client.Object
+		callerRole string
+		fail       func(error) interceptor.Funcs
+	}
+	on := func(verb string, m func(client.Object, string) bool) func(error) interceptor.Funcs {
+		return func(e error) interceptor.Funcs { return failOn(verb, m, e) }
+	}
+	sites := map[string]site{
+		"sa get":                 {nil, "", on("get", isSA)},
+		"sa create":              {nil, "", on("create", isSA)},
+		"crb get":                {[]client.Object{sa}, "", on("get", isCRB(mainName))},
+		"crb create":             {[]client.Object{sa}, "", on("create", isCRB(mainName))},
+		"crb update":             {[]client.Object{sa, callerBinding("ottoflow-role", other, mainName)}, "", on("update", isCRB(mainName))},
+		"crb delete":             {[]client.Object{sa, callerBinding("old-role", nil, mainName)}, "", on("delete", isCRB(mainName))},
+		"crb recreate create":    {[]client.Object{sa, callerBinding("old-role", nil, mainName)}, "", on("create", isCRB(mainName))},
+		"caller get":             {[]client.Object{sa}, "caller-role", on("get", isCRB(callerName))},
+		"caller create":          {[]client.Object{sa}, "caller-role", on("create", isCRB(callerName))},
+		"caller update":          {[]client.Object{sa, callerBinding("caller-role", other, callerName)}, "caller-role", on("update", isCRB(callerName))},
+		"caller delete":          {[]client.Object{sa, callerBinding("old-role", nil, callerName)}, "caller-role", on("delete", isCRB(callerName))},
+		"caller recreate create": {[]client.Object{sa, callerBinding("old-role", nil, callerName)}, "caller-role", on("create", isCRB(callerName))},
+		"crb re-get after exists": {[]client.Object{sa, callerBinding("old-role", nil, mainName)}, "", func(e error) interceptor.Funcs {
+			gets := 0
+			f := failOn("create", isCRB(mainName), exists)
+			f.Get = func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
+				if isCRB(mainName)(o, k.Name) {
+					if gets++; gets > 1 {
+						return e
+					}
+				}
+				return c.Get(ctx, k, o, opts...)
+			}
+			return f
+		}},
+	}
+	errs := map[string]struct {
+		err       error
+		transient bool
+	}{
+		"timeout":   {apierrors.NewTimeoutError("slow", 1), true},
+		"5xx":       {apierrors.NewInternalError(errors.New("boom")), true},
+		"conflict":  {apierrors.NewConflict(gr, "x", errors.New("stale")), true},
+		"forbidden": {apierrors.NewForbidden(gr, "x", errors.New("no")), false},
+		"invalid":   {apierrors.NewInvalid(schema.GroupKind{Kind: "ClusterRoleBinding"}, "x", nil), false},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: cmWriterNS}}
+	run := func(s site, e error) error {
+		c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(s.objs...).WithInterceptorFuncs(s.fail(e)).Build()
+		r := cmWriterReconciler(c, cmWriterRole)
+		r.RunnerConfig.AgentExecutorCallerRole = s.callerRole
+		return r.ensureRunnerAccess(context.Background(), wr, nil, cmWriterSA, false)
+	}
+	for name, s := range sites {
+		for en, e := range errs {
+			t.Run(name+"/"+en, func(t *testing.T) {
+				if err := run(s, e.err); err == nil || errors.Is(err, errRequeueRunnerAccess) != e.transient {
+					t.Errorf("err = %v, want transient=%v", err, e.transient)
+				}
+			})
+		}
+	}
+	for en, e := range errs {
+		t.Run("hint/"+en, func(t *testing.T) {
+			err := run(sites["crb recreate create"], e.err)
+			if err == nil || strings.Contains(err.Error(), "holds 'bind'") == e.transient {
+				t.Errorf("err = %v, want bind hint only when terminal", err)
+			}
+		})
+	}
+}
+
+// A transient runner-access error must back off via the returned error, not fail the run or reset backoff with RequeueAfter.
+func TestReconcile_RunnerAccessTransient_ReturnsErrorWithBackoff(t *testing.T) {
+	timeout := apierrors.NewTimeoutError("slow", 1)
+	cases := map[string]interceptor.Funcs{
+		"crb get timeout": failGetOf[*rbacv1.ClusterRoleBinding](timeout),
+		"writer rolebinding create timeout": failOn("create", func(o client.Object, _ string) bool {
+			_, ok := o.(*rbacv1.RoleBinding)
+			return ok
+		}, timeout),
+	}
+	for name, fns := range cases {
+		t.Run(name, func(t *testing.T) {
+			wr, objs := existingJobFixture(batchv1.JobStatus{})
+			objs = slices.DeleteFunc(objs, func(o client.Object) bool { _, ok := o.(*batchv1.Job); return ok })
+			c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).WithInterceptorFuncs(fns).Build()
+			res, err := cmWriterReconciler(c, cmWriterRole).Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)})
+			got := &ottoflowv1alpha1.WorkflowRun{}
+			if gerr := c.Get(context.Background(), client.ObjectKeyFromObject(wr), got); gerr != nil {
+				t.Fatal(gerr)
+			}
+			if !errors.Is(err, errRequeueRunnerAccess) || res.RequeueAfter != 0 || got.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+				t.Errorf("res=%+v err=%v phase=%s", res, err, got.Status.Phase)
+			}
+			if jerr := c.Get(context.Background(), types.NamespacedName{Namespace: cmWriterNS, Name: "run-1-runner"}, &batchv1.Job{}); !apierrors.IsNotFound(jerr) {
+				t.Errorf("Job created or lookup failed: %v", jerr)
+			}
+		})
+	}
+}
+
+func TestEnsureRunnerConfigMapWriter_SAFallbackErrorNamesServiceAccount(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithInterceptorFuncs(failGetOf[*corev1.ServiceAccount](apierrors.NewTimeoutError("slow", 1))).Build()
+	err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, "")
+	if err == nil || !strings.Contains(err.Error(), "ServiceAccount "+cmWriterNS+"/"+cmWriterSA) {
+		t.Errorf("err = %v, want it to name ServiceAccount %s/%s", err, cmWriterNS, cmWriterSA)
 	}
 }
