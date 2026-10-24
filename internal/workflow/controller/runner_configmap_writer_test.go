@@ -161,25 +161,60 @@ func TestEnsureRunnerConfigMapWriter_StaleSAOwnerRecreated(t *testing.T) {
 	}
 }
 
-func TestEnsureRunnerConfigMapWriter_CreateErrorClassification(t *testing.T) {
-	for name, tc := range map[string]struct {
+// failGetOf fails Gets of objects of type T with err and passes every other Get through.
+func failGetOf[T client.Object](err error) interceptor.Funcs {
+	return interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+		if _, ok := obj.(T); ok {
+			return err
+		}
+		return c.Get(ctx, key, obj, opts...)
+	}}
+}
+
+// Every API call in ensureRunnerConfigMapWriter keeps Forbidden terminal and requeues other failures.
+func TestEnsureRunnerConfigMapWriter_CallErrorClassification(t *testing.T) {
+	gr := schema.GroupResource{Resource: "rolebindings"}
+	drifted := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	drifted.Subjects = nil
+	stale := managedWriterBinding("ClusterRole", "old-role", cmWriterUID)
+	sites := map[string]struct {
+		objs  []client.Object
+		saUID types.UID
+		fail  func(error) interceptor.Funcs
+	}{
+		"binding get": {nil, cmWriterUID, failGetOf[*rbacv1.RoleBinding]},
+		"sa get":      {nil, "", failGetOf[*corev1.ServiceAccount]},
+		"update": {[]client.Object{drifted}, cmWriterUID, func(e error) interceptor.Funcs {
+			return interceptor.Funcs{Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error { return e }}
+		}},
+		"delete": {[]client.Object{stale}, cmWriterUID, func(e error) interceptor.Funcs {
+			return interceptor.Funcs{Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error { return e }}
+		}},
+		"create": {nil, cmWriterUID, func(e error) interceptor.Funcs {
+			return interceptor.Funcs{Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return e }}
+		}},
+	}
+	errs := map[string]struct {
 		err       error
 		transient bool
 	}{
 		"timeout":   {apierrors.NewTimeoutError("slow", 1), true},
 		"5xx":       {apierrors.NewInternalError(errors.New("boom")), true},
-		"exists":    {apierrors.NewAlreadyExists(schema.GroupResource{Resource: "rolebindings"}, "x"), true},
-		"forbidden": {apierrors.NewForbidden(schema.GroupResource{Resource: "rolebindings"}, "x", errors.New("no")), false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj()).WithInterceptorFuncs(interceptor.Funcs{
-				Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return tc.err },
-			}).Build()
-			err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID)
-			if err == nil || errors.Is(err, errRequeueRunnerAccess) != tc.transient {
-				t.Errorf("err = %v, want transient=%v", err, tc.transient)
-			}
-		})
+		"conflict":  {apierrors.NewConflict(gr, "x", errors.New("stale")), true},
+		"exists":    {apierrors.NewAlreadyExists(gr, "x"), true},
+		"forbidden": {apierrors.NewForbidden(gr, "x", errors.New("no")), false},
+		"invalid":   {apierrors.NewInvalid(schema.GroupKind{Kind: "RoleBinding"}, "x", nil), false},
+	}
+	for site, s := range sites {
+		for name, e := range errs {
+			t.Run(site+"/"+name, func(t *testing.T) {
+				c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(append([]client.Object{cmWriterSAObj()}, s.objs...)...).WithInterceptorFuncs(s.fail(e.err)).Build()
+				err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, s.saUID)
+				if err == nil || errors.Is(err, errRequeueRunnerAccess) != e.transient {
+					t.Errorf("err = %v, want transient=%v", err, e.transient)
+				}
+			})
+		}
 	}
 }
 

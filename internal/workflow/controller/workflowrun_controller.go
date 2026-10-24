@@ -222,7 +222,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 		if err := r.ensureRunnerAccess(ctx, workflowRun, workflow, createdJob.Spec.Template.Spec.ServiceAccountName, workflowRunUsesExplicitRunnerServiceAccount(workflowRun)); err != nil {
 			if errors.Is(err, errRequeueRunnerAccess) {
-				logger.Info("runner RBAC binding migration in progress, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
+				logger.Info("runner RBAC binding not ready, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "reason", err.Error())
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
@@ -616,21 +616,21 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 				return nil
 			}
 			existing.Subjects = subjects
-			return r.Update(ctx, existing)
+			return classifyRunnerWriterErr(r.Update(ctx, existing), key)
 		}
 		// RoleRef is immutable: recreate.
 		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
-			return err
+			return classifyRunnerWriterErr(err, key)
 		}
 	case !apierrors.IsNotFound(err):
-		return err
+		return classifyRunnerWriterErr(err, key)
 	}
 
 	if saUID == "" {
 		// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
 		sa := &corev1.ServiceAccount{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: serviceAccountName}, sa); err != nil {
-			return err
+			return classifyRunnerWriterErr(err, key)
 		}
 		saUID = sa.UID
 	}
@@ -646,16 +646,18 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 		RoleRef:  roleRef,
 		Subjects: subjects,
 	}
-	switch err := r.Create(ctx, rb); {
+	return classifyRunnerWriterErr(r.Create(ctx, rb), key)
+}
+
+// classifyRunnerWriterErr keeps Forbidden/Invalid terminal and requeues every other failure.
+func classifyRunnerWriterErr(err error, key types.NamespacedName) error {
+	switch {
 	case err == nil:
 		return nil
-	case apierrors.IsAlreadyExists(err):
-		return errRequeueRunnerAccess
 	case apierrors.IsForbidden(err) || apierrors.IsInvalid(err):
-		return fmt.Errorf("cannot create runner ConfigMap writer RoleBinding %s/%s: %w", key.Namespace, key.Name, err)
+		return fmt.Errorf("cannot reconcile runner ConfigMap writer RoleBinding %s/%s: %w", key.Namespace, key.Name, err)
 	default:
-		log.FromContext(ctx).Error(err, "failed to create runner ConfigMap writer RoleBinding; requeuing")
-		return errRequeueRunnerAccess
+		return fmt.Errorf("%w: runner ConfigMap writer RoleBinding %s/%s: %w", errRequeueRunnerAccess, key.Namespace, key.Name, err)
 	}
 }
 
