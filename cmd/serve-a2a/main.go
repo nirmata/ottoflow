@@ -89,7 +89,7 @@ func main() {
 		if err != nil {
 			klog.Fatalf("creating kube clientset: %v", err)
 		}
-		// Callers need "get configmaps/a2a-caller" in the Workflow's namespace and a token minted for
+		// Callers need "get callers.ottoflow.nirmata.io/a2a-caller" in the Workflow's namespace and a token minted for
 		// the dedicated audience; see docs/user/tasks/workflows-as-a2a-agents.md.
 		handler = a2a.RequireAuth(
 			auth.NewTokenReviewAndSARAuthenticator(kc, namespace, a2a.CallerResourceName).WithAudiences(a2a.TokenAudience),

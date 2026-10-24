@@ -50,7 +50,7 @@ var _ = Describe("Runner Secret delivery by mount", Label("hardening"), func() {
 
 		// The target is OttoFlow's own MCP endpoint, which authenticates every request with a
 		// TokenReview and then asks, via SubjectAccessReview, whether that identity may `get`
-		// the mcp-caller ConfigMap in the install namespace. So the bearer token has to be a
+		// callers.ottoflow.nirmata.io/mcp-caller in the install namespace. So the bearer token has to be a
 		// real ServiceAccount token that carries that permission: a token the server ignored,
 		// or one the runner sent wrongly, fails the call. Success is therefore proof that the
 		// exact bytes in the Secret travelled Secret -> mount -> runner -> Authorization header.

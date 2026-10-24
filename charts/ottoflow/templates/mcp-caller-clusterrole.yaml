@@ -14,8 +14,8 @@ metadata:
     {{- include "ottoflow.labels.n4" . }}
     app.kubernetes.io/component: mcp-caller
 rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
+  - apiGroups: ["ottoflow.nirmata.io"]
+    resources: ["callers"]
     resourceNames: ["mcp-caller"]
     verbs: ["get"]
 {{- end }}

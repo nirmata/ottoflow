@@ -111,8 +111,8 @@ func TestA2AAuthRoles_ExactRules(t *testing.T) {
 	if len(caller.Rules) != 1 {
 		t.Fatalf("caller rules = %+v, want exactly one", caller.Rules)
 	}
-	if !ruleIs(caller.Rules[0], "", "configmaps", "a2a-caller", "get") {
-		t.Errorf("caller rule = %+v, want get configmaps/a2a-caller", caller.Rules[0])
+	if !ruleIs(caller.Rules[0], "ottoflow.nirmata.io", "callers", "a2a-caller", "get") {
+		t.Errorf("caller rule = %+v, want get callers.ottoflow.nirmata.io/a2a-caller", caller.Rules[0])
 	}
 }
 
@@ -135,5 +135,35 @@ func TestA2AAllowUnauthenticatedFlag(t *testing.T) {
 	optOut := renderDocs(t, "--set", "serveA2A.enabled=true", "--set", "serveA2A.allowUnauthenticated=true")
 	if !controllerArgsContain(optOut, flag) {
 		t.Error("allowUnauthenticated=true did not pass " + flag)
+	}
+}
+
+func TestCallerRolesUseVirtualResource(t *testing.T) {
+	docs := renderDocs(t, "--set", "controller.mcp.enabled=true")
+	roles := renderedClusterRoles(t, docs)
+	for role, name := range map[string]string{
+		"ottoflow-agent-executor-caller": "agent-executor-caller",
+		"ottoflow-mcp-caller":            "mcp-caller",
+	} {
+		cr, ok := roles[role]
+		if !ok {
+			t.Errorf("ClusterRole %s not rendered", role)
+			continue
+		}
+		if len(cr.Rules) != 1 || !ruleIs(cr.Rules[0], "ottoflow.nirmata.io", "callers", name, "get") {
+			t.Errorf("%s rules = %+v, want one get callers.ottoflow.nirmata.io/%s", role, cr.Rules, name)
+		}
+	}
+	for _, d := range docs {
+		if docKind(d).Kind != "ConfigMap" {
+			continue
+		}
+		var cm metav1.PartialObjectMetadata
+		if err := yaml.Unmarshal([]byte(d), &cm); err != nil {
+			t.Fatal(err)
+		}
+		if cm.Name == "agent-executor-caller" || cm.Name == "mcp-caller" {
+			t.Errorf("placeholder ConfigMap %s still rendered", cm.Name)
+		}
 	}
 }

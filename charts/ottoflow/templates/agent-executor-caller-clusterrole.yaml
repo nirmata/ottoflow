@@ -9,8 +9,8 @@ metadata:
     {{- include "ottoflow.labels.n4" . }}
     app.kubernetes.io/component: agent-executor-caller
 rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
+  - apiGroups: ["ottoflow.nirmata.io"]
+    resources: ["callers"]
     resourceNames: ["agent-executor-caller"]
     verbs: ["get"]
 {{- end }}
