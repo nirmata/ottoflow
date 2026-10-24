@@ -59,10 +59,7 @@ type TokenReviewAndSARAuthenticator struct {
 	audiences []string
 }
 
-// NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
-// which has "invoke" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
-// ottoflow release namespace). Bind a ClusterRole with that rule to runner and
-// controller ServiceAccounts so they can call the agent executor.
+// NewTokenReviewAndSARAuthenticator allows identities with "invoke" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace.
 func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkNamespace, checkResource string) *TokenReviewAndSARAuthenticator {
 	if checkResource == "" {
 		checkResource = AgentExecutorCallerResourceName
