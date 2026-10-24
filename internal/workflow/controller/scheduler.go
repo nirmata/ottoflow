@@ -186,12 +186,10 @@ func (s *Scheduler) handleCronFire(key string) {
 	logger.Info("Created WorkflowRun from cron trigger")
 }
 
-const defaultMaxConcurrentRuns int32 = 10
-
 // effectiveMaxConcurrentRuns returns spec.run.maxConcurrentRuns, or the default when unset. Zero or less means no limit.
 func effectiveMaxConcurrentRuns(workflow *ottoflowv1alpha1.Workflow) int32 {
 	if workflow.Spec.Run == nil || workflow.Spec.Run.MaxConcurrentRuns == nil {
-		return defaultMaxConcurrentRuns
+		return ottoflowv1alpha1.DefaultMaxConcurrentRuns
 	}
 	return *workflow.Spec.Run.MaxConcurrentRuns
 }

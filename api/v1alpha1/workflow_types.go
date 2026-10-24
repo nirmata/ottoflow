@@ -163,6 +163,9 @@ type RunPolicy struct {
 	MaxConcurrentRuns *int32 `json:"maxConcurrentRuns,omitempty"`
 }
 
+// DefaultMaxConcurrentRuns applies when MaxConcurrentRuns is nil.
+const DefaultMaxConcurrentRuns int32 = 10
+
 // EventConfig configures event emission for workflow runs.
 type EventConfig struct {
 	// Enabled turns Kubernetes event emission on or off. When nil or true, events are emitted per Level.

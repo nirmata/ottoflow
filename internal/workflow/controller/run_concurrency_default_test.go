@@ -67,7 +67,7 @@ func defaultCapFixture(run *ottoflowv1alpha1.RunPolicy) (*ottoflowv1alpha1.Workf
 			Run:   run,
 		},
 	}
-	runs := make([]client.Object, int(defaultMaxConcurrentRuns))
+	runs := make([]client.Object, int(ottoflowv1alpha1.DefaultMaxConcurrentRuns))
 	for i := range runs {
 		runs[i] = defaultCapRun(fmt.Sprintf("wf-%d", i), ottoflowv1alpha1.WorkflowRunPhaseRunning)
 	}

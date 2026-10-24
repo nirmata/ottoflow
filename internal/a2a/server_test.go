@@ -411,17 +411,19 @@ func TestCreateRunDefaultConcurrencyCap(t *testing.T) {
 	}
 }
 
+const defaultCap = int(ottoflowv1alpha1.DefaultMaxConcurrentRuns)
+
 // Runs created by createRun have an empty phase until the controller reconciles them; they must
 // count toward the default cap.
 func TestCreateRunCapCountsUnreconciledRuns(t *testing.T) {
 	s := NewServer(newFakeClient(t, exposedWorkflow()), "greeter", "default", "", 0)
-	for i := 0; i < defaultMaxConcurrentRuns; i++ {
+	for i := 0; i < defaultCap; i++ {
 		if _, err := s.createRun(context.Background(), "hi"); err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
 	}
 	if _, err := s.createRun(context.Background(), "hi"); err == nil {
-		t.Fatalf("create %d succeeded; want concurrency-limit refusal", defaultMaxConcurrentRuns+1)
+		t.Fatalf("create %d succeeded; want concurrency-limit refusal", defaultCap+1)
 	}
 }
 
@@ -456,7 +458,7 @@ func (b *listBarrierClient) List(ctx context.Context, l client.ObjectList, opts 
 // Two calls that count at the same time, one slot below the cap, must not both create a run.
 func TestCreateRunCapHoldsForOverlappingCalls(t *testing.T) {
 	objs := []client.Object{exposedWorkflow()}
-	for i := 0; i < defaultMaxConcurrentRuns-1; i++ {
+	for i := 0; i < defaultCap-1; i++ {
 		objs = append(objs, &ottoflowv1alpha1.WorkflowRun{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: "default", Name: fmt.Sprintf("greeter-running-%d", i),
@@ -484,8 +486,8 @@ func TestCreateRunCapHoldsForOverlappingCalls(t *testing.T) {
 	if err := base.List(context.Background(), &runs); err != nil {
 		t.Fatal(err)
 	}
-	if len(runs.Items) != defaultMaxConcurrentRuns {
+	if len(runs.Items) != defaultCap {
 		t.Fatalf("two overlapping calls with %d active runs left %d runs, want %d (errs: %v)",
-			defaultMaxConcurrentRuns-1, len(runs.Items), defaultMaxConcurrentRuns, errs)
+			defaultCap-1, len(runs.Items), defaultCap, errs)
 	}
 }
