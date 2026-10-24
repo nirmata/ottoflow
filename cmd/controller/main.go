@@ -361,7 +361,7 @@ func main() {
 	}
 
 	if err := mgr.Add(workflowcontroller.NewLegacyRunnerBindingGC(
-		mgr.GetClient(), legacyRunnerClusterRole, legacyRunnerServiceAccount, workflowRunnerServiceAccount)); err != nil {
+		mgr.GetClient(), mgr.GetAPIReader(), legacyRunnerClusterRole, legacyRunnerServiceAccount, workflowRunnerServiceAccount)); err != nil {
 		setupLog.Error(err, "unable to add legacy runner binding GC to manager")
 		os.Exit(1)
 	}

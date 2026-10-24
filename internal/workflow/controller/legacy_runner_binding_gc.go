@@ -30,17 +30,19 @@ var _ manager.LeaderElectionRunnable = (*LegacyRunnerBindingGC)(nil)
 // ClusterRoleBindings: ottoflow-runner-<ns>-<sa> bindings to the controller's own role
 // (legacyRole) whose subject is exactly this release's controller SA (legacySA) and not the
 // configured runner SA, so another release's binding with a different subject survives.
-// One with the same name and role cannot be told apart and is kept only while a live run uses it.
+// One with the same name and role cannot be told apart and is kept only while a live run uses it
+// (a running pod or an unfinished Job).
 // Empty legacyRole or legacySA disables it.
 type LegacyRunnerBindingGC struct {
 	client      client.Client
+	reader      client.Reader // uncached: a cache lag must not hide a live runner
 	legacyRole  string
 	legacySA    string
 	runnerSAcfg string
 }
 
-func NewLegacyRunnerBindingGC(c client.Client, legacyRole, legacySA, runnerServiceAccount string) *LegacyRunnerBindingGC {
-	return &LegacyRunnerBindingGC{client: c, legacyRole: legacyRole, legacySA: legacySA, runnerSAcfg: runnerServiceAccount}
+func NewLegacyRunnerBindingGC(c client.Client, reader client.Reader, legacyRole, legacySA, runnerServiceAccount string) *LegacyRunnerBindingGC {
+	return &LegacyRunnerBindingGC{client: c, reader: reader, legacyRole: legacyRole, legacySA: legacySA, runnerSAcfg: runnerServiceAccount}
 }
 
 // NeedLeaderElection makes only the leader delete.
@@ -62,13 +64,17 @@ func (g *LegacyRunnerBindingGC) Start(ctx context.Context) error {
 		if !g.isLegacy(crb) {
 			continue
 		}
-		pins, err := g.pinningPods(ctx, crb)
+		pods, err := g.pinningPods(ctx, crb)
+		var jobs []string
+		if err == nil {
+			jobs, err = g.pinningJobs(ctx, crb)
+		}
 		if err != nil {
 			logger.Error(err, "checking for runs still using legacy runner ClusterRoleBinding; keeping it", "name", crb.Name)
 			continue
 		}
-		if len(pins) > 0 {
-			logger.Info("keeping legacy runner ClusterRoleBinding: live runs still use its ServiceAccount", "name", crb.Name, "pods", pins)
+		if len(pods)+len(jobs) > 0 {
+			logger.Info("keeping legacy runner ClusterRoleBinding: live runs still use its ServiceAccount", "name", crb.Name, "pods", pods, "jobs", jobs)
 			continue
 		}
 		pre := client.Preconditions{UID: &crb.UID, ResourceVersion: &crb.ResourceVersion}
@@ -100,7 +106,7 @@ func (g *LegacyRunnerBindingGC) isLegacy(crb *rbacv1.ClusterRoleBinding) bool {
 func (g *LegacyRunnerBindingGC) pinningPods(ctx context.Context, crb *rbacv1.ClusterRoleBinding) ([]string, error) {
 	s := crb.Subjects[0]
 	var pods corev1.PodList
-	if err := g.client.List(ctx, &pods, client.InNamespace(s.Namespace)); err != nil {
+	if err := g.reader.List(ctx, &pods, client.InNamespace(s.Namespace)); err != nil {
 		return nil, err
 	}
 	var pins []string
@@ -117,16 +123,47 @@ func (g *LegacyRunnerBindingGC) pinningPods(ctx context.Context, crb *rbacv1.Clu
 		if !found {
 			continue
 		}
-		var wr ottoflowv1alpha1.WorkflowRun
-		found, err = g.controllerOwner(ctx, &job, "WorkflowRun", &wr)
-		if err != nil {
+		if wr, err := g.liveRun(ctx, &job); err != nil {
 			return nil, err
-		}
-		if found && !runIsTerminal(&wr) {
-			pins = append(pins, fmt.Sprintf("%s(%s)", pod.Name, wr.Name))
+		} else if wr != "" {
+			pins = append(pins, fmt.Sprintf("%s(%s)", pod.Name, wr))
 		}
 	}
 	return pins, nil
+}
+
+// pinningJobs returns "job(workflowrun)" for each unfinished Job in the subject's namespace whose
+// pod template runs as the subject and is controlled by a live, non-terminal WorkflowRun. It covers
+// pod-free intervals (quota block, retry backoff) that pinningPods cannot see.
+func (g *LegacyRunnerBindingGC) pinningJobs(ctx context.Context, crb *rbacv1.ClusterRoleBinding) ([]string, error) {
+	s := crb.Subjects[0]
+	var jobs batchv1.JobList
+	if err := g.reader.List(ctx, &jobs, client.InNamespace(s.Namespace)); err != nil {
+		return nil, err
+	}
+	var pins []string
+	for i := range jobs.Items {
+		job := &jobs.Items[i]
+		if job.Spec.Template.Spec.ServiceAccountName != s.Name || jobConditionTrue(job, batchv1.JobComplete) || jobConditionTrue(job, batchv1.JobFailed) {
+			continue
+		}
+		if wr, err := g.liveRun(ctx, job); err != nil {
+			return nil, err
+		} else if wr != "" {
+			pins = append(pins, fmt.Sprintf("%s(%s)", job.Name, wr))
+		}
+	}
+	return pins, nil
+}
+
+// liveRun returns the name of the non-terminal WorkflowRun that controls job, or "" if none.
+func (g *LegacyRunnerBindingGC) liveRun(ctx context.Context, job *batchv1.Job) (string, error) {
+	var wr ottoflowv1alpha1.WorkflowRun
+	found, err := g.controllerOwner(ctx, job, "WorkflowRun", &wr)
+	if err != nil || !found || runIsTerminal(&wr) {
+		return "", err
+	}
+	return wr.Name, nil
 }
 
 // controllerOwner fetches controllee's controlling owner of kind into owner; found is false when the
@@ -136,7 +173,7 @@ func (g *LegacyRunnerBindingGC) controllerOwner(ctx context.Context, controllee 
 	if ref == nil || ref.Kind != kind || !ptr.Deref(ref.BlockOwnerDeletion, false) {
 		return false, nil
 	}
-	if err := g.client.Get(ctx, client.ObjectKey{Namespace: controllee.GetNamespace(), Name: ref.Name}, owner); err != nil {
+	if err := g.reader.Get(ctx, client.ObjectKey{Namespace: controllee.GetNamespace(), Name: ref.Name}, owner); err != nil {
 		return false, client.IgnoreNotFound(err)
 	}
 	return owner.GetUID() == ref.UID, nil

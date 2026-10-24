@@ -41,7 +41,7 @@ func gcBinding(name, saName string, labelled bool) *rbacv1.ClusterRoleBinding {
 func runGC(t *testing.T, flagRole, runnerSA string, objs ...client.Object) map[string]bool {
 	t.Helper()
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(objs...).Build()
-	if err := NewLegacyRunnerBindingGC(c, flagRole, "controller-manager", runnerSA).Start(context.Background()); err != nil {
+	if err := NewLegacyRunnerBindingGC(c, c, flagRole, "controller-manager", runnerSA).Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var list rbacv1.ClusterRoleBindingList
@@ -145,7 +145,7 @@ func TestLegacyRunnerBindingGC_DeleteIsPreconditioned(t *testing.T) {
 			return nil
 		},
 	}).Build()
-	if err := NewLegacyRunnerBindingGC(c, gcRole, "controller-manager", "").Start(context.Background()); err != nil {
+	if err := NewLegacyRunnerBindingGC(c, c, gcRole, "controller-manager", "").Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got.Preconditions == nil || got.Preconditions.UID == nil || *got.Preconditions.UID != "uid-1" || got.Preconditions.ResourceVersion == nil {
@@ -185,7 +185,7 @@ func runGCIn(t *testing.T, wantKept bool, f interceptor.Funcs, extra ...client.O
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(gcBinding(name, "controller-manager", true)).WithObjects(extra...).WithInterceptorFuncs(f).Build()
 	var sb strings.Builder
 	ctx := log.IntoContext(context.Background(), funcr.New(func(prefix, args string) { sb.WriteString(prefix + args + "\n") }, funcr.Options{}))
-	if err := NewLegacyRunnerBindingGC(c, gcRole, "controller-manager", "").Start(ctx); err != nil {
+	if err := NewLegacyRunnerBindingGC(c, c, gcRole, "controller-manager", "").Start(ctx); err != nil {
 		t.Fatal(err)
 	}
 	var list rbacv1.ClusterRoleBindingList
@@ -296,6 +296,98 @@ func TestLegacyRunnerBindingGC_DeletedWhenOwnerRefLacksFlag(t *testing.T) {
 			u := newInUse()
 			tc.mutate(u)
 			runGCIn(t, false, interceptor.Funcs{}, u.objs()...)
+		})
+	}
+}
+
+// jobOnly is a live runner Job with no pods (quota block or retry backoff).
+func jobOnly() inUse {
+	u := newInUse()
+	u.job.Spec.Template.Spec.ServiceAccountName = "controller-manager"
+	return u
+}
+
+func TestLegacyRunnerBindingGC_KeptWhenLiveJobHasNoPods(t *testing.T) {
+	u := jobOnly()
+	logs := runGCIn(t, true, interceptor.Funcs{}, u.job, u.wr)
+	if !strings.Contains(logs, "job(wr)") {
+		t.Errorf("skip log lacks pinning job: %s", logs)
+	}
+}
+
+func TestLegacyRunnerBindingGC_JobScanDoesNotPin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(job *batchv1.Job)
+	}{
+		{"complete", func(j *batchv1.Job) {
+			j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+		}},
+		{"failed", func(j *batchv1.Job) {
+			j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+		}},
+		{"other template SA", func(j *batchv1.Job) { j.Spec.Template.Spec.ServiceAccountName = "other-sa" }},
+		{"no blockOwnerDeletion", func(j *batchv1.Job) { j.OwnerReferences[0].BlockOwnerDeletion = ptr.To(false) }},
+		{"stale owner UID", func(j *batchv1.Job) { j.OwnerReferences[0].UID = "stale-uid" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := jobOnly()
+			tc.mutate(u.job)
+			runGCIn(t, false, interceptor.Funcs{}, u.job, u.wr)
+		})
+	}
+}
+
+func TestLegacyRunnerBindingGC_JobScanKeepsFinishedConditionFalse(t *testing.T) {
+	u := jobOnly()
+	u.job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionFalse}}
+	runGCIn(t, true, interceptor.Funcs{}, u.job, u.wr)
+}
+
+func TestLegacyRunnerBindingGC_KeptWhenJobListFails(t *testing.T) {
+	u := jobOnly()
+	runGCIn(t, true, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, l client.ObjectList, o ...client.ListOption) error {
+		if _, ok := l.(*batchv1.JobList); ok {
+			return errors.New("boom")
+		}
+		return c.List(ctx, l, o...)
+	}}, u.job, u.wr)
+}
+
+// The GC reads workloads through its uncached reader, not the cached client.
+func TestLegacyRunnerBindingGC_ReadsWorkloadsFromReader(t *testing.T) {
+	name := workflowRunnerRoleBindingName("ns", "controller-manager")
+	for _, tc := range []struct {
+		name        string
+		cacheHasRun bool
+		apiHasRun   bool
+		wantKept    bool
+	}{
+		{"cache lags, API has live runner", false, true, true},
+		{"cache stale, API has none", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			build := func(withRun bool) client.WithWatch {
+				b := fake.NewClientBuilder().WithScheme(unitTestScheme)
+				if withRun {
+					b = b.WithObjects(newInUse().objs()...)
+				}
+				return b.Build()
+			}
+			cache, api := build(tc.cacheHasRun), build(tc.apiHasRun)
+			if err := cache.Create(context.Background(), gcBinding(name, "controller-manager", true)); err != nil {
+				t.Fatal(err)
+			}
+			if err := NewLegacyRunnerBindingGC(cache, api, gcRole, "controller-manager", "").Start(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			var list rbacv1.ClusterRoleBindingList
+			if err := cache.List(context.Background(), &list); err != nil {
+				t.Fatal(err)
+			}
+			if kept := len(list.Items) == 1; kept != tc.wantKept {
+				t.Errorf("kept=%v, want %v", kept, tc.wantKept)
+			}
 		})
 	}
 }
