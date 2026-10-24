@@ -481,8 +481,7 @@ func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error
 	}
 	active := 0
 	for i := range list.Items {
-		switch list.Items[i].Status.Phase {
-		case "", ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
+		if list.Items[i].Status.Phase.IsActive() {
 			active++
 		}
 	}

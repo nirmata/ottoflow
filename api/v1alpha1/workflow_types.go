@@ -156,7 +156,7 @@ type RunPolicy struct {
 	// +kubebuilder:default=50
 	MaxAllowed *int32 `json:"maxAllowed,omitempty"`
 
-	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.
+	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be unfinished (phase empty, Pending or Running) at once for this workflow.
 	// When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active
 	// runs >= MaxConcurrentRuns. Nil means 10, an explicit 0 means no limit, and N means N.
 	// +optional

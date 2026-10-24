@@ -198,9 +198,7 @@ func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ott
 	}
 	count := 0
 	for _, wr := range list.Items {
-		if wr.Status.Phase == "" ||
-			wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending ||
-			wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseRunning {
+		if wr.Status.Phase.IsActive() {
 			count++
 		}
 	}
@@ -219,8 +217,7 @@ func (s *Scheduler) hasActiveWorkflowRun(ctx context.Context, workflow *ottoflow
 		return false, err
 	}
 	for _, wr := range list.Items {
-		if wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending ||
-			wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseRunning {
+		if wr.Status.Phase.IsActive() {
 			return true, nil
 		}
 	}
@@ -240,8 +237,7 @@ func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *otto
 	}
 	for i := range list.Items {
 		wr := &list.Items[i]
-		if wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending ||
-			wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseRunning {
+		if wr.Status.Phase.IsActive() {
 			setRunFailed(wr, "Replaced by newer cron trigger execution", "")
 			if err := s.client.Status().Update(ctx, wr); err != nil {
 				return fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)

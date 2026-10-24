@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/go-logr/logr"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -97,5 +99,33 @@ func TestScheduler_HandleCronFire_DefaultCap(t *testing.T) {
 				t.Errorf("got %d runs, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func cronRun(name string, phase ottoflowv1alpha1.WorkflowRunPhase) *ottoflowv1alpha1.WorkflowRun {
+	r := defaultCapRun(name, phase)
+	r.Labels["ottoflow.nirmata.io/trigger"] = "cron"
+	return r
+}
+
+func TestScheduler_EmptyPhaseRunIsActive(t *testing.T) {
+	ctx := context.Background()
+	wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"}}
+	run := cronRun("wf-new", "")
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(run).WithObjects(run).Build()
+	s := &Scheduler{client: c}
+
+	if active, err := s.hasActiveWorkflowRun(ctx, wf); err != nil || !active {
+		t.Errorf("hasActiveWorkflowRun = %v, %v; want true (Forbid must see a run with empty phase)", active, err)
+	}
+	if err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
+		t.Fatal(err)
+	}
+	var got ottoflowv1alpha1.WorkflowRun
+	if err := c.Get(ctx, client.ObjectKeyFromObject(run), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Errorf("phase = %q; want Failed (Replace must cancel a run with empty phase)", got.Status.Phase)
 	}
 }
