@@ -128,7 +128,7 @@ var forbiddenGrants = []forbiddenGrant{
 	{apiGroup: "batch", resource: "jobs", verbs: []string{"create"}},
 	{apiGroup: "", resource: "serviceaccounts", verbs: []string{"create"}},
 	{apiGroup: "rbac.authorization.k8s.io", resource: "clusterrolebindings", verbs: []string{"create"}},
-	{apiGroup: "gate.ottoflow.nirmata.io", resource: "callers", verbs: []string{"get"}},
+	{apiGroup: "gate.ottoflow.nirmata.io", resource: "callers", verbs: []string{"invoke"}},
 	// Default render only: ConfigMap writes come from the per-namespace -runner-configmap-writer role;
 	// the extraResources opt-in may add update/patch.
 	{apiGroup: "", resource: "configmaps", verbs: []string{"create", "update", "patch", "delete", "deletecollection"}},

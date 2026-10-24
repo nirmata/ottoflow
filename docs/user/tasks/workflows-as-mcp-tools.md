@@ -62,7 +62,7 @@ service mesh sidecar if callers are outside the cluster.
 
 A caller presents a ServiceAccount token as `Authorization: Bearer <token>`. The server
 runs a **TokenReview** to establish who that is, then a **SubjectAccessReview** asking
-whether that identity may `get` `callers.gate.ottoflow.nirmata.io/mcp-caller`. If it may, the call proceeds. A hand-written Role on `configmaps/mcp-caller` no longer works; re-grant it on `callers.gate.ottoflow.nirmata.io`.
+whether that identity may `invoke` `callers.gate.ottoflow.nirmata.io/mcp-caller`. If it may, the call proceeds. A hand-written Role on `configmaps/mcp-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
 
 So "who may invoke workflows" is a RoleBinding:
 

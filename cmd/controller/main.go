@@ -180,7 +180,8 @@ func main() {
 			"Default: ottoflow-serve-a2a.")
 	flag.BoolVar(&serveA2AAllowUnauthenticated, "serve-a2a-allow-unauthenticated", false,
 		"Turn OFF caller authentication on serve-a2a pods: anyone who can reach a pod can create WorkflowRuns. "+
-			"Default false (callers need a TokenReview-valid token and get callers.gate.ottoflow.nirmata.io/a2a-caller). "+
+			"Default false (callers need a TokenReview-valid token and the invoke permission on "+
+			"callers.gate.ottoflow.nirmata.io/a2a-caller). "+
 			"Pair with a NetworkPolicy; see docs/user/tasks/workflows-as-a2a-agents.md.")
 
 	webhookServiceName := envOrDefault("WEBHOOK_SERVICE_NAME", "ottoflow-webhook")
@@ -190,7 +191,7 @@ func main() {
 	flag.StringVar(&mcpAddr, "mcp-addr", "",
 		"The address the MCP server binds to, serving Workflows as MCP tools. Empty disables it.")
 	flag.StringVar(&mcpCallerNamespace, "mcp-caller-namespace", "",
-		"Namespace in which SubjectAccessReview checks get callers.gate.ottoflow.nirmata.io/mcp-caller for MCP callers. "+
+		"Namespace in which SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/mcp-caller for MCP callers. "+
 			"Defaults to --namespace.")
 	logConfig.AddFlags(flag.CommandLine)
 	flag.Parse()

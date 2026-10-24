@@ -158,7 +158,7 @@ func TestAgentRef_CallerRule(t *testing.T) {
 	assertContains(t, out, "gate.ottoflow.nirmata.io", "caller API group in rules")
 	assertContains(t, out, "callers", "callers resource in rules")
 	assertContains(t, out, "agent-executor-caller", "resourceNames restriction")
-	assertContains(t, out, "- get", "get verb")
+	assertContains(t, out, "- invoke", "invoke verb")
 }
 
 // --- mcpToolCall -------------------------------------------------------------

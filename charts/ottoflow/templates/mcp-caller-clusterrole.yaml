@@ -17,5 +17,5 @@ rules:
   - apiGroups: ["gate.ottoflow.nirmata.io"]
     resources: ["callers"]
     resourceNames: ["mcp-caller"]
-    verbs: ["get"]
+    verbs: ["invoke"]
 {{- end }}

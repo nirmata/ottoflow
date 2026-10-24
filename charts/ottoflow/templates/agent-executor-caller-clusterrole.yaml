@@ -12,5 +12,5 @@ rules:
   - apiGroups: ["gate.ottoflow.nirmata.io"]
     resources: ["callers"]
     resourceNames: ["agent-executor-caller"]
-    verbs: ["get"]
+    verbs: ["invoke"]
 {{- end }}

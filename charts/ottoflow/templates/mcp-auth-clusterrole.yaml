@@ -1,7 +1,7 @@
 {{- if and .Values.controller.mcp .Values.controller.mcp.enabled .Values.rbac.create }}
 # MCP auth ClusterRole - lets the controller authenticate and authorize MCP
 # callers. TokenReview turns the caller's bearer token into an identity;
-# SubjectAccessReview asks whether that identity may get
+# SubjectAccessReview asks whether that identity may invoke
 # callers.gate.ottoflow.nirmata.io/mcp-caller. Aggregated into the controller role only while the MCP server is
 # enabled, so a deployment that does not serve MCP never holds these verbs.
 apiVersion: rbac.authorization.k8s.io/v1

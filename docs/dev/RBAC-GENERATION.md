@@ -36,7 +36,7 @@ For each workflow, the tool produces:
 |---|---|---|
 | `resourceQuery` | `get`, `list` | GVK from step spec |
 | `mutate` | `get`, `patch`, `update` | GVK from step spec |
-| `agentRef` | `get` | `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in agent-executor namespace |
+| `agentRef` | `invoke` | `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in agent-executor namespace |
 | `workflowRef`, `stepTemplateRef`, `mcpToolCall` | *(covered by system `ottoflow-runner-role`)* | — |
 | `forEach` | Inherits from inner step | — |
 

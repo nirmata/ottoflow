@@ -133,7 +133,7 @@ Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, sepa
 | `agentExecutor.serviceAccount.name` | Service account name | `""` (auto-generated) |
 | `agentExecutor.service.type` | Service type | `ClusterIP` |
 | `agentExecutor.service.port` | Service port | `8443` |
-| `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks get callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
+| `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
 | `agentExecutor.tls.internal.enabled` | Use internal cert controller (kyverno/pkg) to provision self-signed TLS | `true` |
 | `agentExecutor.tls.secretName` | Use existing TLS Secret instead of internal cert generation | `""` |
 | `agentExecutor.resources` | Resource limits and requests | `{}` (defaults provided) |
@@ -160,7 +160,7 @@ agentExecutor:
 
 Runner ServiceAccounts hold ConfigMap `get`/`list`/`watch` cluster-wide but can write ConfigMaps (checkpoints, audit snapshots, `mutate` steps) only in the namespace of their run: the controller binds each runner ServiceAccount to `ottoflow-runner-configmap-writer` with a RoleBinding in that namespace. A `mutate` step that writes a ConfigMap in another namespace is denied unless you add a ConfigMap `update`/`patch` rule to `rbac.runnerClusterRole.extraResources` (see the example in `values.yaml`). With `rbac.create=false` the chart renders no such role and the controller creates no binding. The controller flag `--runner-configmap-writer-cluster-role` is new: an older controller image pinned through `controller.image.tag` exits at flag parse, so upgrade the image with the chart.
 
-Caller gates (agent-executor, MCP, serve-a2a) check `get` on `callers.gate.ottoflow.nirmata.io/<name>` instead of `configmaps/<name>`. Upgrade the images with the chart: until a server runs the new image, callers holding only the new chart role get 401. agent-executor and the controller (MCP) roll with the release; serve-a2a pods roll only when the controller re-upserts the Agent (controller start or within 10 minutes), and a pinned `controller.image.tag`, agent-executor image tag or `serveA2A.image.tag` keeps the old check. Hand-written Roles on `configmaps/<caller>` must be re-granted on `callers.gate.ottoflow.nirmata.io`.
+Caller gates (agent-executor, MCP, serve-a2a) check `invoke` on `callers.gate.ottoflow.nirmata.io/<name>` instead of `get` on `configmaps/<name>`. Upgrade the images with the chart: until a server runs the new image, callers holding only the new chart role get 401. agent-executor and the controller (MCP) roll with the release; serve-a2a pods roll only when the controller re-upserts the Agent (controller start or within 10 minutes), and a pinned `controller.image.tag`, agent-executor image tag or `serveA2A.image.tag` keeps the old check. Hand-written Roles on `configmaps/<caller>` must be re-granted with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
 
 None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
 

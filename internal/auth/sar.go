@@ -21,15 +21,17 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// CallerAPIGroup and CallerResource name a virtual resource nothing serves, in a group reserved
-// for it (never add a CRD there): only a rule naming that group, or apiGroups "*", grants it.
+// CallerAPIGroup, CallerResource and CallerVerb name a virtual permission on a resource nothing
+// serves, in a group reserved for it (never add a CRD there): a rule grants it only if its
+// apiGroups, resources and verbs each list the value or "*".
 const (
 	CallerAPIGroup = "gate.ottoflow.nirmata.io"
 	CallerResource = "callers"
+	CallerVerb     = "invoke"
 )
 
 // AgentExecutorCallerResourceName is the resourceName of the caller permission for the agent executor.
-// A ClusterRole that grants "get" on callers.gate.ottoflow.nirmata.io with this name is bound to runner SAs;
+// A ClusterRole that grants "invoke" on callers.gate.ottoflow.nirmata.io with this name is bound to runner SAs;
 // the agent executor uses SubjectAccessReview against this permission to allow callers.
 const AgentExecutorCallerResourceName = "agent-executor-caller"
 
@@ -58,7 +60,7 @@ type TokenReviewAndSARAuthenticator struct {
 }
 
 // NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
-// which has "get" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
+// which has "invoke" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
 // ottoflow release namespace). Bind a ClusterRole with that rule to runner and
 // controller ServiceAccounts so they can call the agent executor.
 func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkNamespace, checkResource string) *TokenReviewAndSARAuthenticator {
@@ -117,14 +119,14 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 		return "", fmt.Errorf("invalid service account format: %s", saName)
 	}
 
-	// 2) SubjectAccessReview: can this identity get the caller resource in the check namespace?
+	// 2) SubjectAccessReview: can this identity invoke the caller resource in the check namespace?
 	sar := &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   saName,
 			Groups: result.Status.User.Groups,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Namespace: a.checkNamespace,
-				Verb:      "get",
+				Verb:      CallerVerb,
 				Group:     CallerAPIGroup,
 				Resource:  CallerResource,
 				Name:      a.checkResource,
