@@ -13,7 +13,7 @@
 # 1. Authorize kagent to invoke workflows.
 #
 # The MCP server authenticates the caller's ServiceAccount token and then asks
-# SubjectAccessReview whether that identity may get callers.ottoflow.nirmata.io/mcp-caller.
+# SubjectAccessReview whether that identity may get callers.gate.ottoflow.nirmata.io/mcp-caller.
 # This binding is what makes the answer yes; deleting it revokes access with no
 # restart and no secret to rotate.
 apiVersion: rbac.authorization.k8s.io/v1

@@ -135,7 +135,7 @@ func TestSARChecksVirtualCallerResource(t *testing.T) {
 	if _, err := NewTokenReviewAndSARAuthenticator(c, "check-ns", MCPCallerResourceName).AuthenticateRequest(bearerRequest()); err != nil {
 		t.Fatal(err)
 	}
-	want := authorizationv1.ResourceAttributes{Namespace: "check-ns", Verb: "get", Group: "ottoflow.nirmata.io", Resource: "callers", Name: "mcp-caller"}
+	want := authorizationv1.ResourceAttributes{Namespace: "check-ns", Verb: "get", Group: "gate.ottoflow.nirmata.io", Resource: "callers", Name: "mcp-caller"}
 	if ra := got.ResourceAttributes; ra == nil || *ra != want {
 		t.Fatalf("SAR resource attributes = %+v, want %+v", ra, want)
 	}

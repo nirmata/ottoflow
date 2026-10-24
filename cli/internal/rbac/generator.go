@@ -171,7 +171,7 @@ func (g *Generator) mutateRule(m *ottoflowv1alpha1.StepMutate) (policyRule, stri
 	}, warning
 }
 
-// agentRefRule emits get on callers.ottoflow.nirmata.io/agent-executor-caller (SAR authorization check).
+// agentRefRule emits get on callers.gate.ottoflow.nirmata.io/agent-executor-caller (SAR authorization check).
 // The rule targets AgentExecutorNamespace when set, falling back to Namespace, because the
 // agent-executor evaluates the SAR check in its own namespace, not the runner's namespace.
 func (g *Generator) agentRefRule() policyRule {

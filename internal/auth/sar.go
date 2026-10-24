@@ -21,15 +21,15 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// CallerAPIGroup and CallerResource name a virtual resource no API server serves, so a rule
-// grants a caller permission only if it names it or wildcards the group; ConfigMap read access never does.
+// CallerAPIGroup and CallerResource name a virtual resource nothing serves, in a group reserved
+// for it (never add a CRD there): only a rule naming that group, or apiGroups "*", grants it.
 const (
-	CallerAPIGroup = "ottoflow.nirmata.io"
+	CallerAPIGroup = "gate.ottoflow.nirmata.io"
 	CallerResource = "callers"
 )
 
 // AgentExecutorCallerResourceName is the resourceName of the caller permission for the agent executor.
-// A ClusterRole that grants "get" on callers.ottoflow.nirmata.io with this name is bound to runner SAs;
+// A ClusterRole that grants "get" on callers.gate.ottoflow.nirmata.io with this name is bound to runner SAs;
 // the agent executor uses SubjectAccessReview against this permission to allow callers.
 const AgentExecutorCallerResourceName = "agent-executor-caller"
 
@@ -58,7 +58,7 @@ type TokenReviewAndSARAuthenticator struct {
 }
 
 // NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
-// which has "get" on callers.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
+// which has "get" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
 // ottoflow release namespace). Bind a ClusterRole with that rule to runner and
 // controller ServiceAccounts so they can call the agent executor.
 func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkNamespace, checkResource string) *TokenReviewAndSARAuthenticator {

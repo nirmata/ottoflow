@@ -158,7 +158,7 @@ The agent executor is the HTTPS service that runs agent steps on behalf of the w
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tls-port` | `8443` | TLS server port |
-| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `callers.ottoflow.nirmata.io/agent-executor-caller` in this namespace) |
+| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in this namespace) |
 | `-v` | `0` | klog verbosity level (e.g. `-v=2` for troubleshooting, `-v=4` for deep debugging). See [Logging](logging.md). |
 
 Nirmata credentials for LLM are used by the **workflow runner** when it executes agent steps (set via env vars in the runner pod), not by the agent-executor binary itself.

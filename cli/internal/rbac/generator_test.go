@@ -155,7 +155,7 @@ func TestAgentRef_CallerRule(t *testing.T) {
 		},
 	)
 	out := generate(t, g, wf)
-	assertContains(t, out, "ottoflow.nirmata.io", "caller API group in rules")
+	assertContains(t, out, "gate.ottoflow.nirmata.io", "caller API group in rules")
 	assertContains(t, out, "callers", "callers resource in rules")
 	assertContains(t, out, "agent-executor-caller", "resourceNames restriction")
 	assertContains(t, out, "- get", "get verb")
