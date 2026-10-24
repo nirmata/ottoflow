@@ -53,7 +53,7 @@ func getWriterBinding(t *testing.T, c client.Client) (*rbacv1.RoleBinding, error
 
 func TestEnsureRunnerConfigMapWriter_CreatesBindingWithOwnerRef(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj()).Build()
-	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA); err != nil {
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
 		t.Fatal(err)
 	}
 	rb, err := getWriterBinding(t, c)
@@ -76,7 +76,7 @@ func TestEnsureRunnerConfigMapWriter_CreatesBindingWithOwnerRef(t *testing.T) {
 
 func TestEnsureRunnerConfigMapWriter_EmptyRoleSkips(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj()).Build()
-	if err := cmWriterReconciler(c, "").ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA); err != nil {
+	if err := cmWriterReconciler(c, "").ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := getWriterBinding(t, c); err == nil {
@@ -90,7 +90,7 @@ func TestEnsureRunnerConfigMapWriter_UnlabeledBindingRefused(t *testing.T) {
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "foreign-role"},
 	}
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), foreign).Build()
-	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA); err == nil {
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err == nil {
 		t.Fatal("expected error for unlabeled binding")
 	}
 	rb, _ := getWriterBinding(t, c)
@@ -100,12 +100,9 @@ func TestEnsureRunnerConfigMapWriter_UnlabeledBindingRefused(t *testing.T) {
 }
 
 func TestEnsureRunnerConfigMapWriter_RoleRefDriftRecreated(t *testing.T) {
-	stale := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: runnerConfigMapWriterBindingName(cmWriterSA), Namespace: cmWriterNS, Labels: map[string]string{"app.kubernetes.io/part-of": ottoflowPartOf}},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "old-role"},
-	}
+	stale := managedWriterBinding("ClusterRole", "old-role", cmWriterUID)
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), stale).Build()
-	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA); err != nil {
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
 		t.Fatal(err)
 	}
 	rb, err := getWriterBinding(t, c)
@@ -118,17 +115,71 @@ func TestEnsureRunnerConfigMapWriter_RoleRefDriftRecreated(t *testing.T) {
 }
 
 func TestEnsureRunnerConfigMapWriter_SubjectDriftRepaired(t *testing.T) {
-	drifted := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: runnerConfigMapWriterBindingName(cmWriterSA), Namespace: cmWriterNS, Labels: map[string]string{"app.kubernetes.io/part-of": ottoflowPartOf}},
-		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: cmWriterRole},
-	}
+	drifted := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	drifted.Subjects = nil
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), drifted).Build()
-	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA); err != nil {
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
 		t.Fatal(err)
 	}
 	rb, _ := getWriterBinding(t, c)
 	if len(rb.Subjects) != 1 || rb.Subjects[0].Name != cmWriterSA {
 		t.Errorf("subjects = %+v", rb.Subjects)
+	}
+}
+
+func managedWriterBinding(kind, name string, owner types.UID) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: runnerConfigMapWriterBindingName(cmWriterSA), Namespace: cmWriterNS,
+			Labels:          map[string]string{"app.kubernetes.io/part-of": ottoflowPartOf},
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "ServiceAccount", Name: cmWriterSA, UID: owner}},
+		},
+		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: kind, Name: name},
+		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: cmWriterSA, Namespace: cmWriterNS}},
+	}
+}
+
+func TestEnsureRunnerConfigMapWriter_RoleKindMismatchRecreated(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), managedWriterBinding("Role", cmWriterRole, cmWriterUID)).Build()
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := getWriterBinding(t, c)
+	if rb.RoleRef.Kind != "ClusterRole" {
+		t.Errorf("roleRef = %+v", rb.RoleRef)
+	}
+}
+
+func TestEnsureRunnerConfigMapWriter_StaleSAOwnerRecreated(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), managedWriterBinding("ClusterRole", cmWriterRole, "old-uid")).Build()
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID); err != nil {
+		t.Fatal(err)
+	}
+	rb, _ := getWriterBinding(t, c)
+	if len(rb.OwnerReferences) != 1 || rb.OwnerReferences[0].UID != cmWriterUID {
+		t.Errorf("ownerRefs = %+v", rb.OwnerReferences)
+	}
+}
+
+func TestEnsureRunnerConfigMapWriter_CreateErrorClassification(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err       error
+		transient bool
+	}{
+		"timeout":   {apierrors.NewTimeoutError("slow", 1), true},
+		"5xx":       {apierrors.NewInternalError(errors.New("boom")), true},
+		"exists":    {apierrors.NewAlreadyExists(schema.GroupResource{Resource: "rolebindings"}, "x"), true},
+		"forbidden": {apierrors.NewForbidden(schema.GroupResource{Resource: "rolebindings"}, "x", errors.New("no")), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj()).WithInterceptorFuncs(interceptor.Funcs{
+				Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error { return tc.err },
+			}).Build()
+			err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, cmWriterUID)
+			if err == nil || errors.Is(err, errRequeueRunnerAccess) != tc.transient {
+				t.Errorf("err = %v, want transient=%v", err, tc.transient)
+			}
+		})
 	}
 }
 
@@ -236,5 +287,19 @@ func TestReconcile_ExistingJob_EnsureFails_StillHandlesFailedJob(t *testing.T) {
 	if got.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed || got.Status.Execution == nil ||
 		got.Status.Execution.Message != "Runner Job run-1-runner failed" {
 		t.Errorf("failed Job not handled: phase=%s exec=%+v msg=%q", got.Status.Phase, got.Status.Execution, got.Status.Message)
+	}
+}
+
+func TestEnsureRunnerConfigMapWriter_SteadyStateSkipsSARead(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.ServiceAccount); ok {
+				t.Error("unexpected ServiceAccount read")
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); err != nil {
+		t.Fatal(err)
 	}
 }
