@@ -3,8 +3,7 @@
 # SubjectAccessReview in the Workflow's namespace after TokenReview establishes the caller's
 # identity. Bind it with a RoleBinding in each exposed Workflow's namespace to the ServiceAccount
 # of every caller (for a kagent agent, the ServiceAccount whose token is stored in the Secret
-# referenced by headersFrom). No ConfigMap named a2a-caller needs to exist: the permission is the
-# whole signal.
+# referenced by headersFrom). The permission is the whole signal; callers.gate.ottoflow.nirmata.io is not a served resource.
 #
 # Deliberately separate from mcp-caller and agent-executor-caller: each is a different grant.
 apiVersion: rbac.authorization.k8s.io/v1
@@ -15,8 +14,8 @@ metadata:
     {{- include "ottoflow.labels.n4" . }}
     app.kubernetes.io/component: a2a-caller
 rules:
-  - apiGroups: [""]
-    resources: ["configmaps"]
+  - apiGroups: ["gate.ottoflow.nirmata.io"]
+    resources: ["callers"]
     resourceNames: ["a2a-caller"]
     verbs: ["get"]
 {{- end }}

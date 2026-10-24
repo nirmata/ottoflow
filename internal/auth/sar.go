@@ -21,12 +21,19 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// AgentExecutorCallerResourceName is the name of the virtual ConfigMap used for RBAC.
-// A ClusterRole that grants "get" on configmaps with this name is bound to runner SAs;
+// CallerAPIGroup and CallerResource name a virtual resource nothing serves, in a group reserved
+// for it (never add a CRD there): only a rule naming that group, or apiGroups "*", grants it.
+const (
+	CallerAPIGroup = "gate.ottoflow.nirmata.io"
+	CallerResource = "callers"
+)
+
+// AgentExecutorCallerResourceName is the resourceName of the caller permission for the agent executor.
+// A ClusterRole that grants "get" on callers.gate.ottoflow.nirmata.io with this name is bound to runner SAs;
 // the agent executor uses SubjectAccessReview against this permission to allow callers.
 const AgentExecutorCallerResourceName = "agent-executor-caller"
 
-// MCPCallerResourceName is the virtual ConfigMap name behind "who may invoke a
+// MCPCallerResourceName is the resourceName behind "who may invoke a
 // workflow as an MCP tool". It is deliberately not AgentExecutorCallerResourceName:
 // calling the agent executor and running any workflow in the cluster are
 // different grants, and one ClusterRole for both would make the narrower one
@@ -44,14 +51,14 @@ const serviceAccountContextKey contextKey = "serviceAccount"
 type TokenReviewAndSARAuthenticator struct {
 	k8sClient      kubernetes.Interface
 	checkNamespace string
-	checkResource  string // ConfigMap name to check (e.g. AgentExecutorCallerResourceName)
+	checkResource  string // caller resourceName to check (e.g. AgentExecutorCallerResourceName)
 	// audiences is sent as TokenReview.spec.audiences. Nil/empty omits the field, so the
 	// apiserver validates against its own audience (the behaviour every pre-existing caller has).
 	audiences []string
 }
 
 // NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
-// which has "get" on configmaps named checkResource in checkNamespace (typically the
+// which has "get" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace (typically the
 // ottoflow release namespace). Bind a ClusterRole with that rule to runner and
 // controller ServiceAccounts so they can call the agent executor.
 func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkNamespace, checkResource string) *TokenReviewAndSARAuthenticator {
@@ -110,7 +117,7 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 		return "", fmt.Errorf("invalid service account format: %s", saName)
 	}
 
-	// 2) SubjectAccessReview: can this identity get the caller ConfigMap in the check namespace?
+	// 2) SubjectAccessReview: can this identity get the caller resource in the check namespace?
 	sar := &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   saName,
@@ -118,8 +125,8 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Namespace: a.checkNamespace,
 				Verb:      "get",
-				Group:     "",
-				Resource:  "configmaps",
+				Group:     CallerAPIGroup,
+				Resource:  CallerResource,
 				Name:      a.checkResource,
 			},
 		},

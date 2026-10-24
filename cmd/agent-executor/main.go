@@ -66,7 +66,8 @@ func main() {
 	klog.InitFlags(nil)
 	tlsPort := flag.Int("tls-port", defaultTLSPort, "TLS server port")
 	callerNamespaceFlag := flag.String("agent-executor-caller-namespace", "ottoflow",
-		"Namespace for RBAC auth: agent executor checks get configmaps/agent-executor-caller via SubjectAccessReview")
+		"Namespace for RBAC auth: agent executor checks get callers.gate.ottoflow.nirmata.io/agent-executor-caller "+
+			"via SubjectAccessReview")
 	enableProfile := flag.Bool("profile", false,
 		"Enable pprof profiling endpoint (CPU, heap, goroutine). Never enable in production.")
 	profilePort := flag.Int("profiler-port", 6060,
@@ -102,7 +103,7 @@ func main() {
 		klog.Fatalf("Failed to create Kubernetes clientset: %v", err)
 	}
 
-	// RBAC auth: only identities that have get on configmaps/agent-executor-caller in caller namespace are allowed
+	// RBAC auth: callers need get on callers.gate.ottoflow.nirmata.io/agent-executor-caller in the caller namespace
 	authenticator := auth.NewTokenReviewAndSARAuthenticator(
 		clientset, *callerNamespaceFlag, auth.AgentExecutorCallerResourceName)
 

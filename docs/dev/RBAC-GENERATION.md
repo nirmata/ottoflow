@@ -36,7 +36,7 @@ For each workflow, the tool produces:
 |---|---|---|
 | `resourceQuery` | `get`, `list` | GVK from step spec |
 | `mutate` | `get`, `patch`, `update` | GVK from step spec |
-| `agentRef` | `get` | `configmaps/agent-executor-caller` in agent-executor namespace |
+| `agentRef` | `get` | `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in agent-executor namespace |
 | `workflowRef`, `stepTemplateRef`, `mcpToolCall` | *(covered by system `ottoflow-runner-role`)* | — |
 | `forEach` | Inherits from inner step | — |
 
@@ -111,7 +111,7 @@ cd cli && go build -o /tmp/ottoflow .
 /tmp/ottoflow validate -f samples/workflows/features/agent-step.yaml \
   --generate-rbac --namespace my-namespace
 # → SA agent-step-workflow-runner in my-namespace
-# → Role for configmaps/agent-executor-caller in ottoflow
+# → Role for callers.gate.ottoflow.nirmata.io/agent-executor-caller in ottoflow
 
 # Dynamic namespace: ClusterRole with warning
 /tmp/ottoflow validate -f samples/workflows/features/pod-health-metrics.yaml \

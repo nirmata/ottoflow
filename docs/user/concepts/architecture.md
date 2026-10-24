@@ -46,7 +46,7 @@ The agent-executor is a persistent HTTPS service. It:
 - Listens on port 8443 (TLS)
 - Handles `POST /api/exec/{namespace}/{agentName}` requests from workflow-runner pods
 - Looks up the Agent CRD, builds the LLM prompt, calls the LLM provider, and returns the response
-- Authenticates callers via Kubernetes SubjectAccessReview (RBAC on `configmaps/agent-executor-caller`)
+- Authenticates callers via Kubernetes SubjectAccessReview (RBAC on `callers.gate.ottoflow.nirmata.io/agent-executor-caller`)
 - Manages MCP client connections for agent tool registration
 
 The agent-executor is essentially a stateless LLM proxy: it receives a prompt and context map, calls the LLM, and returns the text response and any extracted outputs.
@@ -154,7 +154,7 @@ After patching, the controller pod restarts with the new flag. All subsequent Wo
 - The agent-executor serves **HTTPS only** (port 8443, TLS 1.2+)
 - The controller provisions a self-signed CA and TLS certificate for the agent-executor Service using the internal cert controller (no cert-manager required)
 - Runner pods for workflows that have an agent step mount the agent-executor CA certificate so they can verify the agent-executor's certificate. The controller publishes it into the run's namespace as a ConfigMap (certificate only, no private key) named after the CA Secret given by `--workflow-runner-agent-executor-ca-secret`, so no Secret has to exist or be readable in that namespace; a runner with no agent step never calls the agent-executor and does not mount it
-- Callers are authenticated via Kubernetes SubjectAccessReview: the agent-executor checks that the calling identity has `get` on `configmaps/agent-executor-caller` in the configured namespace
+- Callers are authenticated via Kubernetes SubjectAccessReview: the agent-executor checks that the calling identity has `get` on `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in the configured namespace
 - LLM credentials (e.g., `NIRMATA_LLM_TOKEN`) are injected into runner pods via Kubernetes Secret references in `WorkflowRun.spec.execution.job.env`; the runner forwards them to the agent-executor via the `X-LLM-Env` header (base64-encoded JSON)
 
 For full details on agent-executor security, see [Agent Executor Security](agent-executor-security.md).

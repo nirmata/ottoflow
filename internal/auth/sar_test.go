@@ -122,3 +122,24 @@ func TestWithAudiencesRejectsResponsesNotNamingARequestedAudience(t *testing.T) 
 		})
 	}
 }
+
+func TestSARChecksVirtualCallerResource(t *testing.T) {
+	var got authorizationv1.SubjectAccessReviewSpec
+	c, _ := captureTokenReview()
+	c.PrependReactor("create", "subjectaccessreviews", func(a k8stesting.Action) (bool, runtime.Object, error) {
+		sar := a.(k8stesting.CreateAction).GetObject().(*authorizationv1.SubjectAccessReview)
+		got = *sar.Spec.DeepCopy()
+		sar.Status.Allowed = true
+		return true, sar, nil
+	})
+	if _, err := NewTokenReviewAndSARAuthenticator(c, "check-ns", MCPCallerResourceName).AuthenticateRequest(bearerRequest()); err != nil {
+		t.Fatal(err)
+	}
+	want := authorizationv1.ResourceAttributes{Namespace: "check-ns", Verb: "get", Group: "gate.ottoflow.nirmata.io", Resource: "callers", Name: "mcp-caller"}
+	if ra := got.ResourceAttributes; ra == nil || *ra != want {
+		t.Fatalf("SAR resource attributes = %+v, want %+v", ra, want)
+	}
+	if got.User != "system:serviceaccount:ns:sa" {
+		t.Fatalf("SAR user = %q", got.User)
+	}
+}

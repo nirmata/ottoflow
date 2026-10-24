@@ -146,7 +146,7 @@ func TestMutate_CorrectVerbs(t *testing.T) {
 
 // --- agentRef ----------------------------------------------------------------
 
-func TestAgentRef_ConfigMapCallerRule(t *testing.T) {
+func TestAgentRef_CallerRule(t *testing.T) {
 	g := mustNew(t, Options{Namespace: "ottoflow"})
 	wf := simpleWorkflow("wf",
 		ottoflowv1alpha1.Step{
@@ -155,7 +155,8 @@ func TestAgentRef_ConfigMapCallerRule(t *testing.T) {
 		},
 	)
 	out := generate(t, g, wf)
-	assertContains(t, out, "configmaps", "configmaps resource in rules")
+	assertContains(t, out, "gate.ottoflow.nirmata.io", "caller API group in rules")
+	assertContains(t, out, "callers", "callers resource in rules")
 	assertContains(t, out, "agent-executor-caller", "resourceNames restriction")
 	assertContains(t, out, "- get", "get verb")
 }

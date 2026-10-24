@@ -62,7 +62,7 @@ service mesh sidecar if callers are outside the cluster.
 
 A caller presents a ServiceAccount token as `Authorization: Bearer <token>`. The server
 runs a **TokenReview** to establish who that is, then a **SubjectAccessReview** asking
-whether that identity may `get` the `mcp-caller` ConfigMap. If it may, the call proceeds.
+whether that identity may `get` `callers.gate.ottoflow.nirmata.io/mcp-caller`. If it may, the call proceeds. A hand-written Role on `configmaps/mcp-caller` no longer works; re-grant it on `callers.gate.ottoflow.nirmata.io`.
 
 So "who may invoke workflows" is a RoleBinding:
 
@@ -77,7 +77,7 @@ binding. This is the same model the agent-executor uses, with a separate Cluster
 calling the agent executor and running any workflow in the cluster are different grants,
 and one role for both would make the narrower one impossible to give out.
 
-> The ConfigMap's contents are never read. The permission is the whole signal.
+> Nothing serves `callers.gate.ottoflow.nirmata.io`, so no object needs to exist. The permission is the whole signal.
 
 ## Describing a workflow for a model
 
