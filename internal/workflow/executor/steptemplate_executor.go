@@ -208,15 +208,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 
 	// Handle ResourceQuery
 	if templateStep.ResourceQuery != nil {
-		instantiated.ResourceQuery = &ottoflowv1alpha1.StepResourceQuery{
-			APIVersion:    templateStep.ResourceQuery.APIVersion,
-			Resource:      templateStep.ResourceQuery.Resource,
-			Namespace:     templateStep.ResourceQuery.Namespace,
-			Name:          templateStep.ResourceQuery.Name,
-			LabelSelector: templateStep.ResourceQuery.LabelSelector,
-			FieldSelector: templateStep.ResourceQuery.FieldSelector,
-			Outputs:       make(map[string]string),
-		}
+		instantiated.ResourceQuery = templateStep.ResourceQuery.DeepCopy()
 		// Substitute ResourceQuery fields
 		if templateStep.ResourceQuery.Namespace != "" {
 			substituted, err := substituteString(templateStep.ResourceQuery.Namespace)
@@ -241,7 +233,6 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 		}
 		// Substitute labelSelector values (each value is a CEL expression that may contain template placeholders)
 		if len(templateStep.ResourceQuery.LabelSelector) > 0 {
-			instantiated.ResourceQuery.LabelSelector = make(map[string]string)
 			for k, v := range templateStep.ResourceQuery.LabelSelector {
 				substituted, err := substituteString(v)
 				if err != nil {
@@ -304,11 +295,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 
 	// Handle AgentRef
 	if templateStep.AgentRef != nil {
-		instantiated.AgentRef = &ottoflowv1alpha1.StepAgentRef{
-			Name:              templateStep.AgentRef.Name,
-			Namespace:         templateStep.AgentRef.Namespace,
-			AdditionalPrompts: make([]string, len(templateStep.AgentRef.AdditionalPrompts)),
-		}
+		instantiated.AgentRef = templateStep.AgentRef.DeepCopy()
 		// Substitute additionalPrompts
 		for i, prompt := range templateStep.AgentRef.AdditionalPrompts {
 			substituted, err := substituteString(prompt)
