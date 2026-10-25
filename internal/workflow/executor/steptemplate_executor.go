@@ -369,23 +369,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 // already-substituted value. Auth and CASecretRef pointer trees are fully deep-copied so
 // concurrent forEach template instantiations cannot share the same underlying structs.
 func deepCopyExternalAgentRef(src *ottoflowv1alpha1.StepExternalAgentRef, prompt string) *ottoflowv1alpha1.StepExternalAgentRef {
-	dst := &ottoflowv1alpha1.StepExternalAgentRef{
-		URL:      src.URL,
-		Protocol: src.Protocol,
-		Prompt:   prompt,
-		Timeout:  src.Timeout,
-	}
-	if src.Auth != nil {
-		authCopy := ottoflowv1alpha1.ExternalAgentAuth{}
-		if src.Auth.SecretRef != nil {
-			secretRefCopy := *src.Auth.SecretRef
-			authCopy.SecretRef = &secretRefCopy
-		}
-		dst.Auth = &authCopy
-	}
-	if src.CASecretRef != nil {
-		caRefCopy := *src.CASecretRef
-		dst.CASecretRef = &caRefCopy
-	}
+	dst := src.DeepCopy()
+	dst.Prompt = prompt
 	return dst
 }
