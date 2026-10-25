@@ -1618,6 +1618,13 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 		attempts = workflowRun.Status.Execution.Attempts
 	}
 
+	for _, c := range job.Status.Conditions {
+		if (c.Type == batchv1.JobFailureTarget || c.Type == batchv1.JobFailed) &&
+			c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {
+			return r.markRunTerminallyFailed(ctx, workflowRun, jobName, batchv1.JobReasonDeadlineExceeded, attempts)
+		}
+	}
+
 	if checkpointingEnabledForRun(workflow, workflowRun) {
 		terminationReason = getPodTerminationReason(ctx, r.Client, workflowRun.Namespace, jobName)
 		maxAttempts := maxRestartAttemptsForRun(workflowRun)
