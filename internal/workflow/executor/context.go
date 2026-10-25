@@ -57,7 +57,7 @@ func (cm *ContextManager) InitializeContext(ctx context.Context, workflow *ottof
 	// Set defaults for inputs that weren't provided so CEL always sees every declared input.
 	for _, input := range workflow.Spec.Inputs {
 		if _, exists := params[input.Name]; !exists {
-			if input.Required {
+			if input.Required && input.Default == "" {
 				return fmt.Errorf("required input %s not provided", input.Name)
 			}
 			// Apply default (including empty string) so inputs.<name> is always defined in CEL.
