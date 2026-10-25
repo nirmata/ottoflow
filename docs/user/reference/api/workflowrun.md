@@ -75,7 +75,7 @@ Exactly one cluster source should be set when `clusterRef` is present.
 | `affinity` | Affinity | No | Affinity/anti-affinity rules for the runner pod. |
 | `backoffLimit` | integer | No | Job retry limit. Defaults to `0` when omitted. |
 | `ttlSecondsAfterFinished` | integer | No | Job TTL after completion. |
-| `activeDeadlineSeconds` | integer | No | Maximum runtime for the runner Job. |
+| `activeDeadlineSeconds` | integer | No | Maximum runtime for the runner Job, in seconds. When omitted here, the Workflow's `spec.execution.job.activeDeadlineSeconds` is used, and when that is omitted too it defaults to `3600`. Set a larger value for longer runs. `0` does not mean unlimited: Kubernetes fails the Job at once. |
 
 ---
 
