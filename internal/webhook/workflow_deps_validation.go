@@ -8,15 +8,19 @@ that can be found in the LICENSE.md file.
 package webhook
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/google/cel-go/cel"
+
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
 
-// steps.<stepName> or steps.<stepName>.field...
-var stepsRefRe = regexp.MustCompile(`steps\.([a-z][a-zA-Z0-9]*)`)
+// steps.<stepName> or steps.<stepName>.field..., and stepStatus.<stepName>...
+// The leading group rejects nested member names such as variables.payload.stepStatus.x.
+var stepsRefRe = regexp.MustCompile(`(?:^|[^.\w])(?:steps|stepStatus)\.([a-z][a-zA-Z0-9]*)`)
 
 // variables.<name>
 var variablesRefRe = regexp.MustCompile(`variables\.([a-zA-Z][a-zA-Z0-9]*)`)
@@ -24,10 +28,10 @@ var variablesRefRe = regexp.MustCompile(`variables\.([a-zA-Z][a-zA-Z0-9]*)`)
 // inputs.<name>
 var inputsRefRe = regexp.MustCompile(`inputs\.([a-zA-Z_][a-zA-Z0-9_]*)`)
 
-// celStringLiteralRe matches CEL double-quoted string literals (including escape sequences).
+// celStringLiteralRe matches CEL double- and single-quoted string literals (including escape sequences).
 // Used to strip string literal content before scanning for identifier references so that
 // occurrences of inputs.* inside quoted strings don't produce false-positive UNDEFINED_INPUT errors.
-var celStringLiteralRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+var celStringLiteralRe = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'`)
 
 // ValidateStepDependencies checks that any step referencing another step's output
 // (via steps.* or variables.* from a step output) has the corresponding dependency in dependsOn.
@@ -176,7 +180,8 @@ func hasProducerDependency(stepName string, producers []string, deps map[string]
 func extractStepRefs(exprs []string) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, s := range exprs {
-		for _, m := range stepsRefRe.FindAllStringSubmatch(s, -1) {
+		stripped := celStringLiteralRe.ReplaceAllString(s, `""`)
+		for _, m := range stepsRefRe.FindAllStringSubmatch(stripped, -1) {
 			if len(m) >= 2 {
 				out[m[1]] = struct{}{}
 			}
@@ -272,7 +277,7 @@ func collectCELStringsFromStep(step *ottoflowv1alpha1.Step) []string {
 			out = append(out, o.Expression)
 		}
 		if o.Value != nil && len(o.Value.Raw) > 0 {
-			out = append(out, string(o.Value.Raw))
+			out = append(out, jsonStringValues(o.Value.Raw)...)
 		}
 	}
 	for _, m := range step.MatchConditions {
@@ -384,7 +389,7 @@ func collectCELStringsFromForEachStep(inner *ottoflowv1alpha1.StepForEachStep) [
 			out = append(out, o.Expression)
 		}
 		if o.Value != nil && len(o.Value.Raw) > 0 {
-			out = append(out, string(o.Value.Raw))
+			out = append(out, jsonStringValues(o.Value.Raw)...)
 		}
 	}
 	for _, m := range inner.MatchConditions {
@@ -486,5 +491,46 @@ func collectCELStringsFromOpenReport(ref *ottoflowv1alpha1.StepOpenReport) []str
 	if ref.SummaryExpression != "" {
 		out = append(out, ref.SummaryExpression)
 	}
+	return out
+}
+
+var celParseEnv, _ = cel.NewEnv()
+
+// evaluatedAsCEL mirrors the executor's EvaluateOutputValue: a string is tried as CEL only if it contains
+// '.', '(' or '[' and otherwise (or if it does not parse) stays literal text.
+func evaluatedAsCEL(s string) bool {
+	if !strings.ContainsAny(s, ".([") {
+		return false
+	}
+	_, iss := celParseEnv.Parse(s)
+	return iss.Err() == nil
+}
+
+// jsonStringValues returns the string values (not keys) of a JSON document, so each is scanned as a
+// CEL expression on its own. Scanning the serialized JSON would strip those values as literals.
+func jsonStringValues(raw []byte) []string {
+	var v interface{}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return []string{string(raw)}
+	}
+	var out []string
+	var walk func(interface{})
+	walk = func(x interface{}) {
+		switch t := x.(type) {
+		case string:
+			if evaluatedAsCEL(t) {
+				out = append(out, t)
+			}
+		case []interface{}:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]interface{}:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
 	return out
 }

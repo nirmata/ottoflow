@@ -128,6 +128,9 @@ var forbiddenGrants = []forbiddenGrant{
 	{apiGroup: "batch", resource: "jobs", verbs: []string{"create"}},
 	{apiGroup: "", resource: "serviceaccounts", verbs: []string{"create"}},
 	{apiGroup: "rbac.authorization.k8s.io", resource: "clusterrolebindings", verbs: []string{"create"}},
+	// Default render only: ConfigMap writes come from the per-namespace -runner-configmap-writer role;
+	// the extraResources opt-in may add update/patch.
+	{apiGroup: "", resource: "configmaps", verbs: []string{"create", "update", "patch", "delete", "deletecollection"}},
 	// Every verb on secrets: the runner reads the Secrets the controller mounts into its Job
 	// from files and holds no Secret grant of its own. get/list/watch is the rule this chart
 	// removed from the runner role; it is listed here so that re-adding it fails this test.

@@ -402,20 +402,19 @@ func TestReconcileCerts_FakeClient(t *testing.T) {
 // TestSetup_Envtest is the regression guard against a live API server: it runs Setup for both
 // services with none of the four cert Secrets pre-created, and asserts every one ends up created
 // and valid. It also asserts a second Setup is a UID-unchanged no-op (the renewer owns steady
-// state). Skips when envtest assets are unavailable.
+// state).
 func TestSetup_Envtest(t *testing.T) {
 	_, thisFile, _, _ := runtime.Caller(0)
 	repoRoot := filepath.Join(filepath.Dir(thisFile), "..", "..")
 
 	env := &envtest.Environment{
-		// Prefer KUBEBUILDER_ASSETS (set by `make test`); fall back to auto-download for CI.
 		BinaryAssetsDirectory:       filepath.Join(repoRoot, "bin", "k8s"),
 		DownloadBinaryAssets:        true,
 		DownloadBinaryAssetsVersion: "1.29.0",
 	}
 	cfg, err := env.Start()
 	if err != nil {
-		t.Skipf("envtest unavailable, skipping cert bootstrap regression test: %v", err)
+		t.Fatalf("envtest start: %v", err)
 	}
 	defer func() { _ = env.Stop() }()
 

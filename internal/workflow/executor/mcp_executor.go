@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/mark3labs/mcp-go/client/transport"
 	"go.opentelemetry.io/otel"
@@ -22,6 +24,23 @@ import (
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/agent"
 )
+
+// mcpToolErrorMessage recognises the envelope the kubectl-ai fork returns, with a nil error, for an isError tool result.
+func mcpToolErrorMessage(result interface{}) (string, bool) {
+	const prefix, suffix = `{"error": true, "message": `, `, "status": "failed"}`
+	switch r := result.(type) {
+	case map[string]interface{}:
+		msg, _ := r["message"].(string)
+		return msg, r["error"] == true && r["status"] == "failed"
+	case string:
+		if !strings.HasPrefix(r, prefix) || !strings.HasSuffix(r, suffix) {
+			return "", false
+		}
+		msg, err := strconv.Unquote(r[len(prefix) : len(r)-len(suffix)])
+		return msg, err == nil
+	}
+	return "", false
+}
 
 // executeMCPToolCall executes an MCP tool call step
 func (e *WorkflowExecutor) executeMCPToolCall(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (_ map[string]interface{}, err error) {
@@ -92,6 +111,9 @@ func (e *WorkflowExecutor) executeMCPToolCall(ctx context.Context, workflowRun *
 			}
 		}
 		return nil, fmt.Errorf("MCP tool call failed: %w", err)
+	}
+	if msg, isToolErr := mcpToolErrorMessage(toolResult); isToolErr {
+		return nil, fmt.Errorf("MCP tool reported an error: %s", msg)
 	}
 
 	var outputs map[string]interface{}

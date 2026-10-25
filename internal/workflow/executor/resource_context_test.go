@@ -8,6 +8,12 @@ that can be found in the LICENSE.md file.
 package executor
 
 import (
+	"context"
+	"fmt"
+	"math"
+	"strconv"
+	"sync/atomic"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -18,7 +24,40 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
+
+// pagedListClient serves total ConfigMaps in pages honouring Limit/Continue, counting List calls.
+// Pages are sliced from one pre-built slice so a read-ahead producer outruns the consumer.
+func pagedListClient(scheme *runtime.Scheme, total int, pages *atomic.Int64) client.Client {
+	all := make([]unstructured.Unstructured, total)
+	for i := range all {
+		all[i].SetAPIVersion("v1")
+		all[i].SetKind("ConfigMap")
+		all[i].SetName(fmt.Sprintf("cm-%d", i))
+		all[i].SetNamespace("ns")
+	}
+	return interceptor.NewClient(fake.NewClientBuilder().WithScheme(scheme).Build(), interceptor.Funcs{
+		List: func(_ context.Context, _ client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			lo := &client.ListOptions{}
+			lo.ApplyOptions(opts)
+			start, end := 0, total
+			if lo.Continue != "" {
+				start, _ = strconv.Atoi(lo.Continue)
+			}
+			if lo.Limit > 0 && start+int(lo.Limit) < total {
+				end = start + int(lo.Limit)
+			}
+			pages.Add(1)
+			ul := list.(*unstructured.UnstructuredList)
+			ul.Items = all[start:end]
+			if end < total {
+				ul.SetContinue(strconv.Itoa(end))
+			}
+			return nil
+		},
+	})
+}
 
 var _ = Describe("resourceContext", func() {
 	var (
@@ -153,5 +192,35 @@ var _ = Describe("resourceContext", func() {
 		Expect(convertResourceNameToKind("")).To(Equal(""))
 		// generic "ingresses" -> strip 's' and capitalize -> "Ingresse" (no special-case for "ingress")
 		Expect(convertResourceNameToKind("ingresses")).To(Equal("Ingresse"))
+	})
+
+	It("ListResources returns exactly listMaxItems items without error", func() {
+		var pages atomic.Int64
+		rc = &resourceContext{client: pagedListClient(scheme, listMaxItems, &pages), namespace: "ns"}
+
+		list, err := rc.ListResources("v1", "configmaps", "ns", nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(list.Items).To(HaveLen(listMaxItems))
+	})
+
+	It("ListResources fails closed above listMaxItems and bounds the pages fetched", func() {
+		var pages atomic.Int64
+		total := listMaxItems + 11*listPageSize
+		rc = &resourceContext{client: pagedListClient(scheme, total, &pages), namespace: "ns"}
+
+		list, err := rc.ListResources("v1", "configmaps", "ns", nil)
+		Expect(err).To(MatchError(ContainSubstring("more than 10000 items")))
+		Expect(list).To(BeNil())
+		Expect(pages.Load()).To(BeNumerically("<=", int(math.Ceil(float64(listMaxItems+1)/listPageSize))+1))
+	})
+
+	It("resource.List() fails the CEL expression above listMaxItems", func() {
+		var pages atomic.Int64
+		ev, err := NewCELEvaluator(pagedListClient(scheme, listMaxItems+1, &pages), nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = ev.EvaluateExpression(context.Background(),
+			`size(dyn(resource.List("v1", "configmaps", "ns", {})).items) > 0`, nil)
+		Expect(err).To(MatchError(And(ContainSubstring("failed to list resource"), ContainSubstring("more than 10000 items"))))
 	})
 })
