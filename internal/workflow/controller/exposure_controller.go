@@ -114,7 +114,7 @@ func (r *WorkflowExposureReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Teardown: not opted in, incompatible input schema, or Workflow being deleted. Delete the
 	// Agent, keep the shared SA/RoleBinding (namespace fixtures shared by other exposed Workflows).
-	if !exposable || beingDeleted {
+	if !exposable || beingDeleted || r.ServeA2AImage == "" {
 		if controllerutil.ContainsFinalizer(wf, a2aExposureFinalizer) {
 			if err := r.deleteAgent(ctx, wf); err != nil {
 				logger.Error(err, "failed to delete kagent Agent", logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
@@ -125,14 +125,6 @@ func (r *WorkflowExposureReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
 		}
-		return ctrl.Result{}, nil
-	}
-
-	// Setup path. Without an image we cannot build a working Agent; log and wait for the
-	// next spec change / resync rather than creating a broken Agent.
-	if r.ServeA2AImage == "" {
-		logger.Info("serve-a2a image not configured; skipping a2a exposure",
-			logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
 		return ctrl.Result{}, nil
 	}
 
