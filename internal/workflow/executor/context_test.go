@@ -79,6 +79,24 @@ var _ = Describe("ContextManager", func() {
 			Expect(err.Error()).To(ContainSubstring("required"))
 		})
 
+		It("should apply the default when a required input with a default is not provided", func() {
+			workflow := &ottoflowv1alpha1.Workflow{
+				Spec: ottoflowv1alpha1.WorkflowSpec{
+					Inputs: []ottoflowv1alpha1.Input{
+						{Name: "name", Required: true, Default: "default-value"},
+					},
+				},
+			}
+
+			err := contextManager.InitializeContext(ctx, workflow, map[string]string{})
+			Expect(err).NotTo(HaveOccurred())
+
+			contextData, err := contextManager.ReadContext(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			inputs := contextData["inputs"].(map[string]interface{})
+			Expect(inputs["name"]).To(Equal("default-value"))
+		})
+
 		It("should use default values when input not provided", func() {
 			workflow := &ottoflowv1alpha1.Workflow{
 				Spec: ottoflowv1alpha1.WorkflowSpec{

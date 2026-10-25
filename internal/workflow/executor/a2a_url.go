@@ -37,7 +37,7 @@ func ValidateExternalAgentTransport(step *ottoflowv1alpha1.StepExternalAgentRef)
 		return u, nil
 	case "http":
 		if !step.AllowInsecureHTTP {
-			return nil, fmt.Errorf("externalAgentRef URL must use HTTPS (set allowInsecureHTTP to permit http:// to cluster-local hosts), got %q", step.URL)
+			return nil, fmt.Errorf("externalAgentRef URL must use HTTPS, got %q (allowInsecureHTTP is false on this step as evaluated; if your manifest sets allowInsecureHTTP, the installed Workflow or StepTemplate CRD may predate the field and the API server dropped it: update the CRDs, then re-apply the Workflow or StepTemplate)", step.URL)
 		}
 		if step.Auth != nil && step.Auth.SecretRef != nil {
 			return nil, fmt.Errorf("allowInsecureHTTP cannot be combined with auth.secretRef (a bearer token must not be sent over cleartext http)")

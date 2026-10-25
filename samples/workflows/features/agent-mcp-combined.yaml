@@ -50,7 +50,7 @@ spec:
               variables.answer)
       outputs:
         - name: recommendations
-          expression: 'agentOutputs.recommendations'
+          expression: 'has(agentOutputs.result) ? agentOutputs.result : agentResponse'
         - name: analysis
           expression: 'agentResponse'
 ---

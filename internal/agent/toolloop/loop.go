@@ -64,6 +64,7 @@ func Run(ctx context.Context, chat gollm.Chat, initialContent []any, toolset map
 		}
 
 		var text string
+		var sawCandidate bool
 		var functionCalls []gollm.FunctionCall
 		for response, streamErr := range stream {
 			if streamErr != nil {
@@ -80,10 +81,11 @@ func Run(ctx context.Context, chat gollm.Chat, initialContent []any, toolset map
 				// Some providers (e.g. gollm's Anthropic streaming client) emit a
 				// trailing response that carries only usage metadata and no
 				// content once the stream ends. That's not a broken response --
-				// a genuinely empty/blocked model reply surfaces as streamErr
-				// above, not as a content-less-but-successful event here.
+				// a genuinely empty/blocked model reply can yield no candidate at
+				// all, which is rejected after the stream ends.
 				continue
 			}
+			sawCandidate = true
 			for _, part := range candidates[0].Parts() {
 				if t, ok := part.AsText(); ok {
 					text += t
@@ -94,6 +96,9 @@ func Run(ctx context.Context, chat gollm.Chat, initialContent []any, toolset map
 			}
 		}
 
+		if !sawCandidate {
+			return "", usage, fmt.Errorf("chat response had no candidates")
+		}
 		if len(functionCalls) == 0 {
 			return text, usage, nil
 		}

@@ -44,6 +44,9 @@ import (
 	executor "github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
+// defaultRunnerActiveDeadlineSeconds bounds a runner Job when neither the run nor its Workflow sets activeDeadlineSeconds.
+const defaultRunnerActiveDeadlineSeconds int64 = 3600
+
 // RunnerConfig holds controller configuration for the workflow runner Job (images, RBAC, secrets).
 // Values are set from process flags in cmd/controller/main.go.
 type RunnerConfig struct {
@@ -214,7 +217,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretAccessDeniedReason(err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretMountFailureReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -334,6 +337,10 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 }
 
 func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
+	return resolveWorkflow(ctx, r.Client, r.ControllerNamespace, workflowRun)
+}
+
+func resolveWorkflow(ctx context.Context, c client.Client, controllerNamespace string, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
 	workflowRef := workflowRun.Spec.WorkflowRef
 	workflowNamespace := workflowRef.Namespace
 	if workflowNamespace == "" {
@@ -345,7 +352,7 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 		Name:      workflowRef.Name,
 		Namespace: workflowNamespace,
 	}
-	err := r.Get(ctx, workflowKey, workflow)
+	err := c.Get(ctx, workflowKey, workflow)
 	if err == nil {
 		return workflow, workflowNamespace, nil
 	}
@@ -354,20 +361,20 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 	// has a ControllerNamespace configured, try that namespace. Common case: an upstream
 	// caller hardcodes workflowRef.namespace=ottoflow but the install lives in a
 	// different namespace.
-	if apierrors.IsNotFound(err) && r.ControllerNamespace != "" && r.ControllerNamespace != workflowNamespace {
+	if apierrors.IsNotFound(err) && controllerNamespace != "" && controllerNamespace != workflowNamespace {
 		fallbackKey := types.NamespacedName{
 			Name:      workflowRef.Name,
-			Namespace: r.ControllerNamespace,
+			Namespace: controllerNamespace,
 		}
 		fallback := &ottoflowv1alpha1.Workflow{}
-		if fbErr := r.Get(ctx, fallbackKey, fallback); fbErr == nil {
+		if fbErr := c.Get(ctx, fallbackKey, fallback); fbErr == nil {
 			klog.Warningf("Workflow %s not found; falling back to controller namespace %q. The upstream caller should set workflowRef.namespace=%q to make this lookup explicit.",
-				workflowKey, r.ControllerNamespace, r.ControllerNamespace)
-			return fallback, r.ControllerNamespace, nil
+				workflowKey, controllerNamespace, controllerNamespace)
+			return fallback, controllerNamespace, nil
 		} else if !apierrors.IsNotFound(fbErr) {
 			// Transient fallback error (e.g. API server timeout): the caller must requeue, not
 			// terminally fail the run on what would otherwise be treated as a NotFound.
-			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, r.ControllerNamespace, fbErr)
+			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, controllerNamespace, fbErr)
 		}
 	}
 
@@ -1162,7 +1169,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	var nodeSelector map[string]string
 	var tolerations []corev1.Toleration
 	var affinity *corev1.Affinity
-	var activeDeadlineSeconds *int64
+	activeDeadlineSeconds := ptr.To(defaultRunnerActiveDeadlineSeconds)
+	if workflow != nil && workflow.Spec.Execution != nil && workflow.Spec.Execution.Job != nil &&
+		workflow.Spec.Execution.Job.ActiveDeadlineSeconds != nil {
+		activeDeadlineSeconds = workflow.Spec.Execution.Job.ActiveDeadlineSeconds
+	}
 
 	if jobSpec != nil && jobSpec.Job != nil {
 		if err := jobSpec.Job.Validate(); err != nil {
@@ -1180,7 +1191,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		if jobSpec.Job.TTLSecondsAfterFinished != nil {
 			ttlSecondsAfterFinished = *jobSpec.Job.TTLSecondsAfterFinished
 		}
-		activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		if jobSpec.Job.ActiveDeadlineSeconds != nil {
+			activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		}
 		// Reserved names are refused before the author's entries are merged, so the run fails at
 		// build time — before reconcileJobExecution creates anything for it — rather than letting
 		// a duplicate silently replace a controller-owned value (see reservedRunnerEnvNames).
@@ -1271,6 +1284,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	volumes = append(volumes, secretVolumes...)
 	volumeMounts = append(volumeMounts, secretVolumeMounts...)
+	notChecked, err := r.checkSecretMounts(ctx, workflowRun.Namespace, secretVolumes, secretVolumeOrigins, runnerCopiedSecretNames(volumes))
+	if err != nil {
+		return nil, err
+	}
+	r.recordUncheckedSecretMounts(workflowRun, notChecked)
 
 	jobName := workflowRunnerJobName(workflowRun.Name)
 	runnerEnv := []corev1.EnvVar{
@@ -1597,6 +1615,13 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 	attempts := int32(0)
 	if workflowRun.Status.Execution != nil {
 		attempts = workflowRun.Status.Execution.Attempts
+	}
+
+	for _, c := range job.Status.Conditions {
+		if (c.Type == batchv1.JobFailureTarget || c.Type == batchv1.JobFailed) &&
+			c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {
+			return r.markRunTerminallyFailed(ctx, workflowRun, jobName, batchv1.JobReasonDeadlineExceeded, attempts)
+		}
 	}
 
 	if checkpointingEnabledForRun(workflow, workflowRun) {

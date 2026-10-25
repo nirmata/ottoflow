@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -237,6 +238,11 @@ func runWorkflowLocal(ctx context.Context, k8sClient client.Client, config *rest
 	} else {
 		exec.SetMetricsClient(mc)
 	}
+	if kc, err := kubernetes.NewForConfig(config); err != nil {
+		klog.V(2).InfoS("kube client unavailable, resource.GetLogs() will be disabled", "error", err)
+	} else {
+		exec.SetKubeClient(kc)
+	}
 
 	if err := exec.LoadFromDirectory(workflowDir); err != nil {
 		return fmt.Errorf("load workflow dir: %w", err)
@@ -282,6 +288,11 @@ func runWorkflowFromStream(cmd *cobra.Command, ctx context.Context, args []strin
 			klog.V(2).InfoS("metrics client unavailable, resourceMetrics() will be disabled", "error", err)
 		} else {
 			exec.SetMetricsClient(mc)
+		}
+		if kc, err := kubernetes.NewForConfig(config); err != nil {
+			klog.V(2).InfoS("kube client unavailable, resource.GetLogs() will be disabled", "error", err)
+		} else {
+			exec.SetKubeClient(kc)
 		}
 	}
 

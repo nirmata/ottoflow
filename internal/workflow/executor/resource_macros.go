@@ -84,7 +84,7 @@ const (
 // tailLines=0 fetches the full log (no TailLines in PodLogOptions); values >10000 are clamped.
 //
 // This function is called inside prg.Eval() while macroEvalMu is held. That is safe because
-// CELEvaluator is constructed per-WorkflowRun and macroEvalMu serialises all CEL evaluation
+// CELEvaluator is constructed per-WorkflowRun and macroEvalMu serialises macro-calling CEL evaluation
 // within a single run (forEach goroutines each acquire it independently). The 30s timeout
 // caps the worst-case blocking window.
 func fetchPodLogs(ctx context.Context, kubeClient kubernetes.Interface, ns, podName, containerName string, tailLines int64) (string, error) {
@@ -204,7 +204,7 @@ func GetResourceMacroOptions(k8sClient client.Client, namespace string, macroCtx
 // GetResourceMacroOptionsWithMetrics returns CEL environment options for resource helper macros
 // with optional metrics clients for resourceMetrics and prometheusMetrics functions.
 // kubeClient is optional; when nil, resource.GetLogs and resourceLogs return a CEL error.
-// macroCtx is updated by EvaluateExpression before each evaluation so that macro closures
+// macroCtx is updated by EvaluateExpression before each evaluation that calls one of them so that macro closures
 // use the caller's context rather than context.Background().
 func GetResourceMacroOptionsWithMetrics(
 	k8sClient client.Client,
@@ -632,6 +632,9 @@ func GetResourceMacroOptionsWithMetrics(
 		),
 	)
 
+	if macroCtx != nil {
+		macroCtx.readers = []string{"resourceLogs", "resource.GetLogs", "resourceEvents", "resourceMetrics", "resourceMetricsList", "prometheusMetrics"}
+	}
 	opts = append(opts,
 		resourceLogsFunc, resourceGetLogsFunc, resourceEventsFunc, resourceMetricsFunc, resourceMetricsListFunc, prometheusMetricsFunc,
 		podTotalCPURequestFunc, podTotalMemRequestFunc,
