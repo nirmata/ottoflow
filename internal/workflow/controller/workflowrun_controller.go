@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -53,6 +54,8 @@ type RunnerConfig struct {
 	RunnerServiceAccount    string // default: controller-manager
 	RunnerClusterRole       string // required; validated non-empty at controller startup (no default)
 	AgentExecutorCallerRole string // empty disables RBAC-based agent-executor auth
+	// RunnerConfigMapWriterRole is the ClusterRole bound per run namespace for runner ConfigMap writes; empty disables.
+	RunnerConfigMapWriterRole string
 	// AgentExecutorCASecret names the certificate manager's agent-executor CA Secret in
 	// AgentExecutorNamespace. Its certificate (tls.crt, never tls.key) is published as a
 	// ConfigMap of the same name in each namespace that runs a workflow with an agent step, and
@@ -222,7 +225,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 		if err := r.ensureRunnerAccess(ctx, workflowRun, workflow, createdJob.Spec.Template.Spec.ServiceAccountName, workflowRunUsesExplicitRunnerServiceAccount(workflowRun)); err != nil {
 			if errors.Is(err, errRequeueRunnerAccess) {
-				logger.Info("runner ClusterRoleBinding migration in progress, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
+				logger.Info("runner RBAC binding not ready, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "reason", err.Error())
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
@@ -261,6 +264,11 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 			}
 		} else {
 			job = createdJob
+		}
+	} else if sa := job.Spec.Template.Spec.ServiceAccountName; sa != "" && !workflowRunUsesExplicitRunnerServiceAccount(workflowRun) {
+		// Existing Job may predate the writer binding; log and fall through so Job supervision below still runs.
+		if err := r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, sa, ""); err != nil {
+			logger.V(2).Info("failed to ensure runner ConfigMap writer RoleBinding", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "error", err.Error())
 		}
 	}
 
@@ -435,10 +443,10 @@ func workflowRunUsesExplicitRunnerServiceAccount(workflowRun *ottoflowv1alpha1.W
 		workflowRun.Spec.Execution.Job.ServiceAccountName != ""
 }
 
-// errRequeueRunnerAccess signals that a runner ClusterRoleBinding is being migrated to a new
-// RoleRef (delete-and-recreate, since RoleRef is immutable) and the caller should requeue and
+// errRequeueRunnerAccess signals that a runner ClusterRoleBinding or ConfigMap-writer RoleBinding is
+// being migrated or recreated (RoleRef is immutable) and the caller should requeue and
 // retry rather than treat this as a terminal failure.
-var errRequeueRunnerAccess = errors.New("runner ClusterRoleBinding migration in progress")
+var errRequeueRunnerAccess = errors.New("runner RBAC binding migration in progress")
 
 // buildRunnerClusterRoleBinding constructs the ClusterRoleBinding that grants a workflow-runner
 // ServiceAccount access to the given ClusterRole.
@@ -519,7 +527,7 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 	} else {
 		// Only update bindings that we manage; avoid overwriting user-managed ClusterRoleBindings with the same name
 		const partOfLabel = "app.kubernetes.io/part-of"
-		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != "ottoflow" {
+		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != ottoflowPartOf {
 			return fmt.Errorf("ClusterRoleBinding %s exists but is not managed by OttoFlow (missing label %s=ottoflow); refusing to update", clusterRoleBindingName, partOfLabel)
 		}
 
@@ -582,7 +590,82 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		}
 	}
 
-	return nil
+	return r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, serviceAccountName, serviceAccount.UID)
+}
+
+func runnerConfigMapWriterBindingName(serviceAccountName string) string {
+	return "ottoflow-runner-configmap-writer-" + serviceAccountName
+}
+
+// ensureRunnerConfigMapWriter binds the runner SA to the ConfigMap-write ClusterRole in its own namespace only.
+func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context, namespace, serviceAccountName string, saUID types.UID) error {
+	roleName := r.RunnerConfig.RunnerConfigMapWriterRole
+	if roleName == "" {
+		return nil
+	}
+	const partOfLabel = "app.kubernetes.io/part-of"
+	key := types.NamespacedName{Namespace: namespace, Name: runnerConfigMapWriterBindingName(serviceAccountName)}
+	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: namespace}}
+	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}
+	existing := &rbacv1.RoleBinding{}
+	switch err := r.Get(ctx, key, existing); {
+	case err == nil:
+		if existing.Labels[partOfLabel] != ottoflowPartOf {
+			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (missing label %s=%s); refusing to update", key.Namespace, key.Name, partOfLabel, ottoflowPartOf)
+		}
+		if existing.DeletionTimestamp != nil {
+			return errRequeueRunnerAccess
+		}
+		// A binding owned by a previous SA incarnation is garbage-collected with it, so recreate it too.
+		// An empty saUID (steady-state reconcile) skips the owner check to avoid a live SA read per reconcile.
+		if existing.RoleRef == roleRef && (saUID == "" || slices.ContainsFunc(existing.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == saUID })) {
+			if slices.Equal(existing.Subjects, subjects) {
+				return nil
+			}
+			existing.Subjects = subjects
+			return classifyRunnerWriterErr(r.Update(ctx, existing), key)
+		}
+		// RoleRef is immutable: recreate.
+		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+			return classifyRunnerWriterErr(err, key)
+		}
+	case !apierrors.IsNotFound(err):
+		return classifyRunnerWriterErr(err, key)
+	}
+
+	if saUID == "" {
+		// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
+		sa := &corev1.ServiceAccount{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: serviceAccountName}, sa); err != nil {
+			return classifyRunnerWriterErr(err, key)
+		}
+		saUID = sa.UID
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      key.Name,
+			Namespace: namespace,
+			Labels:    map[string]string{partOfLabel: ottoflowPartOf},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1", Kind: "ServiceAccount", Name: serviceAccountName, UID: saUID,
+			}},
+		},
+		RoleRef:  roleRef,
+		Subjects: subjects,
+	}
+	return classifyRunnerWriterErr(r.Create(ctx, rb), key)
+}
+
+// classifyRunnerWriterErr keeps Forbidden/Invalid terminal and requeues every other failure.
+func classifyRunnerWriterErr(err error, key types.NamespacedName) error {
+	switch {
+	case err == nil:
+		return nil
+	case apierrors.IsForbidden(err) || apierrors.IsInvalid(err):
+		return fmt.Errorf("cannot reconcile runner ConfigMap writer RoleBinding %s/%s: %w", key.Namespace, key.Name, err)
+	default:
+		return fmt.Errorf("%w: runner ConfigMap writer RoleBinding %s/%s: %w", errRequeueRunnerAccess, key.Namespace, key.Name, err)
+	}
 }
 
 func (r *WorkflowRunReconciler) ensureAgentExecutorCallerBinding(ctx context.Context, namespace, serviceAccountName, roleName string) error {

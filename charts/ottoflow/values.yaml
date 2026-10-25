@@ -544,6 +544,10 @@ rbac:
   # create ClusterRoleBindings referencing it even if the rule grants verbs the
   # controller itself doesn't hold (Kubernetes' RBAC escalation check allows this via
   # "bind" as an alternative to holding every referenced permission).
+  # ConfigMap reads are cluster-wide, but ConfigMap writes (checkpoints, audit snapshots,
+  # mutate steps) are granted only in the run's own namespace. Cross-namespace ConfigMap
+  # writes from a mutate step need the opt-in rule in the example below. With
+  # rbac.create=false the chart renders neither role and runner access is unchanged.
   runnerClusterRole:
     extraResources: []
     # A `secrets` (or `*`) resource here is REJECTED at render time: the controller can bind

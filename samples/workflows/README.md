@@ -772,7 +772,7 @@ Demonstrates:
 **Usage:**
 ```bash
 # Create a ConfigMap to mutate
-kubectl create configmap my-config --from-literal=key=value -n default
+kubectl create configmap my-config --from-literal=key=value -n ottoflow
 
 # Run the workflow (adds labels and annotation to the ConfigMap)
 kubectl apply -f mutate-step-example.yaml
