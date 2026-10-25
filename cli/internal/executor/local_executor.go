@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -54,6 +55,12 @@ type LocalWorkflowExecutor struct {
 	// metricsClient backs the resourceMetrics() CEL function. Optional: nil disables it,
 	// which is what happens when the caller has no reachable metrics-server.
 	metricsClient metricsclientset.Interface
+	kubeClient    kubernetes.Interface
+}
+
+// SetKubeClient supplies the typed clientset used by resource.GetLogs() and resourceLogs().
+func (e *LocalWorkflowExecutor) SetKubeClient(c kubernetes.Interface) {
+	e.kubeClient = c
 }
 
 // SetMetricsClient supplies the metrics.k8s.io client used by resourceMetrics(). Without
@@ -564,7 +571,7 @@ func (e *LocalWorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflowNam
 		0,
 		maxWorkers,
 		nil,
-		nil, // kubeClient: CLI local mode does not use resource.GetLogs
+		e.kubeClient,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create executor: %w", err)
