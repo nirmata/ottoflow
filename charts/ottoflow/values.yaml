@@ -406,6 +406,7 @@ serveA2A:
 
   # Shared ClusterRole the serve-a2a ServiceAccount is bound to (created by this chart when
   # rbac.create and serveA2A.enabled). When empty, defaults to "<fullname>-serve-a2a".
+  # MUST be set explicitly when rbac.create=false, since the default role won't exist.
   clusterRole: ""
 
   # Caller authentication on serve-a2a pods. By default every call except the public agent card
