@@ -534,7 +534,7 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		if clusterRoleBinding.RoleRef.Name != desiredRoleName {
 			// RoleRef is immutable on an existing ClusterRoleBinding, so migrating to a new
 			// (narrower) role requires delete-and-recreate rather than an in-place Update.
-			if err := r.Delete(ctx, clusterRoleBinding); client.IgnoreNotFound(err) != nil {
+			if err := r.Delete(ctx, clusterRoleBinding, client.Preconditions{UID: &clusterRoleBinding.UID}); client.IgnoreNotFound(err) != nil {
 				return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
 			}
 			fresh := buildRunnerClusterRoleBinding(clusterRoleBindingName, desiredRoleName, serviceAccountName, workflowRun.Namespace)
@@ -618,7 +618,7 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
 		}
 		// RoleRef is immutable: recreate.
-		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
 			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
 		}
 	case !apierrors.IsNotFound(err):
