@@ -701,7 +701,7 @@ func (r *WorkflowRunReconciler) ensureAgentExecutorCallerBinding(ctx context.Con
 	}
 	if existing.RoleRef != desired.RoleRef {
 		// RoleRef is immutable: delete and recreate.
-		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
 			return classifyRunnerAccessErr(err, "caller ClusterRoleBinding", key)
 		}
 		return classifyRunnerAccessErr(r.Create(ctx, desired), "caller ClusterRoleBinding", key)

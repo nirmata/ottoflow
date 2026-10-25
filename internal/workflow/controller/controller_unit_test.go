@@ -837,6 +837,49 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_RoleRefChangeRec
 	}
 }
 
+func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_StaleCacheKeepsReplacement(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
+	live := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: "new-uid"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "agent-caller"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "my-sa", Namespace: ns}},
+	}
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
+	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if crb, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
+				crb.UID = "old-uid"
+				crb.RoleRef.Name = "old-role"
+			}
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != "new-uid" {
+				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), errors.New("uid precondition"))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	got := &rbacv1.ClusterRoleBinding{}
+	if err := base.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.UID != "new-uid" {
+		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.UID)
+	}
+}
+
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
