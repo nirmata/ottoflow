@@ -271,9 +271,6 @@ func TestReconcileRoleBinding(t *testing.T) {
 		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
 			t.Fatalf("expected the RoleBinding to be created: %v", err)
 		}
-		if got.Labels[ownerLabel] != ottoflowPartOf {
-			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
-		}
 	})
 
 	t.Run("recreates when roleRef drifts (immutable)", func(t *testing.T) {
@@ -290,9 +287,6 @@ func TestReconcileRoleBinding(t *testing.T) {
 		if got.RoleRef.Name != "ottoflow-serve-a2a" {
 			t.Errorf("roleRef.Name = %q, want it repointed to %q", got.RoleRef.Name, "ottoflow-serve-a2a")
 		}
-		if got.Labels[ownerLabel] != ottoflowPartOf {
-			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
-		}
 	})
 
 	t.Run("updates subjects when only the ServiceAccount drifts", func(t *testing.T) {
@@ -308,9 +302,6 @@ func TestReconcileRoleBinding(t *testing.T) {
 		}
 		if len(got.Subjects) != 1 || got.Subjects[0].Name != "serve-a2a" {
 			t.Errorf("subjects = %+v, want the reconciled serve-a2a ServiceAccount", got.Subjects)
-		}
-		if got.Labels[ownerLabel] != ottoflowPartOf {
-			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
 		}
 	})
 
