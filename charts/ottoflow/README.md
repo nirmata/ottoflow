@@ -443,7 +443,7 @@ kubectl get clusterrolebinding -l app.kubernetes.io/part-of=ottoflow -o name \
   | xargs -r kubectl delete
 ```
 
-For installs using `fullnameOverride`, substitute the rendered fullname for the `ottoflow-` prefix in both `grep` patterns above.
+The controller hard-codes the `ottoflow-` prefix of these binding names, so use both `grep` patterns above unchanged whatever `fullnameOverride` is.
 
 Then remove the corresponding orphaned ServiceAccounts per namespace, filtering similarly by name or age before deleting in a shared cluster, since the same label is applied to all OttoFlow-managed objects:
 
