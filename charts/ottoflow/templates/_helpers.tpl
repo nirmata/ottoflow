@@ -80,6 +80,9 @@ Create the name of the service account to use
 Create the name of the ClusterRole workflow-runner ServiceAccounts are bound to
 */}}
 {{- define "ottoflow.workflowRunnerClusterRole" -}}
+{{- if and (not .Values.rbac.create) (not .Values.workflowRunner.clusterRole) -}}
+{{- fail "workflowRunner.clusterRole must be set when rbac.create=false: the chart creates no ClusterRole for it" -}}
+{{- end -}}
 {{- .Values.workflowRunner.clusterRole | default (printf "%s-runner-role" (include "ottoflow.fullname" .)) -}}
 {{- end -}}
 
@@ -271,6 +274,9 @@ Agent Executor image
 Create the name of the shared ClusterRole the serve-a2a ServiceAccount is bound to
 */}}
 {{- define "ottoflow.serveA2AClusterRole" -}}
+{{- if and (not .Values.rbac.create) (not .Values.serveA2A.clusterRole) -}}
+{{- fail "serveA2A.clusterRole must be set when rbac.create=false: the chart creates no ClusterRole for it" -}}
+{{- end -}}
 {{- .Values.serveA2A.clusterRole | default (printf "%s-serve-a2a" (include "ottoflow.fullname" .)) -}}
 {{- end -}}
 

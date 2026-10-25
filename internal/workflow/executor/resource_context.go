@@ -24,6 +24,8 @@ import (
 const (
 	// listPageSize is the default number of items fetched per API call during list pagination.
 	listPageSize = 500
+	// listMaxItems is the most items one ListResources call returns; a longer list fails closed.
+	listMaxItems = 10000
 	// listPageTimeout is the per-page deadline for each client.List() call. A slow API server
 	// response that exceeds this fails fast rather than blocking until the workflow deadline,
 	// allowing the caller to retry if appropriate.
@@ -156,6 +158,7 @@ func (c *resourceContext) ListResources(apiVersion, resourceName, namespace stri
 		return page, c.client.List(pageCtx, page, pageOpts...)
 	})
 	p.PageSize = c.effectivePageSize()
+	p.PageBufferSize = 0 // buffer 0: at most one page is fetched ahead, so the cap also bounds pages fetched
 	// FullListIfExpired (default true): if the etcd watch cache compacts mid-pagination
 	// the pager transparently restarts from scratch instead of surfacing an HTTP 410.
 
@@ -168,6 +171,9 @@ func (c *resourceContext) ListResources(apiVersion, resourceName, namespace stri
 		u, ok := obj.(*unstructured.Unstructured)
 		if !ok {
 			return fmt.Errorf("unexpected object type %T in list '%s/%s'", obj, apiVersion, kind)
+		}
+		if len(result.Items) >= listMaxItems {
+			return fmt.Errorf("more than %d items; narrow the list by namespace or labels, or use a resourceQuery step with limit (returns only the first limit items)", listMaxItems)
 		}
 		result.Items = append(result.Items, *u)
 		// Propagate workflow context cancellation between items so the loop

@@ -187,15 +187,20 @@ different fixes. Match the exact text you observe:
   prefix). This is **not** the same case as a `spec.execution.job.volumes` entry: that one IS a
   controller-side `get` (see `ensureRunnerSecrets`), already probed at build time, and a denied
   read there produces Symptom A instead, terminally, before the pod is ever created. A
-  controller-minted volume is different — the controller never reads that Secret itself; it only
-  writes a volume reference for the **kubelet** to resolve, using node credentials, not RBAC. No
-  Role granted to the controller or the runner ServiceAccount changes this outcome. Confirm the
+  controller-minted volume is different — unless the controller's ServiceAccount is allowed to `get` that Secret (through
+  `rbac.secretAccess.controller` or any other Role bound to it), the controller never reads it; it only writes a volume reference for the **kubelet** to resolve, using
+  node credentials, not RBAC. Without that permission, no Role granted to the runner ServiceAccount
+  changes this outcome. Confirm the
   referenced Secret actually exists **in the runner pod's own namespace** (a minted ref is always
   same-namespace by construction); that is the only fix. `.status.message` also names the
   workflow field(s) that generated the failing volume(s) (e.g. an `mcpToolCall` step's
-  `auth.secretRef`), appended to the kubelet's own mount-failure text — this is **runtime mount
-  validation** of the kubelet's own report, never a pre-check: nothing here runs, or decides
-  anything, ahead of the pod actually trying to start. A pod stuck only on
+  `auth.secretRef`), appended to the kubelet's own mount-failure text — without that permission the failure is the kubelet's own mount report; before creating the Job the
+  controller only sends an access review and lists the mount in the `SecretMountsNotChecked` Event.
+  When an access review shows the controller may `get` that exact Secret (any Role counts), the controller reads it before creating the Job and fails the run
+  with `RunnerRefUnresolved`, naming the workflow field (and the missing key), if the Secret or a
+  projected key is absent; a Secret it may not read is not checked and is listed in one Normal Event
+  (`SecretMountsNotChecked`) per build attempt. A Secret that a `spec.execution.job.volumes` entry also
+  names, and that is absent from the run's namespace, is left to the copy path. A pod stuck only on
   `CreateContainerError` (not `FailedMount`) instead fails with an empty `.status.failureReason`
   by design — that Waiting reason comes from the container runtime's own `CreateContainer` call,
   not reference resolution, so an empty `failureReason` there is not a claim the run succeeded or

@@ -103,7 +103,7 @@ spec:
         - --webhook-trigger-addr={{ .Values.controller.webhookTrigger.addr | default ":8083" }}
         {{- end }}
         {{- if and .Values.controller.mcp .Values.controller.mcp.enabled }}
-        - --mcp-addr={{ .Values.controller.mcp.addr | default ":8084" }}
+        - --mcp-addr={{ .Values.controller.mcp.addr | default ":8090" }}
         - --mcp-caller-namespace={{ include "ottoflow.namespace" . }}
         {{- end }}
         {{- if .Values.agentExecutor.enabled }}
@@ -168,7 +168,7 @@ spec:
             protocol: TCP
         {{- end }}
         {{- if and .Values.controller.mcp .Values.controller.mcp.enabled }}
-          - containerPort: {{ (splitList ":" (.Values.controller.mcp.addr | default ":8084")) | last | int }}
+          - containerPort: {{ (splitList ":" (.Values.controller.mcp.addr | default ":8090")) | last | int }}
             name: mcp
             protocol: TCP
         {{- end }}

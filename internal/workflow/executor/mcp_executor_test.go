@@ -208,6 +208,42 @@ var _ = Describe("MCP Tool Call Step Execution", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(workflowRun.Status.StepStatuses["mcpStep"].Phase).To(Equal(ottoflowv1alpha1.StepPhaseFailed))
 	})
+
+	DescribeTable("a tool result carrying the error envelope",
+		func(toolResult interface{}, wantFail bool) {
+			mockMCP = &mockMCPManager{client: &mockMCPClient{callToolResult: toolResult}}
+			var err error
+			workflowExecutor, err = NewWorkflowExecutorWithAgentExecutorAndMCPManager(
+				k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), mockMCP, false, 0, 5, nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			workflow := mcpEchoWorkflow()
+			Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+			err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
+			stepStatus := workflowRun.Status.StepStatuses["s"]
+			ctxData, readErr := workflowExecutor.GetContextManager().ReadContext(ctx)
+			Expect(readErr).NotTo(HaveOccurred())
+			variables, _ := ctxData["variables"].(map[string]interface{})
+			if wantFail {
+				Expect(err).To(HaveOccurred())
+				Expect(stepStatus.Phase).To(Equal(ottoflowv1alpha1.StepPhaseFailed))
+				Expect(stepStatus.Error).To(ContainSubstring("missing argument resource"))
+				Expect(variables).NotTo(HaveKey("result"))
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(stepStatus.Phase).To(Equal(ottoflowv1alpha1.StepPhaseSucceeded))
+				Expect(variables).To(HaveKey("result"))
+			}
+		},
+		Entry("fails on the error envelope as a map", map[string]interface{}{
+			"error": true, "message": "failed to create or update resources, missing argument resource", "status": "failed",
+		}, true),
+		Entry("fails on the error envelope as the raw fork string", `{"error": true, "message": "failed to create or update resources, missing argument resource", "status": "failed"}`, true),
+		Entry("succeeds when error is true but status is not failed", map[string]interface{}{
+			"error": true, "message": "missing argument resource", "status": "ok",
+		}, false),
+	)
 })
 
 // secretGetFailsClient wraps base so that any Get of a Secret fails the spec while every other

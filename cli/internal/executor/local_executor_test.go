@@ -18,6 +18,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	kubefake "k8s.io/client-go/kubernetes/fake"
 	metricsfake "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -477,6 +478,46 @@ spec:
 	}
 	if !strings.Contains(err.Error(), "my-pod") {
 		t.Errorf("with client: expected a not-found error naming the pod, got: %v", err)
+	}
+}
+
+func TestLocalExecutorUsesKubeClientForLogs(t *testing.T) {
+	dir := t.TempDir()
+	manifest := `apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: logs-workflow
+  namespace: ottoflow
+spec:
+  steps:
+    - name: readLogs
+      expressions:
+        - name: l
+          expression: 'resource.GetLogs("default", "my-pod", "app", 10)'
+`
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(manifest), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	run := func(withClient bool) error {
+		exec := NewLocalWorkflowExecutor(fake.NewClientBuilder().Build(), "", 5, "", "")
+		if withClient {
+			exec.SetKubeClient(kubefake.NewSimpleClientset())
+		}
+		if err := exec.LoadFromDirectory(dir); err != nil {
+			t.Fatalf("LoadFromDirectory: %v", err)
+		}
+		_, err := exec.ExecuteWorkflow(context.Background(), "logs-workflow", "ottoflow", nil)
+		return err
+	}
+
+	err := run(false)
+	if err == nil || !strings.Contains(err.Error(), "kubeClient not available") {
+		t.Fatalf("without client: got %v, want a 'kubeClient not available' error", err)
+	}
+
+	if err := run(true); err != nil {
+		t.Fatalf("with client: GetLogs should read the fake pod log, got: %v", err)
 	}
 }
 

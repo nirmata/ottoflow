@@ -50,15 +50,12 @@ var _ = BeforeSuite(func() {
 	repoRoot := filepath.Join(suiteDir, "..", "..", "..")
 	crdPath := filepath.Join(repoRoot, "config", "crd", "bases")
 
-	// Use KUBEBUILDER_ASSETS when set by "make test" (setup-envtest). Otherwise,
-	// DownloadBinaryAssets allows envtest to fetch binaries automatically (e.g. in CI).
 	// BinaryAssetsDirectory is the parent dir; envtest appends "1.29.0-{os}-{arch}".
 	binDir := filepath.Join(repoRoot, "bin", "k8s")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{crdPath},
 		ErrorIfCRDPathMissing: true,
 
-		// Prefer KUBEBUILDER_ASSETS from "make test". Fall back to auto-download for CI.
 		BinaryAssetsDirectory:       binDir,
 		DownloadBinaryAssets:        true,
 		DownloadBinaryAssetsVersion: "1.29.0",

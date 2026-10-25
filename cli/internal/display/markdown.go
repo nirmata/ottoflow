@@ -38,7 +38,7 @@ func LooksLikeMarkdown(s string) bool {
 // RenderMarkdown renders markdown to terminal-friendly formatted output.
 // Returns the rendered string, or the original if rendering fails.
 func RenderMarkdown(md string, out io.Writer) (string, error) {
-	// Use dark style for better contrast in most terminals
+	// WithAutoStyle picks dark or light from os.Stdout's background (plain text if stdout is not a TTY)
 	tr, err := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
 		glamour.WithWordWrap(80),

@@ -293,6 +293,56 @@ func TestRun_TrailingUsageOnlyResponse_SkippedNotFatal(t *testing.T) {
 	}
 }
 
+type mixedChat struct {
+	fakeChat
+	turns [][]gollm.ChatResponse
+}
+
+func (c *mixedChat) SendStreaming(ctx context.Context, contents ...any) (gollm.ChatResponseIterator, error) {
+	idx := c.calls
+	c.calls++
+	if idx >= len(c.turns) {
+		return nil, errors.New("fakeChat: no scripted turn for this call")
+	}
+	turn := c.turns[idx]
+	return gollm.ChatResponseIterator(func(yield func(gollm.ChatResponse, error) bool) {
+		for _, r := range turn {
+			if !yield(r, nil) {
+				return
+			}
+		}
+	}), nil
+}
+
+func TestRun_NoCandidatesAtAll_ReturnsError(t *testing.T) {
+	usageOnly := emptyCandidatesResponse{usage: map[string]any{"input_tokens": 10}}
+	toolCall := fakeResponse{calls: []gollm.FunctionCall{{Name: "step", Arguments: map[string]any{}}}}
+	tests := []struct {
+		name  string
+		turns [][]gollm.ChatResponse
+	}{
+		{"usage-only response", [][]gollm.ChatResponse{{usageOnly}}},
+		{"zero responses", [][]gollm.ChatResponse{{}}},
+		{"empty turn after a tool round", [][]gollm.ChatResponse{{toolCall}, {usageOnly}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := &fakeTool{name: "step", runFunc: func(ctx context.Context, args map[string]any) (any, error) {
+				return "ok", nil
+			}}
+			chat := &mixedChat{turns: tc.turns}
+
+			text, _, err := Run(context.Background(), chat, []any{"go"}, map[string]tools.Tool{"step": tool}, Options{})
+			if err == nil {
+				t.Fatalf("Run returned text %q and a nil error, want an error", text)
+			}
+			if !strings.Contains(err.Error(), "no candidates") {
+				t.Errorf("error = %q, want it to mention no candidates", err.Error())
+			}
+		})
+	}
+}
+
 func TestRun_DefaultMaxIterationsUsedWhenUnset(t *testing.T) {
 	// Options{} (MaxIterations: 0) should fall back to DefaultMaxIterations,
 	// not loop zero times.

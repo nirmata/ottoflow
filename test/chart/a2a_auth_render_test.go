@@ -82,7 +82,8 @@ func TestA2AAuthRoles_OffByDefault(t *testing.T) {
 }
 
 func TestA2AAuthRoles_NotRenderedWithoutRBAC(t *testing.T) {
-	docs := renderDocs(t, "--set", "serveA2A.enabled=true", "--set", "rbac.create=false")
+	docs := renderDocs(t, "--set", "serveA2A.enabled=true", "--set", "rbac.create=false",
+		"--set", "workflowRunner.clusterRole=ext-runner", "--set", "serveA2A.clusterRole=ext-a2a")
 	if got := a2aClusterRoles(t, docs); len(got) != 0 {
 		t.Fatalf("rbac.create=false rendered %d a2a auth roles, want 0", len(got))
 	}
