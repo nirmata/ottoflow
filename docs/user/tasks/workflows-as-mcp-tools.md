@@ -52,7 +52,7 @@ helm upgrade --install ottoflow ./charts/ottoflow \
   --set controller.mcp.enabled=true
 ```
 
-That serves `/mcp` on `:8084` and creates a `ottoflow-mcp` Service. It is off by
+That serves `/mcp` on `:8090` and creates a `ottoflow-mcp` Service. It is off by
 default: an endpoint that runs workflows is not something to open without asking.
 
 The server speaks plain HTTP, like the webhook trigger. Terminate TLS at an ingress or a

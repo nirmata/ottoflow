@@ -7,7 +7,30 @@ that can be found in the LICENSE.md file.
 
 package executor
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+)
+
+func TestValidateExternalAgentTransport_HTTPRejectedHint(t *testing.T) {
+	_, err := ValidateExternalAgentTransport(&ottoflowv1alpha1.StepExternalAgentRef{
+		URL: "http://kagent-controller.kagent.svc:8083",
+	})
+	if err == nil {
+		t.Fatal("expected an error for http:// without allowInsecureHTTP")
+	}
+	msg := err.Error()
+	for _, want := range []string{"HTTPS", "Workflow or StepTemplate CRD", "re-apply the Workflow or StepTemplate"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not contain %q", msg, want)
+		}
+	}
+	if strings.Contains(msg, "set allowInsecureHTTP to permit") {
+		t.Errorf("error %q still tells the user to set allowInsecureHTTP", msg)
+	}
+}
 
 func TestIsClusterLocalHTTPHost(t *testing.T) {
 	cases := []struct {

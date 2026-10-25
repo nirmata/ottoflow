@@ -54,7 +54,7 @@ spec:
           # output is already narrowed to that value. A JSONPath selecting a non-object is
           # returned under "result" -- reading agentOutputs.recommendations here would look
           # for the key inside the already-extracted value.
-          expression: 'agentOutputs.result'
+          expression: 'has(agentOutputs.result) ? agentOutputs.result : agentResponse'
         - name: analysisResult
           expression: 'agentResponse'
 ---

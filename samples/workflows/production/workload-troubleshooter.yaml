@@ -4,12 +4,6 @@
 #
 # Usage:
 #   ottoflow run workload-troubleshooter --input podName=my-pod --input namespace=default --input container=app
-#
-# NOTE: resource.GetLogs requires a typed Kubernetes clientset, which only the
-# in-cluster workflow-runner wires up (cmd/workflow-runner/main.go). CLI local
-# mode (`ottoflow run --workflow-dir ...`) passes nil
-# (cli/internal/executor/local_executor.go), so collectLogs fails there —
-# apply this workflow to a cluster with the controller installed instead.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:

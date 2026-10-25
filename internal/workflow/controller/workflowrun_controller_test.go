@@ -285,6 +285,112 @@ var _ = Describe("WorkflowRun Controller", func() {
 			Expect(wr.Status.Execution.JobName).To(Equal("restart-fail-run-runner"))
 			Expect(wr.Status.Execution.Phase).To(Equal(string(ottoflowv1alpha1.WorkflowRunPhaseFailed)))
 		})
+
+		deadlineRun := func(name string, checkpointing bool, condType batchv1.JobConditionType, extra ...client.Object) client.Client {
+			workflow := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: name + "-wf", Namespace: ns},
+				Spec: ottoflowv1alpha1.WorkflowSpec{
+					Steps: []ottoflowv1alpha1.Step{
+						{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "r", Expression: `"done"`}}},
+					},
+				},
+			}
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: workflow.Name, Namespace: ns},
+				},
+				Status: ottoflowv1alpha1.WorkflowRunStatus{
+					Phase:     ottoflowv1alpha1.WorkflowRunPhasePending,
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{JobName: workflowRunnerJobName(name)},
+				},
+			}
+			if checkpointing {
+				wr.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+					Checkpointing: &ottoflowv1alpha1.CheckpointingConfig{Enabled: true},
+				}
+			}
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: workflowRunnerJobName(name), Namespace: ns},
+				Status: batchv1.JobStatus{
+					Failed: 1,
+					Conditions: []batchv1.JobCondition{
+						{Type: condType, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded},
+					},
+				},
+			}
+			objs := append([]client.Object{workflow, wr, job}, extra...)
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+			reconciler := &WorkflowRunReconciler{Client: fakeClient, Scheme: scheme}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, wr)).To(Succeed())
+			Expect(wr.Status.Phase).To(Equal(ottoflowv1alpha1.WorkflowRunPhaseFailed))
+			Expect(wr.Status.Message).To(ContainSubstring("DeadlineExceeded"))
+			Expect(wr.Status.Execution).NotTo(BeNil())
+			Expect(wr.Status.Execution.LastTerminationReason).To(Equal("DeadlineExceeded"))
+			return fakeClient
+		}
+
+		It("should record DeadlineExceeded when the Job has a Failed condition with that reason", func() {
+			deadlineRun("deadline-failed-run", false, batchv1.JobFailed)
+		})
+
+		It("should record DeadlineExceeded when only the FailureTarget condition is set", func() {
+			deadlineRun("deadline-target-run", false, batchv1.JobFailureTarget)
+		})
+
+		It("should not retry a deadline-killed Job with checkpointing on, and should delete the checkpoint", func() {
+			name := "deadline-cp-run"
+			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-cp-" + strings.ToLower(name), Namespace: ns}}
+			fakeClient := deadlineRun(name, true, batchv1.JobFailed, cm)
+			err := fakeClient.Get(ctx, client.ObjectKeyFromObject(cm), &corev1.ConfigMap{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "checkpoint ConfigMap should be deleted")
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: workflowRunnerJobName(name), Namespace: ns}, &batchv1.Job{})).To(Succeed(), "Job should not be deleted")
+		})
+
+		It("should still retry a checkpointed run whose Job failed with BackoffLimitExceeded", func() {
+			name := "backoff-cp-run"
+			workflow := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: name + "-wf", Namespace: ns},
+				Spec: ottoflowv1alpha1.WorkflowSpec{
+					Steps: []ottoflowv1alpha1.Step{
+						{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "r", Expression: `"done"`}}},
+					},
+				},
+			}
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: workflow.Name, Namespace: ns},
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+						Checkpointing: &ottoflowv1alpha1.CheckpointingConfig{Enabled: true},
+					},
+				},
+				Status: ottoflowv1alpha1.WorkflowRunStatus{
+					Phase:     ottoflowv1alpha1.WorkflowRunPhasePending,
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{JobName: workflowRunnerJobName(name)},
+				},
+			}
+			job := &batchv1.Job{
+				ObjectMeta: metav1.ObjectMeta{Name: workflowRunnerJobName(name), Namespace: ns},
+				Status: batchv1.JobStatus{
+					Failed: 1,
+					Conditions: []batchv1.JobCondition{
+						{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonBackoffLimitExceeded},
+					},
+				},
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(wr).WithObjects(workflow, wr, job).Build()
+			reconciler := &WorkflowRunReconciler{Client: fakeClient, Scheme: scheme}
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: ns}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fakeClient.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, wr)).To(Succeed())
+			Expect(wr.Status.Phase).To(Equal(ottoflowv1alpha1.WorkflowRunPhasePending))
+			Expect(wr.Status.Execution.Attempts).To(Equal(int32(1)))
+			err = fakeClient.Get(ctx, client.ObjectKeyFromObject(job), &batchv1.Job{})
+			Expect(errors.IsNotFound(err)).To(BeTrue(), "Job should be deleted for the retry")
+		})
 	})
 
 	Context("waitForCallback resume", func() {

@@ -79,6 +79,7 @@ func main() {
 	var workflowRunnerClusterRole string
 	var legacyRunnerClusterRole, legacyRunnerServiceAccount string
 	var agentExecutorCallerClusterRole string
+	var runnerConfigMapWriterClusterRole string
 	var workflowRunnerAgentExecutorCASecret string
 	var secretSourceNamespace string
 	var workflowRunnerImagePullSecrets string
@@ -128,6 +129,9 @@ func main() {
 	flag.StringVar(&legacyRunnerServiceAccount, "legacy-runner-service-account",
 		os.Getenv("LEGACY_RUNNER_SERVICE_ACCOUNT"),
 		"This release's controller ServiceAccount; only its legacy runner bindings are deleted; empty disables (optional).")
+	flag.StringVar(&runnerConfigMapWriterClusterRole, "runner-configmap-writer-cluster-role",
+		os.Getenv("RUNNER_CONFIGMAP_WRITER_CLUSTER_ROLE"),
+		"ClusterRole bound per run namespace to give runners ConfigMap write access there; empty disables (optional).")
 	flag.StringVar(&agentExecutorCallerClusterRole, "agent-executor-caller-cluster-role",
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
@@ -310,6 +314,7 @@ func main() {
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
 	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, ":8084")
+	callbackServer.ControllerNamespace = namespace
 	if err := mgr.Add(callbackServer); err != nil {
 		setupLog.Error(err, "unable to add callback server to manager")
 		os.Exit(1)
@@ -417,6 +422,7 @@ func main() {
 		RunnerServiceAccount:       workflowRunnerServiceAccount,
 		RunnerClusterRole:          workflowRunnerClusterRole,
 		AgentExecutorCallerRole:    agentExecutorCallerClusterRole,
+		RunnerConfigMapWriterRole:  runnerConfigMapWriterClusterRole,
 		AgentExecutorCASecret:      workflowRunnerAgentExecutorCASecret,
 		AgentExecutorNamespace:     agentExecutorNamespace,
 		SecretSourceNamespace:      secretSourceNamespace,
