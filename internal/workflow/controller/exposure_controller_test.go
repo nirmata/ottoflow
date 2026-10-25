@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -247,10 +248,18 @@ func newExposureReconciler(t *testing.T, objs ...client.Object) *WorkflowExposur
 func TestReconcileRoleBinding(t *testing.T) {
 	desired := func() *rbacv1.RoleBinding {
 		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a"},
+			ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a", Labels: map[string]string{ownerLabel: ottoflowPartOf}},
 			RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "ottoflow-serve-a2a"},
 			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "serve-a2a", Namespace: "team-a"}},
 		}
+	}
+	get := func(t *testing.T, r *WorkflowExposureReconciler) rbacv1.RoleBinding {
+		t.Helper()
+		var got rbacv1.RoleBinding
+		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+			t.Fatalf("getting RoleBinding: %v", err)
+		}
+		return got
 	}
 
 	t.Run("creates when absent", func(t *testing.T) {
@@ -261,6 +270,9 @@ func TestReconcileRoleBinding(t *testing.T) {
 		var got rbacv1.RoleBinding
 		if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
 			t.Fatalf("expected the RoleBinding to be created: %v", err)
+		}
+		if got.Labels[ownerLabel] != ottoflowPartOf {
+			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
 		}
 	})
 
@@ -278,6 +290,9 @@ func TestReconcileRoleBinding(t *testing.T) {
 		if got.RoleRef.Name != "ottoflow-serve-a2a" {
 			t.Errorf("roleRef.Name = %q, want it repointed to %q", got.RoleRef.Name, "ottoflow-serve-a2a")
 		}
+		if got.Labels[ownerLabel] != ottoflowPartOf {
+			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
+		}
 	})
 
 	t.Run("updates subjects when only the ServiceAccount drifts", func(t *testing.T) {
@@ -294,7 +309,53 @@ func TestReconcileRoleBinding(t *testing.T) {
 		if len(got.Subjects) != 1 || got.Subjects[0].Name != "serve-a2a" {
 			t.Errorf("subjects = %+v, want the reconciled serve-a2a ServiceAccount", got.Subjects)
 		}
+		if got.Labels[ownerLabel] != ottoflowPartOf {
+			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
+		}
 	})
+
+	t.Run("adopts an unlabeled binding equal to desired", func(t *testing.T) {
+		legacy := desired()
+		legacy.Labels = nil
+		legacy.UID = "legacy-uid"
+		r := newExposureReconciler(t, legacy)
+		if err := r.reconcileRoleBinding(context.Background(), desired()); err != nil {
+			t.Fatalf("reconcileRoleBinding: %v", err)
+		}
+		got := get(t, r)
+		if got.Labels[ownerLabel] != ottoflowPartOf {
+			t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
+		}
+		if got.UID != "legacy-uid" || got.RoleRef != desired().RoleRef || len(got.Subjects) != 1 || got.Subjects[0].Name != "serve-a2a" {
+			t.Errorf("adoption changed the binding: %+v", got)
+		}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*rbacv1.RoleBinding)
+	}{
+		{"leaves an unlabeled binding with a different roleRef", func(b *rbacv1.RoleBinding) { b.RoleRef.Name = "other-clusterrole" }},
+		{"leaves an unlabeled binding with different subjects", func(b *rbacv1.RoleBinding) {
+			b.Subjects = []rbacv1.Subject{{Kind: "ServiceAccount", Name: "someone-else", Namespace: "team-a"}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			foreign := desired()
+			foreign.Labels = nil
+			foreign.UID = "foreign-uid"
+			tc.mutate(foreign)
+			want := foreign.DeepCopy()
+			r := newExposureReconciler(t, foreign)
+			if err := r.reconcileRoleBinding(context.Background(), desired()); err == nil {
+				t.Fatal("reconcileRoleBinding: want an error for an unlabeled binding that differs from desired")
+			}
+			got := get(t, r)
+			if got.UID != want.UID || got.RoleRef != want.RoleRef || !slices.Equal(got.Subjects, want.Subjects) || len(got.Labels) != 0 {
+				t.Errorf("binding was modified: got %+v, want %+v", got, want)
+			}
+		})
+	}
 
 	t.Run("no-op when already correct", func(t *testing.T) {
 		r := newExposureReconciler(t, desired())
@@ -309,6 +370,37 @@ func TestReconcileRoleBinding(t *testing.T) {
 			t.Errorf("RoleBinding changed unexpectedly: %+v", got)
 		}
 	})
+}
+
+func TestEnsureRBACLabelsNewBinding(t *testing.T) {
+	r := newExposureReconciler(t)
+	if err := r.ensureRBAC(context.Background(), "team-a"); err != nil {
+		t.Fatalf("ensureRBAC: %v", err)
+	}
+	var got rbacv1.RoleBinding
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: "team-a", Name: serveA2ARoleName}, &got); err != nil {
+		t.Fatalf("getting RoleBinding: %v", err)
+	}
+	if got.Labels[ownerLabel] != ottoflowPartOf {
+		t.Errorf("labels = %v, want %s=%s", got.Labels, ownerLabel, ottoflowPartOf)
+	}
+}
+
+func TestReconcileUnmanagedRoleBindingSkipsAgent(t *testing.T) {
+	w := wf("team-a", "report")
+	foreign := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "other-clusterrole"},
+	}
+	r := newExposureReconciler(t, w, foreign)
+	r.ServeA2AImage = "img"
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(w)}); err == nil {
+		t.Fatal("Reconcile: want an error for an unmanaged RoleBinding")
+	}
+	agent := buildAgentObject(w, "img", "sa", false)
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(agent), agent); !apierrors.IsNotFound(err) {
+		t.Errorf("Get Agent err = %v, want NotFound", err)
+	}
 }
 
 func TestReconcileEmptyImageTearsDown(t *testing.T) {
@@ -355,7 +447,7 @@ func TestBuildAgentObjectAllowUnauthenticatedEnv(t *testing.T) {
 
 func TestReconcileRoleBinding_StaleCacheKeepsReplacement(t *testing.T) {
 	live := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a", UID: liveBindingUID},
+		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a", UID: liveBindingUID, Labels: map[string]string{ownerLabel: ottoflowPartOf}},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "ottoflow-serve-a2a"},
 	}
 	r := newExposureReconciler(t, live)
