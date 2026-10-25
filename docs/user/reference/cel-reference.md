@@ -357,6 +357,7 @@ In CEL expressions, you can access:
 - **`inputs.<name>`** - Workflow input parameters (always strings; use `json.unmarshal()` for structured values)
 - **`variables.<name>`** - Workflow-level variables and outputs from completed steps (flat namespace, no step prefix)
 - **`steps.<stepName>.<key>`** - Step-scoped results (e.g. forEach `steps.<name>.results`)
+- **`stepStatus.<stepName>.{phase,succeeded,failed,error}`** - Status of a step that has finished (Succeeded, Failed or Skipped); a step that has not finished is absent (`no such key`). Add the step to `dependsOn`. A forEach item sees the statuses as they were when the forEach step started.
 - **`expressions.<name>`** - Current step's expression results
 - **`outputs.<name>`** - Earlier workflow-level outputs (only while workflow outputs and metric labels are evaluated)
 - **`object`** - Fetched resource in resourceQuery steps; target resource in mutate steps
