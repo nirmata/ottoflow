@@ -328,6 +328,26 @@ func TestReconcileRoleBinding(t *testing.T) {
 		}
 	})
 
+	for _, owner := range []string{"another-app", ""} {
+		t.Run("leaves a binding labeled for another owner "+owner, func(t *testing.T) {
+			foreign := desired()
+			foreign.Labels[ownerLabel] = owner
+			foreign.Labels["keep"] = "value"
+			foreign.UID = "foreign-uid"
+			r := newExposureReconciler(t, foreign)
+			want := get(t, r)
+			if err := r.reconcileRoleBinding(context.Background(), desired()); err == nil {
+				t.Fatal("reconcileRoleBinding: want an error for an explicitly foreign binding")
+			}
+			got := get(t, r)
+			if got.ResourceVersion != want.ResourceVersion || got.UID != want.UID ||
+				got.RoleRef != want.RoleRef || !slices.Equal(got.Subjects, want.Subjects) ||
+				got.Labels[ownerLabel] != owner || got.Labels["keep"] != "value" {
+				t.Errorf("binding was modified: got %+v, want %+v", got, want)
+			}
+		})
+	}
+
 	for _, tc := range []struct {
 		name   string
 		mutate func(*rbacv1.RoleBinding)

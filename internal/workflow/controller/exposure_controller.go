@@ -206,9 +206,10 @@ func (r *WorkflowExposureReconciler) reconcileRoleBinding(ctx context.Context, d
 		return err
 	}
 
-	if existing.Labels[ownerLabel] != ottoflowPartOf {
-		if existing.RoleRef != desired.RoleRef || !equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects) {
-			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (missing label %s=%s); label it or delete it to let OttoFlow manage it", existing.Namespace, existing.Name, ownerLabel, ottoflowPartOf)
+	owner, labeled := existing.Labels[ownerLabel]
+	if owner != ottoflowPartOf {
+		if labeled || existing.RoleRef != desired.RoleRef || !equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects) {
+			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (requires label %s=%s); label it or delete it to let OttoFlow manage it", existing.Namespace, existing.Name, ownerLabel, ottoflowPartOf)
 		}
 		metav1.SetMetaDataLabel(&existing.ObjectMeta, ownerLabel, ottoflowPartOf)
 		return r.Update(ctx, &existing)
