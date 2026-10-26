@@ -839,13 +839,19 @@ func persistWorkflowRunStatus(
 	runKey client.ObjectKey,
 	status ottoflowv1alpha1.WorkflowRunStatus,
 ) error {
-	// RetryOnConflict returns nil when ctx ends mid-retry, though nothing was written. Keep the
-	// closure's last error and return it then.
+	// RetryOnConflict replaces errors wrapping context cancellation or expiry with the last conflict
+	// error (nil if none). Keep the closure's error so an interrupted write is not reported as stored.
 	var inner error
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &ottoflowv1alpha1.WorkflowRun{}
 		if inner = controlClient.Get(ctx, runKey, latest); inner != nil {
 			return inner
+		}
+		if latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+			latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+			klog.InfoS("not overwriting terminal WorkflowRun status",
+				"namespace", runKey.Namespace, "workflowRun", runKey.Name, "phase", latest.Status.Phase)
+			return nil
 		}
 		latest.Status = status
 		inner = controlClient.Status().Update(ctx, latest)

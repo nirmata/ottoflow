@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -468,6 +469,56 @@ func TestInterruptedStatusSurvivesStalledCheckpointSave(t *testing.T) {
 	if got := stored.Status.StepStatuses["loop"]; got.Phase != ottoflowv1alpha1.StepPhasePending ||
 		got.Message != "interrupted by SIGTERM (was Running)" {
 		t.Fatalf("interrupted status not stored behind a stalled checkpoint save: %+v", stored.Status)
+	}
+}
+
+func TestRunnerStatusWritesPreserveTerminalRun(t *testing.T) {
+	for _, phase := range []ottoflowv1alpha1.WorkflowRunPhase{
+		ottoflowv1alpha1.WorkflowRunPhaseFailed,
+		ottoflowv1alpha1.WorkflowRunPhaseSucceeded,
+	} {
+		for _, write := range []string{"interrupted", "success"} {
+			t.Run(string(phase)+"/"+write, func(t *testing.T) {
+				stored := newRun()
+				completion := metav1.Now()
+				stored.Status = ottoflowv1alpha1.WorkflowRunStatus{
+					Phase: phase, Message: "controller terminal verdict", CompletionTime: &completion,
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{LastTerminationReason: "DeadlineExceeded"},
+					StepStatuses: map[string]ottoflowv1alpha1.StepStatus{
+						"step": {Phase: ottoflowv1alpha1.StepPhaseFailed, Message: "original history"},
+					},
+				}
+				c, updates := ctxAwareClient(stored)
+				key := client.ObjectKeyFromObject(stored)
+				before := &ottoflowv1alpha1.WorkflowRun{}
+				if err := c.Get(context.Background(), key, before); err != nil {
+					t.Fatal(err)
+				}
+				inMemory := newRun()
+				inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+				inMemory.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{
+					"step": {Phase: ottoflowv1alpha1.StepPhaseRunning},
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				if write == "interrupted" {
+					wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf"}}
+					cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key}
+					cm := workflowexecutor.NewCheckpointManager(c, inMemory)
+					persistInterrupted(ctx, cm, c, cfg, wf, inMemory, context.Canceled)
+				} else {
+					inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+					persistExecutionSuccess(ctx, c, key, inMemory, "job", "pod")
+				}
+				after := &ottoflowv1alpha1.WorkflowRun{}
+				if err := c.Get(context.Background(), key, after); err != nil {
+					t.Fatal(err)
+				}
+				if *updates != 0 || !reflect.DeepEqual(after.Status, before.Status) {
+					t.Fatalf("terminal status overwritten: updates=%d before=%+v after=%+v", *updates, before.Status, after.Status)
+				}
+			})
+		}
 	}
 }
 

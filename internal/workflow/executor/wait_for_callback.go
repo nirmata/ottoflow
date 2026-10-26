@@ -190,8 +190,8 @@ func clearPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflo
 	})
 }
 
-// retryOnConflictKeepErr is retry.RetryOnConflict that reports the last error when ctx ends mid-retry.
-// RetryOnConflict returns nil then, though nothing was written, and SIGTERM would read as a stored patch.
+// retryOnConflictKeepErr preserves errors wrapping context cancellation or expiry, which
+// RetryOnConflict replaces with the last conflict error (nil if none), even when nothing was written.
 func retryOnConflictKeepErr(backoff wait.Backoff, fn func() error) error {
 	var last error
 	err := retry.RetryOnConflict(backoff, func() error {
