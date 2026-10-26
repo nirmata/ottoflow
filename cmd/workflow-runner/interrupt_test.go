@@ -10,6 +10,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -475,108 +476,200 @@ func TestInterruptedStatusSurvivesStalledCheckpointSave(t *testing.T) {
 }
 
 func TestReplacementPodRecoversFromStartupFailure(t *testing.T) {
-	ctx := context.Background()
-	run := newRun()
-	backoff := int32(1)
-	run.Spec.Execution.Job = &ottoflowv1alpha1.WorkflowRunJobSpec{BackoffLimit: &backoff}
-	run.Spec.Execution.Checkpointing.Enabled = false
-	wf := &ottoflowv1alpha1.Workflow{
-		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
-		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
-			{Name: "step", Expressions: []ottoflowv1alpha1.Expression{{Name: "value", Expression: "1"}}},
-		}},
-	}
-	c, _ := ctxAwareClient(run, wf)
-	key := client.ObjectKeyFromObject(run)
-	updateExecutionFailure(ctx, c, key, run, "job", "pod-1", "transient startup failure")
-	replacement := mustLoadWorkflowRun(ctx, c, key)
-	if replacement.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
-		t.Fatalf("startup failure not stored: %+v", replacement.Status)
-	}
-	mustPersistRunningStatus(ctx, c, key, replacement, "job", "pod-2")
-	started := mustLoadWorkflowRun(ctx, c, key)
-	if started.Status.Execution.JobName != "job" || started.Status.Execution.PodName != "pod-2" {
-		t.Fatalf("replacement startup not stored: %+v", started.Status.Execution)
-	}
-	exec := retryExecutor(t, c, replacement)
-	cm := workflowexecutor.NewCheckpointManager(c, replacement)
-	exec.SetCheckpointManager(cm)
-	cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key, jobName: "job", podName: "pod-2"}
-	if code := runWorkflowToCompletion(ctx, exec, cm, wf, replacement, c, cfg); code != 0 {
-		t.Fatalf("replacement failed: exit=%d", code)
-	}
-	stored := mustLoadWorkflowRun(ctx, c, key)
-	if stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded || stored.Status.Execution.PodName != "pod-2" {
-		t.Fatalf("successful replacement not stored: phase=%s execution=%+v", stored.Status.Phase, stored.Status.Execution)
-	}
-}
-
-func TestInterruptedStatusPreservesTerminalRunAfterConflict(t *testing.T) {
-	run := newRun()
-	c, updates := ctxAwareClient(run)
-	key := client.ObjectKeyFromObject(run)
-	attempts := 0
-	racing := interceptor.NewClient(c, interceptor.Funcs{
-		SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
-			opts ...client.SubResourceUpdateOption) error {
-			attempts++
-			if attempts == 1 {
-				latest := mustLoadWorkflowRun(ctx, c, key)
-				latest.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
-				latest.Status.Message = "controller terminal verdict"
-				if err := c.Status().Update(ctx, latest); err != nil {
-					return err
-				}
-				return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, run.Name, context.Canceled)
+	for _, interrupted := range []bool{false, true} {
+		name := "success"
+		if interrupted {
+			name = "interrupted"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			run := newRun()
+			run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+			backoff := int32(1)
+			run.Spec.Execution.Job = &ottoflowv1alpha1.WorkflowRunJobSpec{BackoffLimit: &backoff}
+			run.Spec.Execution.Checkpointing.Enabled = false
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+				Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
+					{Name: "step", ForEach: &ottoflowv1alpha1.StepForEach{
+						Items: `["a", "b", "c"]`, MaxConcurrency: 1,
+						Step: &ottoflowv1alpha1.StepForEachStep{Outputs: []ottoflowv1alpha1.Output{
+							{Name: "value", Expression: `variables.item`},
+						}},
+					}},
+				}},
 			}
-			return c.SubResource(sub).Update(ctx, obj, opts...)
-		},
-	})
-	err := persistWorkflowRunStatus(context.Background(), racing, key,
-		ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning, Message: interruptedMessage},
-		preserveTerminalStatus)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored := mustLoadWorkflowRun(context.Background(), c, key)
-	if attempts != 1 || *updates != 1 || stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed ||
-		stored.Status.Message != "controller terminal verdict" {
-		t.Fatalf("terminal conflict retry overwritten: attempts=%d updates=%d status=%+v", attempts, *updates, stored.Status)
+			c, _ := ctxAwareClient(run, wf)
+			key := client.ObjectKeyFromObject(run)
+			updateExecutionFailure(ctx, c, key, run, "job", "pod-1", "transient startup failure")
+			replacement := mustLoadWorkflowRun(ctx, c, key)
+			if replacement.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseRunning ||
+				replacement.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed) {
+				t.Fatalf("startup execution failure not stored independently: %+v", replacement.Status)
+			}
+			mustPersistRunningStatus(ctx, c, key, replacement, "job", "pod-2")
+			started := mustLoadWorkflowRun(ctx, c, key)
+			if started.Status.Execution.JobName != "job" || started.Status.Execution.PodName != "pod-2" {
+				t.Fatalf("replacement startup not stored: %+v", started.Status.Execution)
+			}
+			exec := retryExecutor(t, c, replacement)
+			cm := workflowexecutor.NewCheckpointManager(c, replacement)
+			exec.SetCheckpointManager(cm)
+			if interrupted {
+				exec.SetProgressCallback(func(r *ottoflowv1alpha1.WorkflowRun, _ *ottoflowv1alpha1.Workflow) {
+					if r.Status.StepStatuses["step"].Message == "1/3 items" {
+						cancel()
+					}
+				})
+			}
+			cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key, jobName: "job", podName: "pod-2"}
+			code := runWorkflowToCompletion(ctx, exec, cm, wf, replacement, c, cfg)
+			stored := mustLoadWorkflowRun(context.Background(), c, key)
+			if interrupted {
+				if ctx.Err() == nil || code != exitInterrupted || stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseRunning ||
+					stored.Status.Message != interruptedMessage ||
+					stored.Status.StepStatuses["step"].Phase != ottoflowv1alpha1.StepPhasePending {
+					t.Fatalf("replacement interruption not stored: code=%d status=%+v", code, stored.Status)
+				}
+			} else if code != 0 || stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+				stored.Status.Execution.PodName != "pod-2" {
+				t.Fatalf("successful replacement not stored: code=%d phase=%s execution=%+v",
+					code, stored.Status.Phase, stored.Status.Execution)
+			}
+		})
 	}
 }
 
-func TestInterruptedStatusPreservesTerminalRun(t *testing.T) {
+func TestGuardedStatusWritesPreserveTerminalRunAfterConflict(t *testing.T) {
+	for _, policy := range []statusWritePolicy{preserveTerminalStatus, mergeStartupFailure} {
+		t.Run(fmt.Sprint(policy), func(t *testing.T) {
+			run := newRun()
+			c, updates := ctxAwareClient(run)
+			key := client.ObjectKeyFromObject(run)
+			attempts := 0
+			racing := interceptor.NewClient(c, interceptor.Funcs{
+				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+					opts ...client.SubResourceUpdateOption) error {
+					attempts++
+					if attempts == 1 {
+						latest := mustLoadWorkflowRun(ctx, c, key)
+						latest.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
+						latest.Status.Message = "controller terminal verdict"
+						if err := c.Status().Update(ctx, latest); err != nil {
+							return err
+						}
+						return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, run.Name, context.Canceled)
+					}
+					return c.SubResource(sub).Update(ctx, obj, opts...)
+				},
+			})
+			status := ottoflowv1alpha1.WorkflowRunStatus{
+				Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning, Message: interruptedMessage,
+				Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{Phase: "Failed", Message: "startup failure"},
+			}
+			if err := persistWorkflowRunStatus(context.Background(), racing, key, status, policy); err != nil {
+				t.Fatal(err)
+			}
+			stored := mustLoadWorkflowRun(context.Background(), c, key)
+			if attempts != 1 || *updates != 1 || stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed ||
+				stored.Status.Message != "controller terminal verdict" {
+				t.Fatalf("terminal conflict retry overwritten: attempts=%d updates=%d status=%+v",
+					attempts, *updates, stored.Status)
+			}
+		})
+	}
+}
+
+func TestGuardedStatusWritesPreserveTerminalRun(t *testing.T) {
 	for _, phase := range []ottoflowv1alpha1.WorkflowRunPhase{
 		ottoflowv1alpha1.WorkflowRunPhaseFailed,
 		ottoflowv1alpha1.WorkflowRunPhaseSucceeded,
 	} {
-		t.Run(string(phase), func(t *testing.T) {
-			stored := newRun()
-			completion := metav1.Now()
-			stored.Status = ottoflowv1alpha1.WorkflowRunStatus{
-				Phase: phase, Message: "controller terminal verdict", CompletionTime: &completion,
-				Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{LastTerminationReason: "DeadlineExceeded"},
-				StepStatuses: map[string]ottoflowv1alpha1.StepStatus{
-					"step": {Phase: ottoflowv1alpha1.StepPhaseFailed, Message: "original history"},
-				},
+		for _, writer := range []string{"interrupted", "startup"} {
+			t.Run(string(phase)+"/"+writer, func(t *testing.T) {
+				stored := newRun()
+				completion := metav1.Now()
+				stored.Status = ottoflowv1alpha1.WorkflowRunStatus{
+					Phase: phase, Message: "controller terminal verdict", CompletionTime: &completion,
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{LastTerminationReason: "DeadlineExceeded"},
+					StepStatuses: map[string]ottoflowv1alpha1.StepStatus{
+						"step": {Phase: ottoflowv1alpha1.StepPhaseFailed, Message: "original history"},
+					},
+				}
+				c, updates := ctxAwareClient(stored)
+				key := client.ObjectKeyFromObject(stored)
+				before := mustLoadWorkflowRun(context.Background(), c, key)
+				inMemory := newRun()
+				inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+				inMemory.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{
+					"step": {Phase: ottoflowv1alpha1.StepPhaseRunning},
+				}
+				if writer == "startup" {
+					updateExecutionFailure(context.Background(), c, key, inMemory, "job", "pod", "startup failure")
+				} else {
+					ctx, cancel := context.WithCancel(context.Background())
+					cancel()
+					wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf"}}
+					cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key}
+					cm := workflowexecutor.NewCheckpointManager(c, inMemory)
+					persistInterrupted(ctx, cm, c, cfg, wf, inMemory, context.Canceled)
+				}
+				after := mustLoadWorkflowRun(context.Background(), c, key)
+				if *updates != 0 || !reflect.DeepEqual(after.Status, before.Status) {
+					t.Fatalf("terminal status overwritten: updates=%d before=%+v after=%+v", *updates, before.Status, after.Status)
+				}
+			})
+		}
+	}
+}
+
+func TestStartupFailureMergesLatestExecutionOnly(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
+			run := newRun()
+			run.Status = ottoflowv1alpha1.WorkflowRunStatus{
+				Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning, Message: "controller state",
+				StepStatuses: map[string]ottoflowv1alpha1.StepStatus{"step": {Phase: ottoflowv1alpha1.StepPhasePending}},
+				Execution:    &ottoflowv1alpha1.WorkflowRunExecutionStatus{Attempts: 3, LastTerminationReason: "Error"},
 			}
-			c, updates := ctxAwareClient(stored)
-			key := client.ObjectKeyFromObject(stored)
-			before := mustLoadWorkflowRun(context.Background(), c, key)
-			inMemory := newRun()
-			inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
-			inMemory.Status.StepStatuses = map[string]ottoflowv1alpha1.StepStatus{
-				"step": {Phase: ottoflowv1alpha1.StepPhaseRunning},
+			base, _ := ctxAwareClient(run)
+			key := client.ObjectKeyFromObject(run)
+			expected := mustLoadWorkflowRun(context.Background(), base, key)
+			var c client.Client = base
+			if conflict {
+				attempts := 0
+				c = interceptor.NewClient(base, interceptor.Funcs{
+					SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+						opts ...client.SubResourceUpdateOption) error {
+						attempts++
+						if attempts == 1 {
+							latest := mustLoadWorkflowRun(ctx, c, key)
+							latest.Status.Message = "newer controller state"
+							latest.Status.Execution.Attempts = 4
+							latest.Status.Execution.LastTerminationReason = "Evicted"
+							if err := c.Status().Update(ctx, latest); err != nil {
+								return err
+							}
+							expected = mustLoadWorkflowRun(ctx, c, key)
+							return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, run.Name, context.Canceled)
+						}
+						return c.SubResource(sub).Update(ctx, obj, opts...)
+					},
+				})
 			}
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf"}}
-			cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key}
-			cm := workflowexecutor.NewCheckpointManager(c, inMemory)
-			persistInterrupted(ctx, cm, c, cfg, wf, inMemory, context.Canceled)
-			after := mustLoadWorkflowRun(context.Background(), c, key)
-			if *updates != 0 || !reflect.DeepEqual(after.Status, before.Status) {
-				t.Fatalf("terminal status overwritten: updates=%d before=%+v after=%+v", *updates, before.Status, after.Status)
+			updateExecutionFailure(context.Background(), c, key, newRun(), "job", "pod", "startup failure")
+			stored := mustLoadWorkflowRun(context.Background(), base, key)
+			execution := stored.Status.Execution
+			if execution == nil || execution.Phase != "Failed" || execution.Message != "startup failure" ||
+				execution.JobName != "job" || execution.PodName != "pod" || execution.CompletionTime == nil ||
+				execution.Attempts != expected.Status.Execution.Attempts ||
+				execution.LastTerminationReason != expected.Status.Execution.LastTerminationReason {
+				t.Fatalf("startup diagnostics or retry bookkeeping lost: %+v", execution)
+			}
+			stored.Status.Execution = expected.Status.Execution
+			if !reflect.DeepEqual(stored.Status, expected.Status) {
+				t.Fatalf("run-level state overwritten: got=%+v want=%+v", stored.Status, expected.Status)
 			}
 		})
 	}

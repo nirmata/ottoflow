@@ -330,7 +330,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if job.Status.Failed > 0 && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+	if jobFailureConfirmed(job) && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
 		result, handled, err := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		if handled {
 			return result, err
@@ -413,6 +413,20 @@ func workflowRunnerJobName(runName string) string {
 func jobConditionTrue(job *batchv1.Job, t batchv1.JobConditionType) bool {
 	for _, c := range job.Status.Conditions {
 		if c.Type == t && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// jobFailureConfirmed distinguishes a failed Job from failed pods awaiting a same-Job replacement.
+// A deadline FailureTarget is authoritative even before the terminating pods are counted as failed.
+func jobFailureConfirmed(job *batchv1.Job) bool {
+	if jobConditionTrue(job, batchv1.JobFailed) {
+		return true
+	}
+	for _, c := range job.Status.Conditions {
+		if c.Type == batchv1.JobFailureTarget && c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {
 			return true
 		}
 	}
@@ -1876,11 +1890,8 @@ func (r *WorkflowRunReconciler) resumeRunnerJob(ctx context.Context, req ctrl.Re
 		res, _, hfErr := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		return res, false, hfErr
 	default:
-		// Job exists and is still active ⇒ resume already in progress. Do NOT proceed: falling
-		// through to the normal Job-creation block would hit its crude job.Status.Failed>0 check
-		// instead of the JobFailed-*condition* gate above, so monitoring stays here where that
-		// gate is authoritative for backoffLimit>0 (a transient first-pod failure sets Failed>0
-		// with no JobFailed condition yet).
+		// Job has not reached the completion/failure branches above. Keep monitoring here
+		// while the callback is pending, including same-Job pod retries with Failed>0.
 		if err := ensureRunning(); err != nil {
 			return ctrl.Result{}, false, err
 		}

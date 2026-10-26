@@ -67,11 +67,12 @@ type runnerConfig struct {
 	hardStop      time.Duration
 }
 
-type statusWritePolicy bool
+type statusWritePolicy uint8
 
 const (
-	overwriteTerminalStatus statusWritePolicy = false
-	preserveTerminalStatus  statusWritePolicy = true
+	overwriteTerminalStatus statusWritePolicy = iota
+	preserveTerminalStatus
+	mergeStartupFailure
 )
 
 const (
@@ -823,18 +824,14 @@ func updateExecutionFailure(
 	if podName == "" {
 		podName = os.Getenv("POD_NAME")
 	}
-	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
-	workflowRun.Status.Message = message
-	workflowRun.Status.CompletionTime = &now
-	workflowRun.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{
+	status := ottoflowv1alpha1.WorkflowRunStatus{Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{
 		Phase:          string(ottoflowv1alpha1.WorkflowRunPhaseFailed),
 		JobName:        jobName,
 		PodName:        podName,
 		Message:        message,
 		CompletionTime: &now,
-	}
-	if err := persistWorkflowRunStatus(ctx, controlClient, runKey,
-		workflowRun.Status, overwriteTerminalStatus); err != nil {
+	}}
+	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, status, mergeStartupFailure); err != nil {
 		keys := append(
 			logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, "failed")
@@ -857,13 +854,22 @@ func persistWorkflowRunStatus(
 		if inner = controlClient.Get(ctx, runKey, latest); inner != nil {
 			return inner
 		}
-		if policy == preserveTerminalStatus && (latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+		if policy != overwriteTerminalStatus && (latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
 			latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed) {
 			klog.InfoS("not overwriting terminal WorkflowRun status",
 				"namespace", runKey.Namespace, "workflowRun", runKey.Name, "phase", latest.Status.Phase)
 			return nil
 		}
-		latest.Status = status
+		if policy == mergeStartupFailure {
+			execution := status.Execution.DeepCopy()
+			if previous := latest.Status.Execution; previous != nil {
+				execution.Attempts = previous.Attempts
+				execution.LastTerminationReason = previous.LastTerminationReason
+			}
+			latest.Status.Execution = execution
+		} else {
+			latest.Status = status
+		}
 		inner = controlClient.Status().Update(ctx, latest)
 		return inner
 	})

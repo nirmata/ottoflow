@@ -272,7 +272,9 @@ var _ = Describe("WorkflowRun Controller", func() {
 			}
 			job := &batchv1.Job{
 				ObjectMeta: metav1.ObjectMeta{Name: "restart-fail-run-runner", Namespace: ns},
-				Status:     batchv1.JobStatus{Failed: 1},
+				Status: batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{
+					{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+				}},
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(wr).WithObjects(workflow, wr, job).Build()
 			reconciler := &WorkflowRunReconciler{Client: fakeClient, Scheme: scheme}
