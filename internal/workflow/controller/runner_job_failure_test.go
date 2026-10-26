@@ -139,6 +139,9 @@ func TestReconcileRunnerJobAdjudicatesTerminalFailure(t *testing.T) {
 					if stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed || stored.Status.Execution.Attempts != 1 || stored.Status.CompletionTime == nil {
 						t.Errorf("terminal failure not recorded: %+v", stored.Status)
 					}
+					if stored.Status.Execution.Message != "transient startup failure" {
+						t.Errorf("startup failure cause lost during terminal Job adjudication: %+v", stored.Status.Execution)
+					}
 					if tc.reason == batchv1.JobReasonDeadlineExceeded && stored.Status.Execution.LastTerminationReason != tc.reason {
 						t.Errorf("deadline reason lost: %+v", stored.Status.Execution)
 					}

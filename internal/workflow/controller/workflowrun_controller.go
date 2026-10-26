@@ -1689,6 +1689,11 @@ func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string, rea
 // markRunTerminallyFailed marks a WorkflowRun as Failed and cleans up the checkpoint ConfigMap.
 func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, jobName, terminationReason string, attempts int32) (ctrl.Result, bool, error) {
 	now := metav1.Now()
+	runnerFailureMessage := ""
+	if execution := workflowRun.Status.Execution; execution != nil &&
+		execution.JobName == jobName && execution.Phase == string(ottoflowv1alpha1.WorkflowRunPhaseFailed) {
+		runnerFailureMessage = execution.Message
+	}
 	var msg string
 	switch {
 	case isDeterministicTermination(terminationReason):
@@ -1706,6 +1711,10 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	workflowRun.Status.Execution.Phase = string(ottoflowv1alpha1.WorkflowRunPhaseFailed)
 	workflowRun.Status.Execution.JobName = jobName
 	workflowRun.Status.Execution.Message = msg
+	if runnerFailureMessage != "" {
+		// Keep the runner's actionable cause; the run-level message records the Job verdict.
+		workflowRun.Status.Execution.Message = runnerFailureMessage
+	}
 	workflowRun.Status.Execution.CompletionTime = &now
 	workflowRun.Status.Execution.LastTerminationReason = terminationReason
 	// Delete before update: prevents a racing new runner from reading a stale checkpoint
