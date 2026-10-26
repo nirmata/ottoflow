@@ -158,3 +158,44 @@ func TestReconcileRunnerJobAdjudicatesTerminalFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileRunnerJobPreservesStartupCauseAcrossActiveAndTerminal(t *testing.T) {
+	wr, job, _, c := runnerFailureFixture(false, batchv1.JobStatus{Active: 1, Failed: 1})
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+	key := client.ObjectKeyFromObject(wr)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	active := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), key, active); err != nil {
+		t.Fatal(err)
+	}
+	if active.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed) ||
+		active.Status.Execution.Message != "transient startup failure" {
+		t.Errorf("active Job erased startup cause: %+v", active.Status.Execution)
+	}
+	currentJob := &batchv1.Job{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(job), currentJob); err != nil {
+		t.Fatal(err)
+	}
+	currentJob.Status = batchv1.JobStatus{
+		Failed: 2,
+		Conditions: []batchv1.JobCondition{{
+			Type: batchv1.JobFailed, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonBackoffLimitExceeded,
+		}},
+	}
+	if err := c.Status().Update(context.Background(), currentJob); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatal(err)
+	}
+	terminal := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), key, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed ||
+		terminal.Status.Execution.Message != "transient startup failure" {
+		t.Errorf("terminal Job lost startup cause: %+v", terminal.Status)
+	}
+}

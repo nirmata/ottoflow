@@ -320,7 +320,11 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if job.Status.Active > 0 && workflowRun.Status.Execution != nil {
+	// An active Job may still be replacing a failed pod. Keep that pod's diagnostic until
+	// the replacement runner writes its own Running execution status at startup.
+	if job.Status.Active > 0 && workflowRun.Status.Execution != nil &&
+		(workflowRun.Status.Execution.JobName != jobName ||
+			workflowRun.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 		newPhase := string(ottoflowv1alpha1.WorkflowRunPhaseRunning)
 		newMsg := "Runner Job is running"
 		if workflowRun.Status.Execution.Phase != newPhase || workflowRun.Status.Execution.Message != newMsg {
