@@ -67,6 +67,13 @@ type runnerConfig struct {
 	hardStop      time.Duration
 }
 
+type statusWritePolicy bool
+
+const (
+	overwriteTerminalStatus statusWritePolicy = false
+	preserveTerminalStatus  statusWritePolicy = true
+)
+
 const (
 	interruptedMessage = "interrupted by SIGTERM"
 	// exitInterrupted is 128+SIGTERM. It must be non-zero: the controller reads exit 0 as "run complete".
@@ -225,7 +232,7 @@ func persistBounded(
 ) error {
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status)
+	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status, overwriteTerminalStatus)
 }
 
 // hardStopDefault returns the hard stop the controller passed in v, or defaultHardStop when v is unset
@@ -636,7 +643,8 @@ func mustPersistRunningStatus(
 		execution.LastTerminationReason = prev.LastTerminationReason
 	}
 	workflowRun.Status.Execution = execution
-	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	if err := persistWorkflowRunStatus(ctx, controlClient, runKey,
+		workflowRun.Status, overwriteTerminalStatus); err != nil {
 		keys := logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name)
 		klog.ErrorS(err, "failed to persist initial WorkflowRun status", keys...)
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
@@ -736,7 +744,7 @@ func persistInterrupted(
 	// save must not use up the budget the status write needs.
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, *status); err != nil {
+	if err := persistWorkflowRunStatus(writeCtx, controlClient, cfg.runKey, *status, preserveTerminalStatus); err != nil {
 		klog.ErrorS(err, "failed to persist interrupted status", keys...)
 	}
 	if err := cm.Flush(writeCtx); err != nil {
@@ -825,7 +833,8 @@ func updateExecutionFailure(
 		Message:        message,
 		CompletionTime: &now,
 	}
-	if err := persistWorkflowRunStatus(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	if err := persistWorkflowRunStatus(ctx, controlClient, runKey,
+		workflowRun.Status, overwriteTerminalStatus); err != nil {
 		keys := append(
 			logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, "failed")
@@ -838,6 +847,7 @@ func persistWorkflowRunStatus(
 	controlClient client.Client,
 	runKey client.ObjectKey,
 	status ottoflowv1alpha1.WorkflowRunStatus,
+	policy statusWritePolicy,
 ) error {
 	// RetryOnConflict replaces errors wrapping context cancellation or expiry with the last conflict
 	// error (nil if none). Keep the closure's error so an interrupted write is not reported as stored.
@@ -847,8 +857,8 @@ func persistWorkflowRunStatus(
 		if inner = controlClient.Get(ctx, runKey, latest); inner != nil {
 			return inner
 		}
-		if latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-			latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		if policy == preserveTerminalStatus && (latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+			latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed) {
 			klog.InfoS("not overwriting terminal WorkflowRun status",
 				"namespace", runKey.Namespace, "workflowRun", runKey.Name, "phase", latest.Status.Phase)
 			return nil
