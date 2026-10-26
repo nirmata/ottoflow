@@ -22,6 +22,7 @@ import (
 	// Import client auth plugins for kubeconfig exec auth.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -70,7 +71,7 @@ type runnerConfig struct {
 type statusWritePolicy uint8
 
 const (
-	overwriteTerminalStatus statusWritePolicy = iota
+	preserveDeadlineFailure statusWritePolicy = iota
 	preserveTerminalStatus
 	mergeStartupFailure
 )
@@ -233,7 +234,7 @@ func persistBounded(
 ) error {
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status, overwriteTerminalStatus)
+	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status, preserveDeadlineFailure)
 }
 
 // hardStopDefault returns the hard stop the controller passed in v, or defaultHardStop when v is unset
@@ -645,7 +646,7 @@ func mustPersistRunningStatus(
 	}
 	workflowRun.Status.Execution = execution
 	if err := persistWorkflowRunStatus(ctx, controlClient, runKey,
-		workflowRun.Status, overwriteTerminalStatus); err != nil {
+		workflowRun.Status, preserveDeadlineFailure); err != nil {
 		keys := logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name)
 		klog.ErrorS(err, "failed to persist initial WorkflowRun status", keys...)
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
@@ -854,8 +855,13 @@ func persistWorkflowRunStatus(
 		if inner = controlClient.Get(ctx, runKey, latest); inner != nil {
 			return inner
 		}
-		if policy != overwriteTerminalStatus && (latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-			latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed) {
+		// The controller's deadline verdict is final, even when a step finishes after cancellation.
+		deadlineFailed := latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed &&
+			latest.Status.Execution != nil &&
+			latest.Status.Execution.LastTerminationReason == batchv1.JobReasonDeadlineExceeded
+		if deadlineFailed || (policy != preserveDeadlineFailure &&
+			(latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
+				latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 			klog.InfoS("not overwriting terminal WorkflowRun status",
 				"namespace", runKey.Namespace, "workflowRun", runKey.Name, "phase", latest.Status.Phase)
 			return nil
