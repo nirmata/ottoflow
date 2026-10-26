@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -57,12 +58,22 @@ var _ = Describe("isRetryableExecErr", func() {
 		Expect(isRetryableExecErr(context.DeadlineExceeded)).To(BeFalse())
 	})
 
-	It("returns true for io.EOF", func() {
-		Expect(isRetryableExecErr(io.EOF)).To(BeTrue())
+	It("returns false for io.EOF (the request may have reached the server)", func() {
+		Expect(isRetryableExecErr(io.EOF)).To(BeFalse())
 	})
 
-	It("returns true for io.ErrUnexpectedEOF", func() {
-		Expect(isRetryableExecErr(io.ErrUnexpectedEOF)).To(BeTrue())
+	It("returns false for io.ErrUnexpectedEOF (the request may have reached the server)", func() {
+		Expect(isRetryableExecErr(io.ErrUnexpectedEOF)).To(BeFalse())
+	})
+
+	It("returns true for a dial error, including a dial timeout", func() {
+		Expect(isRetryableExecErr(&net.OpError{Op: "dial", Err: io.ErrClosedPipe})).To(BeTrue())
+		Expect(isRetryableExecErr(&net.OpError{Op: "dial", Err: context.DeadlineExceeded})).To(BeTrue())
+	})
+
+	It("returns false for read and write errors (read: reset after send; write: handshake RST or partial send)", func() {
+		Expect(isRetryableExecErr(&net.OpError{Op: "read", Err: io.ErrClosedPipe})).To(BeFalse())
+		Expect(isRetryableExecErr(&net.OpError{Op: "write", Err: io.ErrClosedPipe})).To(BeFalse())
 	})
 
 	It("returns false for nil", func() {
@@ -113,27 +124,66 @@ var _ = Describe("executeAgentViaExecHTTP retry", func() {
 		}
 	})
 
-	It("succeeds on the second attempt after a transient 503", func() {
+	It("does not retry a 500: the agent already ran, a retry would run it again", func() {
 		var attempts atomic.Int32
 		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			n := attempts.Add(1)
-			if n == 1 {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				return
-			}
+			attempts.Add(1)
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(ExecResponse{Content: "analysis complete"})
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(ExecErrorResponse{Error: "agent crashed"})
 		}))
 		testExecURLBase = server.URL + "/api/exec"
 
-		content, _, _, err := exec.executeAgentViaExecHTTP(
+		_, _, _, err := exec.executeAgentViaExecHTTP(
 			context.Background(), workflowRun, agentCRD, agentRef,
-			"summarise findings", nil, "agent-executor", "ottoflow-system",
+			"prompt", nil, "agent-executor", "ottoflow-system",
 		)
 
-		Expect(err).NotTo(HaveOccurred())
-		Expect(content).To(Equal("analysis complete"))
-		Expect(attempts.Load()).To(Equal(int32(2)))
+		Expect(err).To(MatchError(ContainSubstring("500: agent crashed")))
+		Expect(attempts.Load()).To(Equal(int32(1)))
+	})
+
+	It("does not retry when the server closes the connection after receiving the request", func() {
+		var attempts atomic.Int32
+		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			attempts.Add(1)
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			_ = conn.Close()
+		}))
+		testExecURLBase = server.URL + "/api/exec"
+
+		_, _, _, err := exec.executeAgentViaExecHTTP(
+			context.Background(), workflowRun, agentCRD, agentRef,
+			"prompt", nil, "agent-executor", "ottoflow-system",
+		)
+
+		Expect(err).To(HaveOccurred())
+		Expect(attempts.Load()).To(Equal(int32(1)))
+	})
+
+	It("retries a dial timeout while the caller context is live", func() {
+		// Deterministic dial timeout: dial with an already-expired sub-context. This
+		// yields "i/o timeout" (Is context.DeadlineExceeded) with Op=dial, with no
+		// dependence on the network or OS.
+		var dials atomic.Int32
+		exec.execHTTPClient = &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dials.Add(1)
+				dctx, cancel := context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+				return (&net.Dialer{}).DialContext(dctx, network, addr)
+			},
+		}}
+		exec.execHTTPClientOnce.Do(func() {})
+		testExecURLBase = "http://127.0.0.1:1/api/exec"
+
+		_, _, _, err := exec.executeAgentViaExecHTTP(
+			context.Background(), workflowRun, agentCRD, agentRef,
+			"prompt", nil, "agent-executor", "ottoflow-system",
+		)
+
+		Expect(err).To(MatchError(ContainSubstring("i/o timeout")))
+		Expect(dials.Load()).To(Equal(int32(execHTTPMaxRetries)))
 	})
 
 	It("does not retry on a 401 — returns error after a single attempt", func() {
@@ -153,23 +203,24 @@ var _ = Describe("executeAgentViaExecHTTP retry", func() {
 		Expect(attempts.Load()).To(Equal(int32(1)), "4xx must not be retried")
 	})
 
-	It("returns error after all attempts are exhausted on persistent 503", func() {
-		var attempts atomic.Int32
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attempts.Add(1)
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		testExecURLBase = server.URL + "/api/exec"
+	It("returns error after all attempts are exhausted on persistent connection refused", func() {
+		var dials atomic.Int32
+		exec.execHTTPClient = &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dials.Add(1)
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+		}}
+		exec.execHTTPClientOnce.Do(func() {})
+		testExecURLBase = refusedURL()
 
 		_, _, _, err := exec.executeAgentViaExecHTTP(
 			context.Background(), workflowRun, agentCRD, agentRef,
 			"prompt", nil, "agent-executor", "ottoflow-system",
 		)
 
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("503"))
-		Expect(attempts.Load()).To(Equal(int32(execHTTPMaxRetries)),
-			"should attempt exactly execHTTPMaxRetries times")
+		Expect(err).To(MatchError(ContainSubstring("connection refused")))
+		Expect(dials.Load()).To(Equal(int32(execHTTPMaxRetries)))
 	})
 
 	It("stops retrying immediately when the context is cancelled during backoff", func() {
@@ -179,12 +230,16 @@ var _ = Describe("executeAgentViaExecHTTP retry", func() {
 		execHTTPRetryBaseWait = 50 * time.Millisecond
 		defer func() { execHTTPRetryBaseWait = time.Millisecond }()
 
-		var attempts atomic.Int32
-		server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			attempts.Add(1)
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}))
-		testExecURLBase = server.URL + "/api/exec"
+		// Connection refused is retryable, so the loop reaches the backoff.
+		var dials atomic.Int32
+		exec.execHTTPClient = &http.Client{Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				dials.Add(1)
+				return (&net.Dialer{}).DialContext(ctx, network, addr)
+			},
+		}}
+		exec.execHTTPClientOnce.Do(func() {})
+		testExecURLBase = refusedURL()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
@@ -195,7 +250,16 @@ var _ = Describe("executeAgentViaExecHTTP retry", func() {
 		)
 
 		Expect(err).To(HaveOccurred())
-		Expect(attempts.Load()).To(Equal(int32(1)),
+		Expect(dials.Load()).To(Equal(int32(1)),
 			"context cancellation during backoff must stop retrying immediately")
 	})
 })
+
+// refusedURL returns an exec URL base whose port has no listener (connection refused).
+func refusedURL() string {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	Expect(err).NotTo(HaveOccurred())
+	addr := l.Addr().String()
+	Expect(l.Close()).To(Succeed())
+	return "http://" + addr + "/api/exec"
+}

@@ -47,7 +47,7 @@ want free-form agents, use one of those instead.
 - ✅ **Kubernetes and CNCF integrations** — query API resources, PromQL, Kagent using A2A, otel, and more.
 - ✅ **Compiled CEL expressions** — sandboxed execution with full K8s and [Kyverno CEL](https://github.com/kyverno/sdk) library support
 - ✅ **Multiple step types** — ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
-- ✅ **Context optimization** — agent steps receive agregated computed summaries, never raw data dumps.
+- ✅ **Context optimization** — agent steps receive aggregated computed summaries, never raw data dumps.
 - ✅ **Retry & conditional execution** — retry policies and `matchConditions` gating per step.
 - ✅ **CLI with local mode** — execute workflows locally against your kubecontext.
 - ✅ **Extensive samples** — ready-to-run workflows under [`samples/`](samples/).
@@ -145,7 +145,11 @@ server), or override it per run with `--provider`/`--model` as shown above. API
 keys come from the **process environment** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
 `GEMINI_API_KEY`, `AZURE_OPENAI_API_KEY` — not from `Agent.spec.config`. In-cluster,
 set them on the agent-executor pod via `agentExecutor.env` in the Helm chart; in
-local mode they come from your shell.
+local mode they come from your shell. Because those keys are shared by every Agent,
+an Agent's `spec.config.endpoint` is accepted only for an origin the operator lists in
+`AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`; in local
+mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. See
+`samples/workflows/features/agent-custom-endpoint.yaml`.
 
 <!-- demo GIF: images/demo.gif — not committed yet; record it with `make demo`
      (needs vhs+ttyd+ffmpeg and a kind cluster, see images/demo.tape). Once the
@@ -179,7 +183,7 @@ All paths are under [`samples/workflows/production/`](samples/workflows/producti
 | [`pod-triage.yaml`](samples/workflows/production/pod-triage.yaml) | Collect → Analyze → Publish; CEL extracts per-pod failure signals (restarts, OOMKilled, ImagePullBackOff), the LLM picks the single highest-priority pod and the concrete next action. | Prioritized verdict + next step. |
 | [`resource-hygiene.yaml`](samples/workflows/production/resource-hygiene.yaml) | Detects 14 categories of unused or stale resources; LLM writes the cleanup report, Prometheus gauges track it. | Prioritized markdown report + metrics. |
 | [`cost-analyzer.yaml`](samples/workflows/production/cost-analyzer.yaml) | Right-sizing from resource specs plus metrics-server/Prometheus P95 usage, per-workload savings. | Markdown report + estimated monthly $ savings. |
-| [`workload-troubleshooter.yaml`](samples/workflows/production/workload-troubleshooter.yaml) | One failing pod: events + logs → LLM root-cause. **⚠ in-cluster only** (needs pod logs; not available in CLI local mode). | Root cause + remediation. |
+| [`workload-troubleshooter.yaml`](samples/workflows/production/workload-troubleshooter.yaml) | One failing pod: events + logs → LLM root-cause. | Root cause + remediation. |
 
 There are 70+ more workflows in [`samples/`](samples/) covering cost, security, and
 compliance automation.
@@ -202,8 +206,7 @@ scheduler; agent steps execute via the agent-executor pod (set LLM keys via
 For an LLM-driven root cause of a single failing pod — events and logs in, cause
 and remediation out — see
 [`workload-troubleshooter.yaml`](samples/workflows/production/workload-troubleshooter.yaml).
-It's in-cluster only (it needs pod logs, unavailable in local `--workflow-dir`
-mode) and runs the agent on the agent-executor, so it uses the LLM you configured
+It runs the agent on the agent-executor, so it uses the LLM you configured
 there rather than the `--provider`/`--model` flags (which apply to local runs only).
 
 ## 📚 Documentation · Help · Contributing · License

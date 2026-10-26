@@ -9,8 +9,12 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
+	"github.com/mark3labs/mcp-go/client/transport"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -18,7 +22,25 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/agent"
 )
+
+// mcpToolErrorMessage recognises the envelope the kubectl-ai fork returns, with a nil error, for an isError tool result.
+func mcpToolErrorMessage(result interface{}) (string, bool) {
+	const prefix, suffix = `{"error": true, "message": `, `, "status": "failed"}`
+	switch r := result.(type) {
+	case map[string]interface{}:
+		msg, _ := r["message"].(string)
+		return msg, r["error"] == true && r["status"] == "failed"
+	case string:
+		if !strings.HasPrefix(r, prefix) || !strings.HasSuffix(r, suffix) {
+			return "", false
+		}
+		msg, err := strconv.Unquote(r[len(prefix) : len(r)-len(suffix)])
+		return msg, err == nil
+	}
+	return "", false
+}
 
 // executeMCPToolCall executes an MCP tool call step
 func (e *WorkflowExecutor) executeMCPToolCall(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (_ map[string]interface{}, err error) {
@@ -81,7 +103,17 @@ func (e *WorkflowExecutor) executeMCPToolCall(ctx context.Context, workflowRun *
 	// Call the MCP tool
 	toolResult, err := mcpClient.CallTool(ctx, mcpToolCall.Tool, resolvedArgs)
 	if err != nil {
+		// The server dropped the session (e.g. it restarted): the cached client stays dead, so
+		// evict it and let the next call build a new one.
+		if errors.Is(err, transport.ErrSessionTerminated) {
+			if ev, ok := e.mcpManager.(agent.MCPClientEvicter); ok {
+				ev.Evict(workflowRun.Namespace, mcpToolCall.Server, mcpClient)
+			}
+		}
 		return nil, fmt.Errorf("MCP tool call failed: %w", err)
+	}
+	if msg, isToolErr := mcpToolErrorMessage(toolResult); isToolErr {
+		return nil, fmt.Errorf("MCP tool reported an error: %s", msg)
 	}
 
 	var outputs map[string]interface{}

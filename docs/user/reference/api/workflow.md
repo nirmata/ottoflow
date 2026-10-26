@@ -22,7 +22,7 @@
 | `events` | [EventConfig](#eventconfig) | No | Kubernetes event emission (enabled, level). |
 | `celCostLimit` | integer | No | Max CEL evaluation cost budget per expression (default: 2,097,152 units). |
 | `executionLimits` | object | No | `maxConcurrentSteps` (cap on ready-steps batch) and `outboundRequestsPerMinute` (token bucket on MCP/agent/A2A calls). |
-| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this), `maxAllowed` (max completed runs kept), `maxConcurrentRuns` (skip trigger-created runs when this many are active). |
+| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../tasks/installation.md#upgrading-default-run-history-cleanup)), `maxConcurrentRuns` (skip trigger-created runs when this many are active). |
 | `execution` | object | No | Default runner Job settings copied to trigger-created WorkflowRuns (see [WorkflowRun](workflowrun.md#workflowrunexecutionspec)). |
 
 ### Input

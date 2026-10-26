@@ -333,7 +333,8 @@ Demonstrates:
 
 For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml`,
 `agent-gemini.yaml`, `agent-local-llamacpp.yaml`, and `agent-custom-endpoint.yaml`
-(which documents exactly which `spec.config` fields each provider honours).
+(which documents exactly which `spec.config` fields each provider honours, and that
+`spec.config.endpoint` needs its origin on the operator's `AGENT_LLM_ENDPOINT_ALLOWLIST`).
 
 **Prerequisites:**
 ```bash
@@ -345,7 +346,7 @@ kubectl apply -f agent-basic.yaml
 ```bash
 ```
 
-**Note:** Shows how to configure agents with custom provider settings like endpoints and SSL options.
+**Note:** Shows when `spec.config.endpoint` is honored (only for an origin the operator has allowlisted via Helm `agentExecutor.llmEndpointAllowlist`; otherwise the run fails), and that `spec.config.skipVerifySSL: "true"` is rejected for every provider.
 
 ### 21. MCP with Authentication (`mcp-with-auth.yaml`)
 Demonstrates:
@@ -616,7 +617,7 @@ expressions:
 ### 31. Prometheus Query Step Examples (`prometheus-query-example.yaml`, `prometheus-query-simple.yaml`)
 Demonstrates the **prometheusQuery** step type (first-class PromQL queries with template variables).
 
-**prometheus-query-example:** Combines `resourceQuery` (list pods) with `prometheusQuery` (CPU usage). Step 1 runs on any cluster; step 2 requires a Prometheus URL.
+**prometheus-query-example:** Combines `resourceQuery` (list pods) with `prometheusQuery` (CPU usage). Via the CLI (`--workflow-dir` / `-f`) the workflow is rejected up front unless `--prometheus-url` is set.
 
 **prometheus-query-simple:** Single-step workflow that queries the `up` metric.
 
@@ -629,7 +630,7 @@ Demonstrates the **prometheusQuery** step type (first-class PromQL queries with 
 
 **Usage (run on kind):**
 ```bash
-# From repo root; prometheusQuery steps will fail without PROMETHEUS_URL
+# From repo root; the prometheusQuery samples are skipped without PROMETHEUS_URL
 ./scripts/run-samples-kind.sh
 PROMETHEUS_URL=http://localhost:9090 ./scripts/run-samples-kind.sh   # if Prometheus is port-forwarded
 ```
@@ -771,7 +772,7 @@ Demonstrates:
 **Usage:**
 ```bash
 # Create a ConfigMap to mutate
-kubectl create configmap my-config --from-literal=key=value -n default
+kubectl create configmap my-config --from-literal=key=value -n ottoflow
 
 # Run the workflow (adds labels and annotation to the ConfigMap)
 kubectl apply -f mutate-step-example.yaml

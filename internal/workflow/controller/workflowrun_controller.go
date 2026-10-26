@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -44,6 +45,9 @@ import (
 	executor "github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
+// defaultRunnerActiveDeadlineSeconds bounds a runner Job when neither the run nor its Workflow sets activeDeadlineSeconds.
+const defaultRunnerActiveDeadlineSeconds int64 = 3600
+
 // RunnerConfig holds controller configuration for the workflow runner Job (images, RBAC, secrets).
 // Values are set from process flags in cmd/controller/main.go.
 type RunnerConfig struct {
@@ -51,6 +55,8 @@ type RunnerConfig struct {
 	RunnerServiceAccount    string // default: controller-manager
 	RunnerClusterRole       string // required; validated non-empty at controller startup (no default)
 	AgentExecutorCallerRole string // empty disables RBAC-based agent-executor auth
+	// RunnerConfigMapWriterRole is the ClusterRole bound per run namespace for runner ConfigMap writes; empty disables.
+	RunnerConfigMapWriterRole string
 	// AgentExecutorCASecret names the certificate manager's agent-executor CA Secret in
 	// AgentExecutorNamespace. Its certificate (tls.crt, never tls.key) is published as a
 	// ConfigMap of the same name in each namespace that runs a workflow with an agent step, and
@@ -102,8 +108,6 @@ type WorkflowRunReconciler struct {
 	MetricsClient       metricsclientset.Interface
 	CustomMetricsClient executor.CustomMetricsClient
 	PrometheusClient    executor.PrometheusClient
-	CELCacheSize        int // Maximum number of compiled CEL expressions to cache
-	CELCache            *executor.CELCompilationCache
 	EventRecorder       events.EventRecorder
 	RunnerConfig        RunnerConfig
 	// ControllerNamespace is the namespace where the controller (and the bundled Workflow CRs)
@@ -214,7 +218,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				return ctrl.Result{}, te.err
 			}
 			logger.Error(err, "failed to build runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
-			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretAccessDeniedReason(err))
+			setRunFailed(workflowRun, fmt.Sprintf("Failed to build runner Job: %v", err), secretMountFailureReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -222,7 +226,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 		if err := r.ensureRunnerAccess(ctx, workflowRun, workflow, createdJob.Spec.Template.Spec.ServiceAccountName, workflowRunUsesExplicitRunnerServiceAccount(workflowRun)); err != nil {
 			if errors.Is(err, errRequeueRunnerAccess) {
-				logger.Info("runner ClusterRoleBinding migration in progress, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
+				logger.Info("runner RBAC binding not ready, requeuing", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "reason", err.Error())
 				return ctrl.Result{RequeueAfter: time.Second}, nil
 			}
 			logger.Error(err, "failed to ensure runner service account access", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
@@ -268,6 +272,11 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 						"job", jobKey)
 				})
 			}
+		}
+	} else if sa := job.Spec.Template.Spec.ServiceAccountName; sa != "" && !workflowRunUsesExplicitRunnerServiceAccount(workflowRun) {
+		// Existing Job may predate the writer binding; log and fall through so Job supervision below still runs.
+		if err := r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, sa, ""); err != nil {
+			logger.V(2).Info("failed to ensure runner ConfigMap writer RoleBinding", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "error", err.Error())
 		}
 	}
 
@@ -337,6 +346,10 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 }
 
 func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
+	return resolveWorkflow(ctx, r.Client, r.ControllerNamespace, workflowRun)
+}
+
+func resolveWorkflow(ctx context.Context, c client.Client, controllerNamespace string, workflowRun *ottoflowv1alpha1.WorkflowRun) (*ottoflowv1alpha1.Workflow, string, error) {
 	workflowRef := workflowRun.Spec.WorkflowRef
 	workflowNamespace := workflowRef.Namespace
 	if workflowNamespace == "" {
@@ -348,7 +361,7 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 		Name:      workflowRef.Name,
 		Namespace: workflowNamespace,
 	}
-	err := r.Get(ctx, workflowKey, workflow)
+	err := c.Get(ctx, workflowKey, workflow)
 	if err == nil {
 		return workflow, workflowNamespace, nil
 	}
@@ -357,20 +370,20 @@ func (r *WorkflowRunReconciler) getReferencedWorkflow(ctx context.Context, workf
 	// has a ControllerNamespace configured, try that namespace. Common case: an upstream
 	// caller hardcodes workflowRef.namespace=ottoflow but the install lives in a
 	// different namespace.
-	if apierrors.IsNotFound(err) && r.ControllerNamespace != "" && r.ControllerNamespace != workflowNamespace {
+	if apierrors.IsNotFound(err) && controllerNamespace != "" && controllerNamespace != workflowNamespace {
 		fallbackKey := types.NamespacedName{
 			Name:      workflowRef.Name,
-			Namespace: r.ControllerNamespace,
+			Namespace: controllerNamespace,
 		}
 		fallback := &ottoflowv1alpha1.Workflow{}
-		if fbErr := r.Get(ctx, fallbackKey, fallback); fbErr == nil {
+		if fbErr := c.Get(ctx, fallbackKey, fallback); fbErr == nil {
 			klog.Warningf("Workflow %s not found; falling back to controller namespace %q. The upstream caller should set workflowRef.namespace=%q to make this lookup explicit.",
-				workflowKey, r.ControllerNamespace, r.ControllerNamespace)
-			return fallback, r.ControllerNamespace, nil
+				workflowKey, controllerNamespace, controllerNamespace)
+			return fallback, controllerNamespace, nil
 		} else if !apierrors.IsNotFound(fbErr) {
 			// Transient fallback error (e.g. API server timeout): the caller must requeue, not
 			// terminally fail the run on what would otherwise be treated as a NotFound.
-			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, r.ControllerNamespace, fbErr)
+			return nil, "", fmt.Errorf("failed to get Workflow %s in controller namespace %q: %w", fallbackKey, controllerNamespace, fbErr)
 		}
 	}
 
@@ -442,10 +455,10 @@ func workflowRunUsesExplicitRunnerServiceAccount(workflowRun *ottoflowv1alpha1.W
 		workflowRun.Spec.Execution.Job.ServiceAccountName != ""
 }
 
-// errRequeueRunnerAccess signals that a runner ClusterRoleBinding is being migrated to a new
-// RoleRef (delete-and-recreate, since RoleRef is immutable) and the caller should requeue and
+// errRequeueRunnerAccess signals that a runner ClusterRoleBinding or ConfigMap-writer RoleBinding is
+// being migrated or recreated (RoleRef is immutable) and the caller should requeue and
 // retry rather than treat this as a terminal failure.
-var errRequeueRunnerAccess = errors.New("runner ClusterRoleBinding migration in progress")
+var errRequeueRunnerAccess = errors.New("runner RBAC binding migration in progress")
 
 // buildRunnerClusterRoleBinding constructs the ClusterRoleBinding that grants a workflow-runner
 // ServiceAccount access to the given ClusterRole.
@@ -526,7 +539,7 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 	} else {
 		// Only update bindings that we manage; avoid overwriting user-managed ClusterRoleBindings with the same name
 		const partOfLabel = "app.kubernetes.io/part-of"
-		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != "ottoflow" {
+		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != ottoflowPartOf {
 			return fmt.Errorf("ClusterRoleBinding %s exists but is not managed by OttoFlow (missing label %s=ottoflow); refusing to update", clusterRoleBindingName, partOfLabel)
 		}
 
@@ -589,7 +602,82 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		}
 	}
 
-	return nil
+	return r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, serviceAccountName, serviceAccount.UID)
+}
+
+func runnerConfigMapWriterBindingName(serviceAccountName string) string {
+	return "ottoflow-runner-configmap-writer-" + serviceAccountName
+}
+
+// ensureRunnerConfigMapWriter binds the runner SA to the ConfigMap-write ClusterRole in its own namespace only.
+func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context, namespace, serviceAccountName string, saUID types.UID) error {
+	roleName := r.RunnerConfig.RunnerConfigMapWriterRole
+	if roleName == "" {
+		return nil
+	}
+	const partOfLabel = "app.kubernetes.io/part-of"
+	key := types.NamespacedName{Namespace: namespace, Name: runnerConfigMapWriterBindingName(serviceAccountName)}
+	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: namespace}}
+	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}
+	existing := &rbacv1.RoleBinding{}
+	switch err := r.Get(ctx, key, existing); {
+	case err == nil:
+		if existing.Labels[partOfLabel] != ottoflowPartOf {
+			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (missing label %s=%s); refusing to update", key.Namespace, key.Name, partOfLabel, ottoflowPartOf)
+		}
+		if existing.DeletionTimestamp != nil {
+			return errRequeueRunnerAccess
+		}
+		// A binding owned by a previous SA incarnation is garbage-collected with it, so recreate it too.
+		// An empty saUID (steady-state reconcile) skips the owner check to avoid a live SA read per reconcile.
+		if existing.RoleRef == roleRef && (saUID == "" || slices.ContainsFunc(existing.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == saUID })) {
+			if slices.Equal(existing.Subjects, subjects) {
+				return nil
+			}
+			existing.Subjects = subjects
+			return classifyRunnerWriterErr(r.Update(ctx, existing), key)
+		}
+		// RoleRef is immutable: recreate.
+		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+			return classifyRunnerWriterErr(err, key)
+		}
+	case !apierrors.IsNotFound(err):
+		return classifyRunnerWriterErr(err, key)
+	}
+
+	if saUID == "" {
+		// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
+		sa := &corev1.ServiceAccount{}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: namespace, Name: serviceAccountName}, sa); err != nil {
+			return classifyRunnerWriterErr(err, key)
+		}
+		saUID = sa.UID
+	}
+	rb := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      key.Name,
+			Namespace: namespace,
+			Labels:    map[string]string{partOfLabel: ottoflowPartOf},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1", Kind: "ServiceAccount", Name: serviceAccountName, UID: saUID,
+			}},
+		},
+		RoleRef:  roleRef,
+		Subjects: subjects,
+	}
+	return classifyRunnerWriterErr(r.Create(ctx, rb), key)
+}
+
+// classifyRunnerWriterErr keeps Forbidden/Invalid terminal and requeues every other failure.
+func classifyRunnerWriterErr(err error, key types.NamespacedName) error {
+	switch {
+	case err == nil:
+		return nil
+	case apierrors.IsForbidden(err) || apierrors.IsInvalid(err):
+		return fmt.Errorf("cannot reconcile runner ConfigMap writer RoleBinding %s/%s: %w", key.Namespace, key.Name, err)
+	default:
+		return fmt.Errorf("%w: runner ConfigMap writer RoleBinding %s/%s: %w", errRequeueRunnerAccess, key.Namespace, key.Name, err)
+	}
 }
 
 func (r *WorkflowRunReconciler) ensureAgentExecutorCallerBinding(ctx context.Context, namespace, serviceAccountName, roleName string) error {
@@ -652,6 +740,15 @@ func runnerSecretSourceNamespace(cfg RunnerConfig, workflowNamespace string) str
 	return workflowNamespace
 }
 
+// publicProviderEnvNames are the public-provider credential and model names that used to be in
+// executor.LLMEnvAllowlist. Nothing on the runner reads them and the runner no longer forwards
+// them; the agent-executor takes public-provider keys from its own process environment only.
+var publicProviderEnvNames = []string{
+	"GEMINI_API_KEY", "GOOGLE_API_KEY",
+	"OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
+	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
+}
+
 // injectWellKnownLLMCredentials looks up the well-known LLM credentials Secret in the
 // WorkflowRun's namespace and returns secretKeyRef EnvVars for any recognized LLM keys
 // that are not already present in existingEnvNames. Returns nil when the Secret does not
@@ -672,6 +769,27 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 		secretName = ref.Name
 		if ref.Namespace != "" {
 			secretNamespace = ref.Namespace
+		}
+	}
+
+	// Before the Secret is even considered: a public-provider key in the run's own
+	// spec.execution.job.env is mounted on the runner but never read or forwarded, so say so.
+	// This sits before the secretName=="" return so it also fires on installs with no
+	// well-known Secret configured, where job.env is the only source.
+	if r.EventRecorder != nil {
+		var ignored []string
+		for _, k := range publicProviderEnvNames {
+			if _, ok := existingEnvNames[k]; ok {
+				ignored = append(ignored, k)
+			}
+		}
+		if len(ignored) > 0 {
+			r.EventRecorder.Eventf(workflowRun, nil, corev1.EventTypeWarning,
+				"LLMCredentialIgnored", "LLMCredentialIgnored",
+				"spec.execution.job.env sets %s, which nothing reads: public-provider API keys come "+
+					"from the agent-executor's own environment (Helm agentExecutor.llmCredentialsSecret "+
+					"or agentExecutor.env), not from the run",
+				strings.Join(ignored, ", "))
 		}
 	}
 
@@ -1064,7 +1182,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	var nodeSelector map[string]string
 	var tolerations []corev1.Toleration
 	var affinity *corev1.Affinity
-	var activeDeadlineSeconds *int64
+	activeDeadlineSeconds := ptr.To(defaultRunnerActiveDeadlineSeconds)
+	if workflow != nil && workflow.Spec.Execution != nil && workflow.Spec.Execution.Job != nil &&
+		workflow.Spec.Execution.Job.ActiveDeadlineSeconds != nil {
+		activeDeadlineSeconds = workflow.Spec.Execution.Job.ActiveDeadlineSeconds
+	}
 
 	if jobSpec != nil && jobSpec.Job != nil {
 		if err := jobSpec.Job.Validate(); err != nil {
@@ -1082,7 +1204,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		if jobSpec.Job.TTLSecondsAfterFinished != nil {
 			ttlSecondsAfterFinished = *jobSpec.Job.TTLSecondsAfterFinished
 		}
-		activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		if jobSpec.Job.ActiveDeadlineSeconds != nil {
+			activeDeadlineSeconds = jobSpec.Job.ActiveDeadlineSeconds
+		}
 		// Reserved names are refused before the author's entries are merged, so the run fails at
 		// build time — before reconcileJobExecution creates anything for it — rather than letting
 		// a duplicate silently replace a controller-owned value (see reservedRunnerEnvNames).
@@ -1173,6 +1297,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	volumes = append(volumes, secretVolumes...)
 	volumeMounts = append(volumeMounts, secretVolumeMounts...)
+	notChecked, err := r.checkSecretMounts(ctx, workflowRun.Namespace, secretVolumes, secretVolumeOrigins, runnerCopiedSecretNames(volumes))
+	if err != nil {
+		return nil, err
+	}
+	r.recordUncheckedSecretMounts(workflowRun, notChecked)
 
 	jobName := workflowRunnerJobName(workflowRun.Name)
 	runnerEnv := []corev1.EnvVar{
@@ -1336,11 +1465,11 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 	now := time.Now()
 
 	// 1. Retention: delete completed runs older than retentionMinutes
-	if run.RetentionMinutes > 0 {
-		cutoffRetention := now.Add(-time.Duration(run.RetentionMinutes) * time.Minute)
+	if retention := ptr.Deref(run.RetentionMinutes, 0); retention > 0 {
+		cutoffRetention := now.Add(-time.Duration(retention) * time.Minute)
 		for _, wr := range completed {
 			if wr.Status.CompletionTime != nil && wr.Status.CompletionTime.Time.Before(cutoffRetention) {
-				if err := r.Delete(ctx, wr); err != nil {
+				if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 					return false, fmt.Errorf("delete run %s for retention: %w", wr.Name, err)
 				}
 				if wr.UID == current.UID {
@@ -1353,7 +1482,8 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 	}
 
 	// 2. MaxAllowed: keep only the most recent maxAllowed completed runs; delete oldest first
-	if run.MaxAllowed > 0 && len(completed) > int(run.MaxAllowed) {
+	maxAllowed := int(ptr.Deref(run.MaxAllowed, 0))
+	if maxAllowed > 0 && len(completed) > maxAllowed {
 		sort.Slice(completed, func(i, j int) bool {
 			ti, tj := time.Time{}, time.Time{}
 			if completed[i].Status.CompletionTime != nil {
@@ -1364,10 +1494,10 @@ func (r *WorkflowRunReconciler) applyRunPolicy(ctx context.Context, workflow *ot
 			}
 			return ti.Before(tj)
 		})
-		toDelete := len(completed) - int(run.MaxAllowed)
+		toDelete := len(completed) - maxAllowed
 		for i := 0; i < toDelete && i < len(completed); i++ {
 			wr := completed[i]
-			if err := r.Delete(ctx, wr); err != nil {
+			if err := client.IgnoreNotFound(r.Delete(ctx, wr)); err != nil {
 				return false, fmt.Errorf("delete run %s for maxAllowed: %w", wr.Name, err)
 			}
 			if wr.UID == current.UID {
@@ -1503,6 +1633,13 @@ func (r *WorkflowRunReconciler) handleFailedJob(ctx context.Context, workflowRun
 	attempts := int32(0)
 	if workflowRun.Status.Execution != nil {
 		attempts = workflowRun.Status.Execution.Attempts
+	}
+
+	for _, c := range job.Status.Conditions {
+		if (c.Type == batchv1.JobFailureTarget || c.Type == batchv1.JobFailed) &&
+			c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {
+			return r.markRunTerminallyFailed(ctx, workflowRun, jobName, batchv1.JobReasonDeadlineExceeded, attempts)
+		}
 	}
 
 	if checkpointingEnabledForRun(workflow, workflowRun) {

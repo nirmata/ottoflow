@@ -10,7 +10,7 @@ spec:
       default: "my-config"
     - name: namespace
       description: "Namespace of the resource"
-      default: "default"
+      default: "ottoflow"
   steps:
     # ApplyConfiguration: CEL returns a partial object that is deep-merged onto the resource
     - name: addLabels

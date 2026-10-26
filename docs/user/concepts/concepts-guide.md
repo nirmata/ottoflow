@@ -42,9 +42,9 @@ Step (api/v1alpha1/workflow_types.go)
 
 The step dispatcher in `executeStep()` (`internal/workflow/executor/executor.go`) checks these fields in this exact priority order:
 
-`forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → expressions (default)`
+`expressions (evaluated first, on every step) → forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → outputs only (default)`
 
-A step takes exactly ONE action. In particular, `expressions:` are only evaluated on pure expression steps — they are ignored on a step that also has an action field like `resourceQuery`.
+A step takes exactly ONE action. A step's `expressions:` are evaluated before its action runs, so the action's fields can read them as `expressions.<name>`. To post-process the action's result, use the step's `outputs:` or a dependent expression-only step.
 
 ---
 
@@ -56,7 +56,7 @@ CEL (Common Expression Language) is the glue that connects steps. Every output, 
 inputs.*              → Workflow input values (always strings)
 variables.*           → Workflow-level variables AND step outputs (flat, no step prefix)
 steps.<stepName>.*    → Step-scoped results (e.g. forEach results)
-expressions.*         → Current step's inline expression results
+expressions.*         → Inline expression results: visible to the step's own action and outputs and to later steps (forEach items are isolated)
 item                  → Current item in a ForEach loop
 toolResult            → MCP tool call result
 agentResponse         → Raw LLM output text
@@ -162,7 +162,6 @@ Pending → Running → Succeeded
 ```
 WorkflowRunReconciler
 ├── Client              → K8s API client
-├── CELCache            → Pre-compiled CEL programs (shared across all runs)
 ├── RunnerConfig        → Image, ServiceAccount, RBAC, secrets configuration
 └── ControllerNamespace → Fallback namespace for Workflow lookup
 ```
@@ -310,9 +309,7 @@ In local mode:
 - Agent steps use a local `agentExecutor` (requires LLM credentials)
 - MCP servers still connect via stdio/http
 - `resourceMetrics()` works: a metrics client is wired from your kubeconfig
-- Cannot fetch Pod logs — `resourceQuery` reads live objects only, with no `kubectl logs`
-  equivalent, so workflows that need log data (e.g. `workload-troubleshooter.yaml`) require the
-  in-cluster controller
+- `resource.GetLogs()` works: a typed clientset is wired from your kubeconfig
 
 The `localExecutionMode=true` flag in `WorkflowExecutor` gates the in-process agent execution path.
 

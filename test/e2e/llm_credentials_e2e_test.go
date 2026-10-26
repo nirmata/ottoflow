@@ -94,9 +94,6 @@ spec:
       agentRef:
         name: e2e-llm-agent
         namespace: ottoflow
-      expressions:
-        - name: result
-          expression: 'steps["agentstep"].response'
 ---
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: WorkflowRun
@@ -207,9 +204,6 @@ spec:
       agentRef:
         name: e2e-noopt-agent
         namespace: ottoflow
-      expressions:
-        - name: result
-          expression: 'steps["agentstep"].response'
 ---
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: WorkflowRun

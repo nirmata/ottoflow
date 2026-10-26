@@ -54,15 +54,21 @@ const MetadataKeyLLMEnv = "llmEnv"
 // testExecURLBase overrides the exec endpoint base URL for tests (empty in production).
 var testExecURLBase string
 
+// SECURITY: values for these keys come from the workflow run, via the X-LLM-Env header, so
+// they are tenant-controlled. Never copy them into the agent-executor's process environment
+// (os.Setenv), and do not add a public provider's endpoint or TLS variable here (a *_BASE_URL or
+// *_ENDPOINT name, LLAMACPP_HOST, LLM_SKIP_VERIFY_SSL, AGENT_LLM_ENDPOINT_ALLOWLIST): LLM clients
+// read such variables from the process environment, so forwarding them is one step away from
+// letting a run choose where the operator's LLM credentials are sent. NIRMATA_URL is for the
+// nirmata provider, which this build does not serve. llm_env_invariant_test.go checks the
+// os.Setenv rule and keeps the last two names out of this list.
+//
 // LLMEnvAllowlist is the list of env var names the runner forwards to the agent-executor
 // via the X-LLM-Env header (credentials and LLM configuration). Only these keys are sent.
 // Also used by the controller to filter keys from the well-known LLM credentials Secret.
 var LLMEnvAllowlist = []string{
 	"NIRMATA_LLM_TOKEN", "NIRMATA_LLM_SERVICEACCOUNT_TOKEN", "NIRMATA_LLM_APIKEY", "NIRMATA_URL",
 	"NIRMATA_LLM_MODEL",
-	"GEMINI_API_KEY", "GOOGLE_API_KEY",
-	"OPENAI_API_KEY", "OPENAI_MODEL", "OPENAI_BASE_URL",
-	"ANTHROPIC_API_KEY", "ANTHROPIC_MODEL",
 }
 
 // OttoFlowAgentExecutor implements the server-side agent executor for the exec HTTP endpoint.
@@ -182,7 +188,9 @@ func (e *WorkflowExecutor) executeAgentViaExecHTTP(
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 			}
-			if !isRetryableExecErr(lastErr) {
+			// A live caller ctx is a preference: a dead one yields a clearer error
+			// than another dial attempt and a spurious "retrying" log line.
+			if ctx.Err() != nil || !isRetryableExecErr(lastErr) {
 				break
 			}
 			klog.V(2).InfoS("Agent exec call failed, retrying",
@@ -190,28 +198,9 @@ func (e *WorkflowExecutor) executeAgentViaExecHTTP(
 			continue
 		}
 
-		if resp.StatusCode < 500 {
-			break // 2xx success or 4xx client error — do not retry either
-		}
-
-		// Intermediate attempts drain and close the body before retrying so that
-		// the underlying TCP connection is returned to the pool (Go's http.Transport
-		// only reuses a connection when the previous response body is fully consumed).
-		// On the last attempt we skip draining and break instead, letting the body
-		// fall through to the status-check below which decodes the structured JSON
-		// error message (e.g. {"error": "agent crashed"}) from the response body.
-		if attempt == execHTTPMaxRetries-1 {
-			// lastErr is nil here (Do succeeded); the 5xx error is surfaced by the
-			// resp.StatusCode check after the loop, which also decodes the structured
-			// JSON error body (e.g. {"error": "agent crashed"}).
-			break
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		lastErr = fmt.Errorf("exec endpoint returned %d", resp.StatusCode)
-		klog.V(2).InfoS("Agent exec call returned server error, retrying",
-			"attempt", attempt+1, "of", execHTTPMaxRetries, "status", resp.StatusCode)
-		resp = nil
+		// Any HTTP response means the request was received; a 5xx from the exec
+		// handler is written only after the agent ran. Never retry it: that would run the agent again.
+		break
 	}
 
 	if lastErr != nil {
@@ -321,12 +310,14 @@ func buildLLMEnvMap(allowlist []string) map[string]string {
 	return out
 }
 
-// isRetryableExecErr reports whether err is a transient network failure safe to retry.
-// Context cancellation and deadline exceeded are never retryable — they must propagate.
+// isRetryableExecErr reports whether err is a failure to connect, so no request
+// bytes can have reached agent-executor and a retry cannot run the agent twice.
+// The exec endpoint is not idempotent (agents may call MCP tools and spend LLM
+// tokens), so post-send failures (EOF, connection reset, write errors, 5xx) are
+// final. The check is on the dial phase rather than on the error type, because a
+// dial timeout surfaces as either DeadlineExceeded or a raw OS timeout depending
+// on a race.
 func isRetryableExecErr(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return false
-	}
 	var netErr *net.OpError
-	return errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+	return errors.As(err, &netErr) && netErr.Op == "dial"
 }

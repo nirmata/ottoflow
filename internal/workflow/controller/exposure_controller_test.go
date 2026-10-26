@@ -12,12 +12,14 @@ import (
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -91,7 +93,7 @@ func TestAgentName(t *testing.T) {
 
 func TestBuildAgentObject(t *testing.T) {
 	w := wf("prod", "nightly-report")
-	obj := buildAgentObject(w, "ghcr.io/nirmata/serve-a2a:v1", "serve-a2a")
+	obj := buildAgentObject(w, "ghcr.io/nirmata/serve-a2a:v1", "serve-a2a", false)
 
 	if got := obj.GetAPIVersion(); got != kagentAPIVersion {
 		t.Errorf("apiVersion=%q want %q", got, kagentAPIVersion)
@@ -154,7 +156,7 @@ func TestBuildAgentObject(t *testing.T) {
 func TestBuildAgentObjectCustomDescription(t *testing.T) {
 	w := wf("prod", "nightly-report")
 	w.Spec.Expose.Kagent.Description = "Custom desc"
-	obj := buildAgentObject(w, "img", "sa")
+	obj := buildAgentObject(w, "img", "sa", false)
 	if got, _, _ := unstructured.NestedString(obj.Object, "spec", "description"); got != "Custom desc" {
 		t.Errorf("spec.description=%q want %q", got, "Custom desc")
 	}
@@ -307,4 +309,46 @@ func TestReconcileRoleBinding(t *testing.T) {
 			t.Errorf("RoleBinding changed unexpectedly: %+v", got)
 		}
 	})
+}
+
+func TestReconcileEmptyImageTearsDown(t *testing.T) {
+	w := wf("prod", "report")
+	w.Finalizers = []string{a2aExposureFinalizer}
+	agent := buildAgentObject(w, "img", "sa", false)
+	r := newExposureReconciler(t, w, agent)
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(w)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	err := r.Get(context.Background(), client.ObjectKeyFromObject(agent), agent)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("Get Agent err = %v, want NotFound after teardown", err)
+	}
+	var got ottoflowv1alpha1.Workflow
+	if err := r.Get(context.Background(), client.ObjectKeyFromObject(w), &got); err != nil {
+		t.Fatalf("getting Workflow: %v", err)
+	}
+	if len(got.Finalizers) != 0 {
+		t.Errorf("finalizers = %v, want none", got.Finalizers)
+	}
+}
+
+func TestBuildAgentObjectAllowUnauthenticatedEnv(t *testing.T) {
+	envOf := func(allow bool) map[string]string {
+		obj := buildAgentObject(wf("prod", "nightly-report"), "img", "sa", allow)
+		list, _, _ := unstructured.NestedSlice(obj.Object, "spec", "byo", "deployment", "env")
+		got := map[string]string{}
+		for _, e := range list {
+			m := e.(map[string]any)
+			got[m["name"].(string)] = m["value"].(string)
+		}
+		return got
+	}
+	if v, ok := envOf(false)["A2A_ALLOW_UNAUTHENTICATED"]; ok {
+		t.Errorf("default must not set A2A_ALLOW_UNAUTHENTICATED, got %q", v)
+	}
+	if got := envOf(true)["A2A_ALLOW_UNAUTHENTICATED"]; got != "true" {
+		t.Errorf("opt-out env = %q, want %q", got, "true")
+	}
 }

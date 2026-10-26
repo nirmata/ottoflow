@@ -8,8 +8,6 @@ that can be found in the LICENSE.md file.
 package executor
 
 import (
-	"context"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -69,7 +67,7 @@ var _ = Describe("CELCompilationCache", func() {
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(BeEmpty())
 
-		programs := cache.GetPrograms(WorkflowKey("default", "test-wf"))
+		programs := exprTexts(workflow)
 		Expect(programs).NotTo(BeNil())
 		Expect(programs).To(HaveLen(5))
 		Expect(programs).To(HaveKey("42"))
@@ -99,7 +97,7 @@ var _ = Describe("CELCompilationCache", func() {
 		}
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(BeEmpty())
-		programs := cache.GetPrograms(WorkflowKey("default", "foreach-wf"))
+		programs := exprTexts(workflow)
 		Expect(programs).NotTo(BeNil())
 		Expect(programs).To(HaveKey(`["a", "b"]`))
 		Expect(programs).To(HaveKey(`variables.item + "-suffix"`))
@@ -125,62 +123,6 @@ var _ = Describe("CELCompilationCache", func() {
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(HaveLen(1))
 		Expect(errs[0].Error()).To(ContainSubstring("bad"))
-
-		programs := cache.GetPrograms(WorkflowKey("default", "bad-wf"))
-		Expect(programs).To(HaveLen(1))
-		Expect(programs).To(HaveKey("1 + 1"))
-	})
-
-	It("should invalidate cached programs on workflow deletion", func() {
-		workflow := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "del-wf", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "1"}}},
-				},
-			},
-		}
-
-		errs := cache.CompileWorkflow(workflow)
-		Expect(errs).To(BeEmpty())
-		Expect(cache.GetPrograms(WorkflowKey("default", "del-wf"))).To(HaveLen(1))
-
-		cache.InvalidateWorkflow(WorkflowKey("default", "del-wf"))
-		Expect(cache.GetPrograms(WorkflowKey("default", "del-wf"))).To(BeNil())
-	})
-
-	It("should replace all programs when workflow is reloaded", func() {
-		wfKey := WorkflowKey("default", "reload-wf")
-
-		v1 := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "reload-wf", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "a", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "1"}}},
-				},
-			},
-		}
-		Expect(cache.CompileWorkflow(v1)).To(BeEmpty())
-		Expect(cache.GetPrograms(wfKey)).To(HaveLen(1))
-		Expect(cache.GetPrograms(wfKey)).To(HaveKey("1"))
-
-		v2 := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "reload-wf", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "b", Expressions: []ottoflowv1alpha1.Expression{
-						{Name: "y", Expression: "2"},
-						{Name: "z", Expression: "3"},
-					}},
-				},
-			},
-		}
-		Expect(cache.CompileWorkflow(v2)).To(BeEmpty())
-		progs := cache.GetPrograms(wfKey)
-		Expect(progs).To(HaveLen(2))
-		Expect(progs).To(HaveKey("2"))
-		Expect(progs).To(HaveKey("3"))
-		Expect(progs).NotTo(HaveKey("1"))
 	})
 
 	It("should compile step with WorkflowRef, MCPToolCall, ResourceQuery, PrometheusQuery, Mutate, Output Metric (extractStepExpressions branches)", func() {
@@ -225,7 +167,7 @@ var _ = Describe("CELCompilationCache", func() {
 		}
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(BeEmpty())
-		programs := cache.GetPrograms(WorkflowKey("default", "full-step-wf"))
+		programs := exprTexts(workflow)
 		Expect(programs).NotTo(BeNil())
 		Expect(programs).To(HaveKey("variables.x"))
 		Expect(programs).To(HaveKey("1"))
@@ -267,7 +209,7 @@ var _ = Describe("CELCompilationCache", func() {
 		}
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(BeEmpty())
-		programs := cache.GetPrograms(WorkflowKey("default", "foreach-full-wf"))
+		programs := exprTexts(workflow)
 		Expect(programs).NotTo(BeNil())
 		Expect(programs).To(HaveKey("item"))
 		Expect(programs).To(HaveKey("object"))
@@ -309,7 +251,7 @@ var _ = Describe("CELCompilationCache", func() {
 		errs := cache.CompileWorkflow(workflow)
 		Expect(errs).To(BeEmpty())
 
-		programs := cache.GetPrograms(WorkflowKey("ns", "complex-wf"))
+		programs := exprTexts(workflow)
 		Expect(programs).NotTo(BeNil())
 		Expect(programs).To(HaveKey("true"))
 		Expect(programs).To(HaveKey(`"ok"`))
@@ -318,69 +260,6 @@ var _ = Describe("CELCompilationCache", func() {
 		Expect(programs).To(HaveKey("expressions.doubled"))
 	})
 
-	It("should preload evaluator from cache", func() {
-		workflow := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "preload-wf", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "s", Expressions: []ottoflowv1alpha1.Expression{
-						{Name: "x", Expression: "1 + 2"},
-					}},
-				},
-			},
-		}
-		Expect(cache.CompileWorkflow(workflow)).To(BeEmpty())
-
-		workflowRun := &ottoflowv1alpha1.WorkflowRun{
-			ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: "default"},
-		}
-		evaluator, err := NewCELEvaluator(k8sClient, workflowRun)
-		Expect(err).NotTo(HaveOccurred())
-
-		evaluator.PreloadFromCache(cache, WorkflowKey("default", "preload-wf"))
-
-		cached, ok := evaluator.programCache.Get("1 + 2")
-		Expect(ok).To(BeTrue())
-		Expect(cached).NotTo(BeNil())
-
-		result, err := evaluator.EvaluateExpression(context.Background(), "1 + 2", map[string]interface{}{})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(BeEquivalentTo(int64(3)))
-	})
-
-	It("should keep separate caches for different workflows", func() {
-		wf1 := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "wf1", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "a", Expression: `"alpha"`}}},
-				},
-			},
-		}
-		wf2 := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "wf2", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "s", Expressions: []ottoflowv1alpha1.Expression{{Name: "b", Expression: `"beta"`}}},
-				},
-			},
-		}
-
-		Expect(cache.CompileWorkflow(wf1)).To(BeEmpty())
-		Expect(cache.CompileWorkflow(wf2)).To(BeEmpty())
-
-		p1 := cache.GetPrograms(WorkflowKey("default", "wf1"))
-		Expect(p1).To(HaveLen(1))
-		Expect(p1).To(HaveKey(`"alpha"`))
-
-		p2 := cache.GetPrograms(WorkflowKey("default", "wf2"))
-		Expect(p2).To(HaveLen(1))
-		Expect(p2).To(HaveKey(`"beta"`))
-
-		cache.InvalidateWorkflow(WorkflowKey("default", "wf1"))
-		Expect(cache.GetPrograms(WorkflowKey("default", "wf1"))).To(BeNil())
-		Expect(cache.GetPrograms(WorkflowKey("default", "wf2"))).To(HaveLen(1))
-	})
 })
 
 var _ = Describe("extractCELExpressions", func() {
@@ -486,3 +365,12 @@ var _ = Describe("extractCELExpressions", func() {
 		Expect(exprs).To(BeEmpty())
 	})
 })
+
+// exprTexts returns the set of expression texts the walker extracts from a workflow.
+func exprTexts(wf *ottoflowv1alpha1.Workflow) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, e := range extractCELExpressions(wf) {
+		out[e.Text] = struct{}{}
+	}
+	return out
+}

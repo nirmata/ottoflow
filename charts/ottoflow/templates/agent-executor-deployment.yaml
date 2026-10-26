@@ -72,11 +72,15 @@ spec:
           mountPath: /etc/tls
           readOnly: true
         {{- end }}
-        {{- if or .Values.agentExecutor.goMemLimit .Values.agentExecutor.env }}
+        {{- if or .Values.agentExecutor.goMemLimit .Values.agentExecutor.env .Values.agentExecutor.llmEndpointAllowlist }}
         env:
         {{- if .Values.agentExecutor.goMemLimit }}
         - name: GOMEMLIMIT
           value: {{ .Values.agentExecutor.goMemLimit | quote }}
+        {{- end }}
+        {{- if .Values.agentExecutor.llmEndpointAllowlist }}
+        - name: AGENT_LLM_ENDPOINT_ALLOWLIST
+          value: {{ join "," .Values.agentExecutor.llmEndpointAllowlist | quote }}
         {{- end }}
         {{- range .Values.agentExecutor.env }}
         - name: {{ .name }}

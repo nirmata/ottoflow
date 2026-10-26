@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	"github.com/google/go-cmp/cmp"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -950,6 +951,54 @@ func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_WithExecutionOverrides(t *
 	}
 }
 
+func TestWorkflowRunReconciler_BuildWorkflowRunnerJob_ActiveDeadlineSeconds(t *testing.T) {
+	tests := []struct {
+		name  string
+		run   *int64
+		image string
+		wf    *int64
+		want  int64
+	}{
+		{"run-set", ptr.To(int64(7200)), "", nil, 7200},
+		{"workflow-set", nil, "", ptr.To(int64(5400)), 5400},
+		{"neither-set", nil, "", nil, 3600},
+		{"both-set", ptr.To(int64(7200)), "", ptr.To(int64(5400)), 7200},
+		{"run-job-no-deadline", nil, "custom", ptr.To(int64(5400)), 5400},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "my-run", Namespace: "default"},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: "default"},
+				},
+			}
+			if tt.run != nil || tt.image != "" {
+				wr.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+					Job: &ottoflowv1alpha1.WorkflowRunJobSpec{ActiveDeadlineSeconds: tt.run, Image: tt.image},
+				}
+			}
+			wf := &ottoflowv1alpha1.Workflow{}
+			if tt.wf != nil {
+				wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+					Job: &ottoflowv1alpha1.WorkflowRunJobSpec{ActiveDeadlineSeconds: tt.wf},
+				}
+			}
+			r := &WorkflowRunReconciler{Client: fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), Scheme: unitTestScheme}
+			job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.Spec.ActiveDeadlineSeconds == nil {
+				t.Fatal("ActiveDeadlineSeconds is nil")
+			}
+			if got := *job.Spec.ActiveDeadlineSeconds; got != tt.want {
+				t.Errorf("ActiveDeadlineSeconds = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWorkflowRunReconciler_Reconcile_NotFound_Ignores(t *testing.T) {
 	ctx := context.Background()
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
@@ -1460,7 +1509,7 @@ func TestWorkflowRunReconciler_Reconcile_AlreadySucceeded_RunPolicyZeroRetention
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: 0, MaxAllowed: 0},
+			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](0), MaxAllowed: ptr.To[int32](0)},
 		},
 	}
 	completed := metav1.Now()
@@ -1496,7 +1545,7 @@ func TestWorkflowRunReconciler_ApplyRunPolicy_MaxAllowed_DeletesOldest(t *testin
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{MaxAllowed: 2},
+			Run:   &ottoflowv1alpha1.RunPolicy{MaxAllowed: ptr.To[int32](2)},
 		},
 	}
 	oldTime := metav1.NewTime(metav1.Now().Add(-2 * time.Hour))
@@ -1542,7 +1591,7 @@ func TestWorkflowRunReconciler_ApplyRunPolicy_Retention_DeletesOld(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
 		Spec: ottoflowv1alpha1.WorkflowSpec{
 			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
-			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: 60}, // delete completed older than 1h
+			Run:   &ottoflowv1alpha1.RunPolicy{RetentionMinutes: ptr.To[int32](60)}, // delete completed older than 1h
 		},
 	}
 	oldTime := metav1.NewTime(metav1.Now().Add(-2 * time.Hour))
@@ -1615,6 +1664,7 @@ func TestTriggerManager_CreateWorkflowRunFromEvent_SuccessCreatesRun(t *testing.
 		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
 		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}},
 	}
+	wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{Job: &ottoflowv1alpha1.WorkflowRunJobSpec{Env: []corev1.EnvVar{{Name: "LLM_TOKEN", Value: "test-value"}}}}
 	// Use Unstructured so CEL inputMapping can traverse the object fields.
 	obj := &unstructured.Unstructured{Object: map[string]interface{}{
 		"apiVersion": "v1",
@@ -1648,6 +1698,9 @@ func TestTriggerManager_CreateWorkflowRunFromEvent_SuccessCreatesRun(t *testing.
 	// CEL evaluated object.metadata.name → "p1"
 	if run.Spec.InputValues["podName"] != "p1" {
 		t.Errorf("InputValues[podName] = %q, want %q", run.Spec.InputValues["podName"], "p1")
+	}
+	if diff := cmp.Diff(wf.Spec.Execution, run.Spec.Execution); diff != "" {
+		t.Errorf("run execution (-want +got):\n%s", diff)
 	}
 	if run.Status.Trigger == nil || run.Status.Trigger.Type != "Event" {
 		t.Errorf("Trigger = %v", run.Status.Trigger)
@@ -2573,7 +2626,7 @@ func TestInjectWellKnownLLMCredentials_SecretPresent(t *testing.T) {
 
 func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T) {
 	r, wr := newTestReconcilerWithSecret(t,
-		map[string][]byte{testLLMTokenKey: []byte("secret-tok"), "OPENAI_API_KEY": []byte("openai-key")},
+		map[string][]byte{testLLMTokenKey: []byte("secret-tok"), "NIRMATA_LLM_APIKEY": []byte("openai-key")},
 		"ottoflow-llm-credentials",
 	)
 	// NIRMATA_LLM_TOKEN is already set explicitly in spec.execution.job.env
@@ -2582,7 +2635,7 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Only OPENAI_API_KEY should be injected; NIRMATA_LLM_TOKEN was already in existingEnvNames
+	// Only NIRMATA_LLM_APIKEY should be injected; NIRMATA_LLM_TOKEN was already in existingEnvNames
 	for _, ev := range extras {
 		if ev.Name == testLLMTokenKey {
 			t.Errorf("NIRMATA_LLM_TOKEN must not be injected when already explicit in job env")
@@ -2590,12 +2643,12 @@ func TestInjectWellKnownLLMCredentials_ExplicitCredsTakePrecedence(t *testing.T)
 	}
 	found := false
 	for _, ev := range extras {
-		if ev.Name == "OPENAI_API_KEY" {
+		if ev.Name == "NIRMATA_LLM_APIKEY" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected OPENAI_API_KEY to be injected from well-known Secret")
+		t.Error("expected NIRMATA_LLM_APIKEY to be injected from well-known Secret")
 	}
 }
 

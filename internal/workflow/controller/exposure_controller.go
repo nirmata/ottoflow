@@ -84,6 +84,9 @@ type WorkflowExposureReconciler struct {
 	// RoleBinding references. The controller only BINDS it (never creates a Role), so it does
 	// not need to hold+grant those verbs itself and passes Kubernetes RBAC escalation checks.
 	ServeA2AClusterRole string
+	// ServeA2AAllowUnauthenticated sets A2A_ALLOW_UNAUTHENTICATED=true on the BYO pod, which
+	// turns off serve-a2a's caller authentication. Default false (fail closed).
+	ServeA2AAllowUnauthenticated bool
 }
 
 // Reconcile ensures a kagent Agent exists for each Workflow with spec.expose.kagent set, and
@@ -111,7 +114,7 @@ func (r *WorkflowExposureReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Teardown: not opted in, incompatible input schema, or Workflow being deleted. Delete the
 	// Agent, keep the shared SA/RoleBinding (namespace fixtures shared by other exposed Workflows).
-	if !exposable || beingDeleted {
+	if !exposable || beingDeleted || r.ServeA2AImage == "" {
 		if controllerutil.ContainsFinalizer(wf, a2aExposureFinalizer) {
 			if err := r.deleteAgent(ctx, wf); err != nil {
 				logger.Error(err, "failed to delete kagent Agent", logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
@@ -122,14 +125,6 @@ func (r *WorkflowExposureReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				return ctrl.Result{}, client.IgnoreNotFound(err)
 			}
 		}
-		return ctrl.Result{}, nil
-	}
-
-	// Setup path. Without an image we cannot build a working Agent; log and wait for the
-	// next spec change / resync rather than creating a broken Agent.
-	if r.ServeA2AImage == "" {
-		logger.Info("serve-a2a image not configured; skipping a2a exposure",
-			logging.KeyWorkflow, req.Name, logging.KeyNamespace, req.Namespace)
 		return ctrl.Result{}, nil
 	}
 
@@ -244,7 +239,7 @@ func (r *WorkflowExposureReconciler) createIfAbsent(ctx context.Context, obj cli
 // stale-named Agents this controller previously created for the same Workflow (e.g. a
 // leftover flo-<hash> after the Workflow name became eligible to be used directly).
 func (r *WorkflowExposureReconciler) upsertAgent(ctx context.Context, wf *ottoflowv1alpha1.Workflow) error {
-	desired := buildAgentObject(wf, r.ServeA2AImage, r.ServeA2AServiceAccount)
+	desired := buildAgentObject(wf, r.ServeA2AImage, r.ServeA2AServiceAccount, r.ServeA2AAllowUnauthenticated)
 
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(kagentAgentGVK())
@@ -328,7 +323,7 @@ func (r *WorkflowExposureReconciler) deleteAgent(ctx context.Context, wf *ottofl
 
 // buildAgentObject builds the desired kagent BYO Agent for a Workflow. Pure function so it
 // can be unit-tested without a cluster.
-func buildAgentObject(wf *ottoflowv1alpha1.Workflow, image, serviceAccount string) *unstructured.Unstructured {
+func buildAgentObject(wf *ottoflowv1alpha1.Workflow, image, serviceAccount string, allowUnauthenticated bool) *unstructured.Unstructured {
 	name := agentName(wf)
 
 	description := fmt.Sprintf("Runs the %s OttoFlow workflow", wf.Name)
@@ -339,6 +334,15 @@ func buildAgentObject(wf *ottoflowv1alpha1.Workflow, image, serviceAccount strin
 	// ponytail: only description is propagated to the kagent Agent in slice-1. displayName,
 	// examples and tags are captured on the API for a later slice that enriches the A2A card.
 	publicURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:8080/", name, wf.Namespace)
+
+	env := []any{
+		map[string]any{"name": "WORKFLOW_NAME", "value": wf.Name},
+		map[string]any{"name": "WORKFLOW_NAMESPACE", "value": wf.Namespace},
+		map[string]any{"name": "A2A_PUBLIC_URL", "value": publicURL},
+	}
+	if allowUnauthenticated {
+		env = append(env, map[string]any{"name": "A2A_ALLOW_UNAUTHENTICATED", "value": "true"})
+	}
 
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": kagentAPIVersion,
@@ -359,11 +363,7 @@ func buildAgentObject(wf *ottoflowv1alpha1.Workflow, image, serviceAccount strin
 				"deployment": map[string]any{
 					"image":              image,
 					"serviceAccountName": serviceAccount,
-					"env": []any{
-						map[string]any{"name": "WORKFLOW_NAME", "value": wf.Name},
-						map[string]any{"name": "WORKFLOW_NAMESPACE", "value": wf.Namespace},
-						map[string]any{"name": "A2A_PUBLIC_URL", "value": publicURL},
-					},
+					"env":                env,
 				},
 			},
 		},

@@ -19,8 +19,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -180,6 +182,31 @@ var _ = Describe("ExecHandler", func() {
 			Expect(json.NewDecoder(rr.Body).Decode(&errResp)).To(Succeed())
 			Expect(errResp.Error).To(ContainSubstring("LLM unavailable"))
 		})
+
+		It("adds the Helm setting to a Forbidden error on a Secret", func() {
+			forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "mcp-token", fmt.Errorf("denied"))
+			mock.SetDefaultError(fmt.Errorf("getting secret team-a/mcp-token: %w", forbidden))
+			h := newExecHandler(agentCRD, mock)
+			rr := doExecPOST(h, fmt.Sprintf("/%s/%s", ns, agentName),
+				ExecRequest{Prompt: "x"}, llmEnv)
+
+			var errResp ExecErrorResponse
+			Expect(json.NewDecoder(rr.Body).Decode(&errResp)).To(Succeed())
+			Expect(errResp.Error).To(ContainSubstring("rbac.secretAccess.agentExecutor"))
+		})
+
+		It("adds no hint to a Forbidden error on another resource", func() {
+			forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "gh", fmt.Errorf("denied"))
+			mock.SetDefaultError(fmt.Errorf("getting configmap: %w", forbidden))
+			h := newExecHandler(agentCRD, mock)
+			rr := doExecPOST(h, fmt.Sprintf("/%s/%s", ns, agentName),
+				ExecRequest{Prompt: "x"}, llmEnv)
+
+			var errResp ExecErrorResponse
+			Expect(json.NewDecoder(rr.Body).Decode(&errResp)).To(Succeed())
+			Expect(errResp.Error).To(ContainSubstring("is forbidden"))
+			Expect(errResp.Error).NotTo(ContainSubstring("rbac.secretAccess"))
+		})
 	})
 })
 
@@ -313,7 +340,7 @@ var _ = Describe("executeAgentViaExecHTTP", func() {
 		}))
 		testExecURLBase = fakeServer.URL
 
-		GinkgoT().Setenv("OPENAI_API_KEY", "fake-key-for-test")
+		GinkgoT().Setenv("NIRMATA_LLM_TOKEN", "fake-key-for-test")
 
 		e, err := NewWorkflowExecutorWithAgentExecutor(k8sClient, nil, nil, nil, workflowRun, &execHTTPStub{}, false, 0, 5, nil)
 		Expect(err).NotTo(HaveOccurred())

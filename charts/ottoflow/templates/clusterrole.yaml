@@ -153,7 +153,7 @@ rules:
       - get
       - list
       - watch
-  # Events - workflow/step event reporting (create only)
+  # Events - workflow/step event reporting (patch updates the count of a repeated event)
   - apiGroups:
       - ""
       - events.k8s.io
@@ -161,6 +161,7 @@ rules:
       - events
     verbs:
       - create
+      - patch
   # OpenReports - runner creates and updates Report CRDs for openReport steps
   - apiGroups:
       - openreports.io
@@ -202,20 +203,8 @@ rules:
     verbs:
       - update
       - patch
-{{- if .Values.serveA2A.enabled }}
-  # serve-a2a SETUP (only needed while the feature is enabled): create/update kagent BYO Agents,
-  # manage the per-namespace RoleBinding, and bind the shared serve-a2a ClusterRole.
-  - apiGroups:
-      - kagent.dev
-    resources:
-      - agents
-    verbs:
-      - create
-      - update
-      - patch
-  # RoleBindings - bind the serve-a2a SA to the shared serve-a2a ClusterRole, and reconcile it
-  # (update, or delete+recreate) when serviceAccountName or clusterRole change: roleRef is
-  # immutable, so a drifted binding must be recreated or newly reconciled Agents lose access.
+  # RoleBindings - per-run runner ConfigMap-writer bindings and (serve-a2a) the serve-a2a binding, which is
+  # reconciled (update, or delete+recreate) when serviceAccountName or clusterRole change: roleRef is immutable.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
@@ -227,6 +216,17 @@ rules:
       - watch
       - update
       - delete
+{{- if .Values.serveA2A.enabled }}
+  # serve-a2a SETUP (only needed while the feature is enabled): create/update kagent BYO Agents
+  # and bind the shared serve-a2a ClusterRole.
+  - apiGroups:
+      - kagent.dev
+    resources:
+      - agents
+    verbs:
+      - create
+      - update
+      - patch
   # bind on the serve-a2a ClusterRole so per-namespace RoleBindings can reference it even though
   # the controller may not itself hold every verb the serve-a2a role grants (K8s RBAC
   # escalation-prevention requires bind OR holding every referenced permission).
@@ -445,18 +445,14 @@ rules:
       - get
       - patch
       - update
-  # ConfigMaps - workflow execution context
+  # ConfigMaps - read cluster-wide; writes come from the per-namespace -runner-configmap-writer binding
   - apiGroups:
       - ""
     resources:
       - configmaps
     verbs:
-      - create
-      - delete
       - get
       - list
-      - patch
-      - update
       - watch
   # Jobs - ForEach and sub-step monitoring
   - apiGroups:
@@ -516,6 +512,26 @@ aggregationRule:
         rbac.ottoflow.io/aggregate-to-runner: "true"
         rbac.ottoflow.io/aggregate-instance: {{ include "ottoflow.fullname" . }}
 rules: []
+---
+# ConfigMap writes for runners (checkpoints, audit snapshots, same-namespace mutate). Not aggregated:
+# the controller binds it with a RoleBinding in each run namespace, so writes stay in that namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ottoflow.fullname" . }}-runner-configmap-writer
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: runner-rbac
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+      - delete
+      - patch
+      - update
 ---
 # Additional ClusterRole - for custom resources and additional permissions
 {{- if and .Values.rbac.clusterRole .Values.rbac.clusterRole.extraResources }}

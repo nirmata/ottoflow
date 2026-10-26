@@ -13,9 +13,12 @@
 #   helm repo add openreports https://openreports.io/charts
 #   helm install openreports openreports/openreports -n openreports --create-namespace
 #
-# Run locally (data mode, no cluster needed):
-#   ottoflow run -f open-report-example.yaml --local \
+# Run locally:
+#   ottoflow run -f open-report-example.yaml \
 #     --input namespace=default
+# With a kubeconfig and the OpenReports CRD installed, a local run writes a real
+# Report to the current-context cluster. Otherwise (no kubeconfig, CRD not
+# installed, or no permission to read it) the step falls back to data mode.
 #
 # Run in-cluster (CRD mode when OpenReports installed):
 #   kubectl apply -f open-report-example.yaml

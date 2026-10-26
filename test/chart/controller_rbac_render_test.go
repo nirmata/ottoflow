@@ -47,3 +47,25 @@ func TestControllerCoreRoleGrantsConfigMapWrites(t *testing.T) {
 		})
 	}
 }
+
+// TestControllerCoreRoleGrantsRoleBindings: the controller binds each runner ServiceAccount to the
+// ConfigMap-writer ClusterRole with a RoleBinding, so default installs (serveA2A off) need these verbs.
+func TestControllerCoreRoleGrantsRoleBindings(t *testing.T) {
+	want := []string{"create", "get", "list", "watch", "update", "delete"}
+	for _, role := range render(t, "ottoflow") {
+		if !strings.HasSuffix(role.Name, "-role:core") || role.Labels[aggregateToControllerLabel] == "" {
+			continue
+		}
+		granted := make([]string, 0, len(want))
+		for _, rule := range role.Rules {
+			granted = append(granted, grantedVerbs(rule, "rbac.authorization.k8s.io", "rolebindings", want)...)
+		}
+		for _, verb := range want {
+			if !containsOrWildcard(granted, verb) {
+				t.Errorf("ClusterRole %s does not grant %s on rolebindings (granted: %v)", role.Name, verb, granted)
+			}
+		}
+		return
+	}
+	t.Fatal("controller-aggregated *-role:core ClusterRole not rendered")
+}

@@ -42,6 +42,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/agent"
 	"github.com/nirmata/ottoflow/internal/logging"
 	"github.com/nirmata/ottoflow/internal/tracing"
 	"github.com/nirmata/ottoflow/internal/workflow/cluster"
@@ -154,6 +155,8 @@ func run() int {
 
 	targetClient, metricsClient, kubeClient, prometheusClient := mustGetTargetClients(
 		ctx, controlClient, workflowRun, cfg.prometheusURL, cfg.jobName, cfg.podName)
+	kubeConfigPath := mustGetTargetKubeConfigPath(ctx, controlClient, workflowRun, cfg.jobName, cfg.podName)
+	ctx = agent.WithKubeConfigPath(ctx, kubeConfigPath)
 	mustPersistRunningStatus(ctx, controlClient, cfg.runKey, workflowRun, cfg.jobName, cfg.podName)
 
 	exec := mustNewWorkflowExecutor(
@@ -313,6 +316,21 @@ func mustLoadWorkflow(
 		klog.Fatalf("failed to get Workflow %s/%s: %v", workflowNamespace, workflowRun.Spec.WorkflowRef.Name, err)
 	}
 	return workflow
+}
+
+func mustGetTargetKubeConfigPath(
+	ctx context.Context,
+	controlClient client.Client,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	jobName, podName string,
+) string {
+	path, err := cluster.KubeConfigPathForClusterRef(workflowRun.Spec.ClusterRef)
+	if err != nil {
+		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName,
+			fmt.Sprintf("Failed to resolve target kubeconfig: %v", err))
+		klog.Fatalf("failed to resolve target kubeconfig: %v", err)
+	}
+	return path
 }
 
 func mustGetTargetClients(

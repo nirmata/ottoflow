@@ -74,6 +74,11 @@ func (m *mcpManagerImpl) GetClient(ctx context.Context, serverName string, names
 	return m.manager.GetClient(ctx, serverName, namespace)
 }
 
+// Evict implements agent.MCPClientEvicter by forwarding to the manager.
+func (m *mcpManagerImpl) Evict(namespace, serverName string, c agent.MCPClient) {
+	m.manager.Evict(namespace, serverName, c)
+}
+
 // Close stops the background eviction goroutine and closes all cached MCP client connections.
 func (m *mcpManagerImpl) Close() error {
 	return m.manager.Close()
@@ -105,12 +110,13 @@ type WorkflowExecutor struct {
 	execHTTPClient     *http.Client
 	execHTTPClientErr  error
 	// openReportsCRD/Once/Avail/Err: cached per-run CRD availability check for openReport steps (thread-safe via sync.Once).
-	openReportsCRDOnce  sync.Once
-	openReportsCRDAvail bool
-	openReportsCRDErr   error
-	checkpointManager   *CheckpointManager
-	providerOverride    string
-	modelOverride       string
+	openReportsCRDOnce   sync.Once
+	openReportsCRDAvail  bool
+	openReportsCRDReason string
+	openReportsCRDErr    error
+	checkpointManager    *CheckpointManager
+	providerOverride     string
+	modelOverride        string
 	// kubeClient is the typed Kubernetes clientset propagated to the CELEvaluator for resource.GetLogs.
 	// nil when the executor was created without a rest.Config (convenience wrappers, CLI local mode).
 	kubeClient kubernetes.Interface
@@ -154,19 +160,6 @@ func (e *WorkflowExecutor) waitOutboundRateLimit(ctx context.Context) error {
 		return nil
 	}
 	return e.outboundRateLimiter.Wait(ctx)
-}
-
-// SetCELCache pre-populates this executor's CEL evaluator with programs from
-// the shared compilation cache and sets the workflow's CEL cost limit for any
-// on-the-fly compilation. Pass the workflow so the cost limit can be applied.
-func (e *WorkflowExecutor) SetCELCache(cache *CELCompilationCache, workflowKey string, workflow *ottoflowv1alpha1.Workflow) {
-	if workflow != nil {
-		e.celEvaluator.SetCELCostLimit(ResolveCELCostLimit(&workflow.Spec))
-	}
-	if cache == nil {
-		return
-	}
-	e.celEvaluator.PreloadFromCache(cache, workflowKey)
 }
 
 // NewWorkflowExecutor creates a new workflow executor
@@ -387,7 +380,7 @@ func (e *WorkflowExecutor) emitStepEventWarning(workflow *ottoflowv1alpha1.Workf
 
 // ExecuteWorkflow executes a workflow
 func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, workflowRun *ottoflowv1alpha1.WorkflowRun) error {
-	// Apply workflow's CEL cost limit for this run (CLI and any path that didn't set it via SetCELCache)
+	// Apply workflow's CEL cost limit for this run
 	e.celEvaluator.SetCELCostLimit(ResolveCELCostLimit(&workflow.Spec))
 
 	restoredFromCheckpoint, err := e.loadCheckpointIfNeeded(ctx, workflowRun)
@@ -397,7 +390,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 
 	err = e.contextManager.InitializeContext(ctx, workflow, workflowRun.Spec.InputValues)
 	if err != nil {
-		return fmt.Errorf("failed to initialize context: %w", err)
+		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to initialize context: %w", err))
 	}
 
 	if !restoredFromCheckpoint {
@@ -408,10 +401,16 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 
 	defer e.checkpointCleanup(ctx, workflow, workflowRun)()
 
+	// A workflow with no steps would otherwise finish as Succeeded without doing anything.
+	// Record the failure so Phase and Message are set before the runner exits.
+	if len(workflow.Spec.Steps) == 0 {
+		return e.failBeforeSteps(workflow, workflowRun, errors.New("workflow has no steps"))
+	}
+
 	// Build DAG
 	dag, err := BuildDAG(workflow.Spec.Steps)
 	if err != nil {
-		return fmt.Errorf("failed to build DAG: %w", err)
+		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to build DAG: %w", err))
 	}
 
 	// Initialize step statuses
@@ -429,6 +428,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	// Set current workflow so forEach (and other steps) can invoke progress callback with workflow for CLI display
 	e.currentWorkflow = workflow
 	defer func() { e.currentWorkflow = nil }()
+	e.contextManager.workflowRun = workflowRun
 
 	// Set rate limiter for outbound calls (MCP, agent) when spec limits are set
 	if workflow.Spec.ExecutionLimits != nil && workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute != nil && *workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute > 0 {
@@ -700,6 +700,19 @@ func (e *WorkflowExecutor) recordWorkflowFailure(
 	e.emitWorkflowLevelEvent(workflow, workflowRun, "WorkflowFailed", corev1.EventTypeWarning, message)
 }
 
+// failBeforeSteps records a deterministic pre-step failure so the runner persists Phase=Failed.
+// Retention cleanup keys off Status.CompletionTime, which the success path also sets.
+func (e *WorkflowExecutor) failBeforeSteps(
+	workflow *ottoflowv1alpha1.Workflow,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	err error,
+) error {
+	e.recordWorkflowFailure(workflow, workflowRun, err.Error())
+	now := metav1.Now()
+	workflowRun.Status.CompletionTime = &now
+	return err
+}
+
 func (e *WorkflowExecutor) recordWorkflowSuccess(
 	ctx context.Context,
 	workflow *ottoflowv1alpha1.Workflow,
@@ -773,6 +786,34 @@ func (e *WorkflowExecutor) checkMatchConditions(ctx context.Context, step ottofl
 
 // executeStep executes a single step. Returns (outputs, nil) on success so forEach can collect per-item outputs; returns (nil, err) on failure.
 func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, step ottoflowv1alpha1.Step) (map[string]interface{}, error) {
+	contextData, err := e.contextManager.ReadContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read context: %w", err)
+	}
+
+	// Build variable map for CEL evaluation
+	vars := e.celEvaluator.BuildVariableMap(contextData)
+
+	// Evaluate expressions before dispatch so every action sees them
+	// (and so do the step's outputs).
+	if len(step.Expressions) > 0 {
+		exprResults, err := e.celEvaluator.EvaluateStepExpressions(ctx, step, vars)
+		if err != nil {
+			return nil, fmt.Errorf("failed to evaluate expressions: %w", err)
+		}
+
+		// Update context with expression results
+		if contextData["expressions"] == nil {
+			contextData["expressions"] = make(map[string]interface{})
+		}
+		for k, v := range exprResults {
+			contextData["expressions"].(map[string]interface{})[k] = v
+		}
+
+		// Update vars for output evaluation
+		vars = e.celEvaluator.BuildVariableMap(contextData)
+	}
+
 	// Check step type and delegate to appropriate handler
 	if step.ForEach != nil {
 		err := e.executeForEach(ctx, workflowRun, step)
@@ -809,35 +850,7 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflo
 	if step.WaitForCallback != nil {
 		return e.executeWaitForCallback(ctx, workflowRun, step)
 	}
-	// Default: expression-based step
-	contextData, err := e.contextManager.ReadContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read context: %w", err)
-	}
-
-	// Build variable map for CEL evaluation
-	vars := e.celEvaluator.BuildVariableMap(contextData)
-
-	// Evaluate expressions sequentially and update context
-	if len(step.Expressions) > 0 {
-		exprResults, err := e.celEvaluator.EvaluateStepExpressions(ctx, step, vars)
-		if err != nil {
-			return nil, fmt.Errorf("failed to evaluate expressions: %w", err)
-		}
-
-		// Update context with expression results
-		if contextData["expressions"] == nil {
-			contextData["expressions"] = make(map[string]interface{})
-		}
-		for k, v := range exprResults {
-			contextData["expressions"].(map[string]interface{})[k] = v
-		}
-
-		// Update vars for output evaluation
-		vars = e.celEvaluator.BuildVariableMap(contextData)
-	}
-
-	// Evaluate outputs
+	// Evaluate outputs (reached by pure expression steps; vars already include this step's expressions)
 	outputs, err := e.celEvaluator.EvaluateStepOutputs(ctx, step, vars)
 	if err != nil {
 		return nil, fmt.Errorf("failed to evaluate outputs: %w", err)
@@ -959,7 +972,9 @@ func (e *WorkflowExecutor) executeWorkflowReference(ctx context.Context, workflo
 		return nil, fmt.Errorf("failed to create executor for sub-workflow: %w", err)
 	}
 
-	if err := childExec.ExecuteWorkflow(ctx, subWorkflow, childRun); err != nil {
+	// The child has its own context; the caller's forEach scope would shadow it (incl. stepStatus).
+	childCtx := context.WithValue(ctx, scopedContextKey, nil)
+	if err := childExec.ExecuteWorkflow(childCtx, subWorkflow, childRun); err != nil {
 		if workflowRun.Status.StepStatuses == nil {
 			workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
 		}
@@ -1012,11 +1027,15 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 	outputsMap := make(map[string]interface{})
 	contextData["outputs"] = outputsMap
 
+	// stepStatus goes only on a per-evaluation copy so the live context stays unchanged.
+	evalContext := maps.Clone(contextData)
+	evalContext["stepStatus"] = e.contextManager.stepStatusProjection()
+
 	// Evaluate outputs
 	outputs := make(map[string]apiextensionsv1.JSON)
 	for _, outputDef := range workflow.Spec.Outputs {
 		// Build variable map (includes outputs from previous iterations)
-		vars := e.celEvaluator.BuildVariableMap(contextData)
+		vars := e.celEvaluator.BuildVariableMap(evalContext)
 
 		var result interface{}
 		var err error
@@ -1072,7 +1091,7 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 
 		// Emit custom metric if output has metric config (vars now includes this output)
 		if outputDef.Metric != nil {
-			metricVars := e.celEvaluator.BuildVariableMap(contextData)
+			metricVars := e.celEvaluator.BuildVariableMap(evalContext)
 			metrics.EmitOutputMetric(ctx, result, outputDef, workflowName, namespace, metricVars, e.celEvaluator)
 		}
 	}

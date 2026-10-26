@@ -80,6 +80,12 @@ func main() {
 	// flags, as cmd/controller does, would collide with klog.InitFlags here).
 	ctrl.SetLogger(klog.Background())
 
+	// Fail at boot on a malformed AGENT_LLM_ENDPOINT_ALLOWLIST entry (missing scheme or host,
+	// or a path, query, fragment or userinfo) instead of refusing every agent run later.
+	if err := agent.ValidateLLMEndpointAllowlist(); err != nil {
+		klog.Fatalf("invalid %s: %v", agent.AgentLLMEndpointAllowlistEnv, err)
+	}
+
 	if *enableProfile {
 		startProfiler(*profilePort)
 	}

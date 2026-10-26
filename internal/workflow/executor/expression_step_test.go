@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/klog/v2/textlogger"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -230,34 +229,6 @@ var _ = Describe("Expression-based step execution", func() {
 		Expect(variables).NotTo(HaveKey("x"))
 	})
 
-	It("should use SetCELCache when provided", func() {
-		logger := textlogger.NewLogger(textlogger.NewConfig())
-		cache, err := NewCELCompilationCache(k8sClient, nil, nil, nil, logger)
-		Expect(err).NotTo(HaveOccurred())
-		workflow := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
-			Spec: ottoflowv1alpha1.WorkflowSpec{
-				Steps: []ottoflowv1alpha1.Step{
-					{Name: "s1", Outputs: []ottoflowv1alpha1.Output{{Name: "a", Expression: `"cached"`}}},
-				},
-			},
-		}
-		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
-		errs := cache.CompileWorkflow(workflow)
-		Expect(errs).To(BeEmpty())
-		key := WorkflowKey(workflow.Namespace, workflow.Name)
-
-		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
-			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
-		Expect(err).NotTo(HaveOccurred())
-		workflowExecutor.SetCELCache(cache, key, workflow)
-		err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
-		Expect(err).NotTo(HaveOccurred())
-		ctxData, _ := workflowExecutor.GetContextManager().ReadContext(ctx)
-		variables := ctxData["variables"].(map[string]interface{})
-		Expect(variables["a"]).To(Equal("cached"))
-	})
-
 	It("should evaluate workflow-level outputs (Spec.Outputs) and write to status", func() {
 		var err error
 		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
@@ -328,19 +299,6 @@ var _ = Describe("Expression-based step execution", func() {
 		err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(workflowRun.Status.Outputs["nested"].Raw).To(MatchJSON(`{"label": "step-x", "num": 42}`))
-	})
-
-	It("SetCELCache with nil cache does not panic", func() {
-		workflowExecutor, err := NewWorkflowExecutorWithAgentExecutor(
-			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
-		Expect(err).NotTo(HaveOccurred())
-		workflow := &ottoflowv1alpha1.Workflow{
-			ObjectMeta: metav1.ObjectMeta{Name: "w", Namespace: "default"},
-			Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s", Outputs: []ottoflowv1alpha1.Output{{Name: "x", Expression: `"v"`}}}}},
-		}
-		workflowExecutor.SetCELCache(nil, "default/w", workflow)
-		err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
-		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should respect outbound rate limit when ExecutionLimits.OutboundRequestsPerMinute is set", func() {

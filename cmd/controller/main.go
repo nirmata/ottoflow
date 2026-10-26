@@ -78,6 +78,7 @@ func main() {
 	var workflowRunnerServiceAccount string
 	var workflowRunnerClusterRole string
 	var agentExecutorCallerClusterRole string
+	var runnerConfigMapWriterClusterRole string
 	var workflowRunnerAgentExecutorCASecret string
 	var secretSourceNamespace string
 	var workflowRunnerImagePullSecrets string
@@ -92,6 +93,7 @@ func main() {
 	var serveA2AImage string
 	var serveA2AServiceAccount string
 	var serveA2AClusterRole string
+	var serveA2AAllowUnauthenticated bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -105,7 +107,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.IntVar(&celCacheSize, "cel-cache-size", 1000,
-		"Maximum number of compiled CEL expressions to cache (default: 1000)")
+		"Deprecated: has no effect and will be removed. Kept so existing controller args keep parsing.")
 	flag.StringVar(&prometheusURL, "prometheus-url", "",
 		"Prometheus server URL for CEL prometheusMetrics() (optional).")
 	flag.StringVar(&agentExecutorServiceName, "agent-executor-service-name", os.Getenv("AGENT_EXECUTOR_SERVICE_NAME"),
@@ -120,6 +122,9 @@ func main() {
 		"Service account name for the workflow runner Job. If empty, derived from Workflow name as {workflow-name}-runner.")
 	flag.StringVar(&workflowRunnerClusterRole, "workflow-runner-cluster-role", os.Getenv("WORKFLOW_RUNNER_CLUSTER_ROLE"),
 		"ClusterRole name for runner Job RBAC (required; the Helm chart sets this to <release>-runner-role).")
+	flag.StringVar(&runnerConfigMapWriterClusterRole, "runner-configmap-writer-cluster-role",
+		os.Getenv("RUNNER_CONFIGMAP_WRITER_CLUSTER_ROLE"),
+		"ClusterRole bound per run namespace to give runners ConfigMap write access there; empty disables (optional).")
 	flag.StringVar(&agentExecutorCallerClusterRole, "agent-executor-caller-cluster-role",
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
@@ -173,6 +178,10 @@ func main() {
 		"Shared ClusterRole the serve-a2a BYO pod's ServiceAccount is bound to (Helm-provisioned; "+
 			"the controller only creates a RoleBinding to it, never the ClusterRole itself). "+
 			"Default: ottoflow-serve-a2a.")
+	flag.BoolVar(&serveA2AAllowUnauthenticated, "serve-a2a-allow-unauthenticated", false,
+		"Turn OFF caller authentication on serve-a2a pods: anyone who can reach a pod can create WorkflowRuns. "+
+			"Default false (callers need a TokenReview-valid token and get configmaps/a2a-caller). "+
+			"Pair with a NetworkPolicy; see docs/user/tasks/workflows-as-a2a-agents.md.")
 
 	webhookServiceName := envOrDefault("WEBHOOK_SERVICE_NAME", "ottoflow-webhook")
 	webhookConfigName := envOrDefault("WEBHOOK_CONFIG_NAME", "ottoflow-validating")
@@ -187,6 +196,12 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(textlogger.NewLogger(logConfig))
+
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "cel-cache-size" {
+			setupLog.Info("--cel-cache-size is deprecated and has no effect; remove it from the controller args")
+		}
+	})
 
 	if workflowRunnerClusterRole == "" {
 		setupLog.Error(errors.New("workflow-runner-cluster-role not set"),
@@ -287,10 +302,12 @@ func main() {
 	// Shared event recorder — used by both the WorkflowRun reconciler and the callback server
 	// so K8s events (CallbackReceived, CallbackTimeout, etc.) are emitted from the same source.
 	eventRecorder := mgr.GetEventRecorder("workflowrun-controller")
+	scheduler.Recorder = eventRecorder
 
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
 	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, ":8084")
+	callbackServer.ControllerNamespace = namespace
 	if err := mgr.Add(callbackServer); err != nil {
 		setupLog.Error(err, "unable to add callback server to manager")
 		os.Exit(1)
@@ -391,6 +408,7 @@ func main() {
 		RunnerServiceAccount:       workflowRunnerServiceAccount,
 		RunnerClusterRole:          workflowRunnerClusterRole,
 		AgentExecutorCallerRole:    agentExecutorCallerClusterRole,
+		RunnerConfigMapWriterRole:  runnerConfigMapWriterClusterRole,
 		AgentExecutorCASecret:      workflowRunnerAgentExecutorCASecret,
 		AgentExecutorNamespace:     agentExecutorNamespace,
 		SecretSourceNamespace:      secretSourceNamespace,
@@ -403,8 +421,7 @@ func main() {
 		SecretRefAllowedNamespaces: secretRefAllowedNamespaces,
 	}
 
-	// Create shared CEL compilation cache; expressions are compiled when
-	// Workflows are loaded and reused across WorkflowRun reconciliations.
+	// Shared CEL environment used to validate Workflow expressions at reconcile time.
 	celCache, err := workflowexecutor.NewCELCompilationCache(
 		mgr.GetClient(), metricsClient, customMetricsClient, prometheusClient,
 		ctrl.Log.WithName("cel-cache"))
@@ -430,8 +447,6 @@ func main() {
 		MetricsClient:       metricsClient,
 		CustomMetricsClient: customMetricsClient,
 		PrometheusClient:    prometheusClient,
-		CELCacheSize:        celCacheSize,
-		CELCache:            celCache,
 		EventRecorder:       eventRecorder,
 		RunnerConfig:        runnerConfig,
 		ControllerNamespace: namespace,
@@ -444,11 +459,12 @@ func main() {
 			"(Workflows with spec.expose.kagent will not get a kagent Agent)")
 	}
 	if err = (&workflowcontroller.WorkflowExposureReconciler{
-		Client:                 mgr.GetClient(),
-		Scheme:                 mgr.GetScheme(),
-		ServeA2AImage:          serveA2AImage,
-		ServeA2AServiceAccount: serveA2AServiceAccount,
-		ServeA2AClusterRole:    serveA2AClusterRole,
+		Client:                       mgr.GetClient(),
+		Scheme:                       mgr.GetScheme(),
+		ServeA2AImage:                serveA2AImage,
+		ServeA2AServiceAccount:       serveA2AServiceAccount,
+		ServeA2AClusterRole:          serveA2AClusterRole,
+		ServeA2AAllowUnauthenticated: serveA2AAllowUnauthenticated,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "WorkflowExposure")
 		os.Exit(1)

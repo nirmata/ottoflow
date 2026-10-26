@@ -3501,28 +3501,37 @@ spec:
                   type: object
                 type: array
               run:
-                description: Run configures retention and scale limits for WorkflowRuns
-                  of this workflow.
+                default: {}
+                description: |-
+                  Run configures retention and scale limits for WorkflowRuns of this workflow.
+                  When omitted, completed runs are kept for 7 days and at most 50 are retained.
                 properties:
                   maxAllowed:
+                    default: 50
                     description: |-
                       MaxAllowed is the maximum number of WorkflowRuns to retain per workflow (completed runs).
-                      When exceeded, oldest completed runs are deleted first. Zero or nil means no limit.
+                      When exceeded, oldest completed runs are deleted first. Omitted means 50.
+                      Set to 0 for no limit.
                       Pending and Running runs are not counted toward this limit when deciding deletions.
                     format: int32
+                    minimum: 0
                     type: integer
                   maxConcurrentRuns:
                     description: |-
                       MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.
-                      When a trigger (cron, event) would create a new run, creation is skipped if active runs >= MaxConcurrentRuns.
-                      Zero or nil means no limit.
+                      When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active
+                      runs >= MaxConcurrentRuns; for those, zero or nil means no limit.
+                      serve-a2a (A2A calls) differs: nil means 10, an explicit 0 means no limit, and N means N.
                     format: int32
                     type: integer
                   retentionMinutes:
+                    default: 10080
                     description: |-
                       RetentionMinutes is how long to keep completed WorkflowRuns (Succeeded or Failed).
-                      Completed runs older than this are deleted. Zero or nil means no automatic deletion.
+                      Completed runs older than this are deleted. Omitted means 10080 (7 days).
+                      Set to 0 to disable age-based deletion.
                     format: int32
+                    minimum: 0
                     type: integer
                 type: object
               steps:

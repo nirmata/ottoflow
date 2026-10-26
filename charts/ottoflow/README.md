@@ -91,7 +91,7 @@ The following table lists the configurable parameters and their default values:
 | `controller.env` | Extra environment variables | `[]` |
 | `controller.args` | Command arguments (flags); chart injects runner image, RBAC roles, and agent-executor flags automatically | `["--leader-elect"]` |
 | `controller.mcp.enabled` | Serve the cluster's Workflows as MCP tools (`--mcp-addr`) | `false` |
-| `controller.mcp.addr` | Listen address for the MCP server; the endpoint is `/mcp` | `:8084` |
+| `controller.mcp.addr` | Listen address for the MCP server; the endpoint is `/mcp` | `:8090` |
 | `controller.mcp.service.enabled` | Create a Service for the MCP port | `true` |
 | `controller.mcp.service.type` | MCP Service type | `ClusterIP` |
 | `controller.mcp.service.port` | MCP Service port | `8084` |
@@ -157,6 +157,8 @@ agentExecutor:
 | `rbac.viewClusterRole.extraResources` | Additional resources for view ClusterRole | `[]` |
 | `rbac.clusterRole.extraResources` | Additional resources for additional ClusterRole | `[]` |
 | `rbac.runnerClusterRole.extraResources` | Additional resources aggregated into the runner-only `ottoflow-runner-role` (never into the controller's own roles) | `[]` |
+
+Runner ServiceAccounts hold ConfigMap `get`/`list`/`watch` cluster-wide but can write ConfigMaps (checkpoints, audit snapshots, `mutate` steps) only in the namespace of their run: the controller binds each runner ServiceAccount to `ottoflow-runner-configmap-writer` with a RoleBinding in that namespace. A `mutate` step that writes a ConfigMap in another namespace is denied unless you add a ConfigMap `update`/`patch` rule to `rbac.runnerClusterRole.extraResources` (see the example in `values.yaml`). With `rbac.create=false` the chart renders no such role and the controller creates no binding. The controller flag `--runner-configmap-writer-cluster-role` is new: an older controller image pinned through `controller.image.tag` exits at flag parse, so upgrade the image with the chart.
 
 None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
 
@@ -276,7 +278,7 @@ helm upgrade ottoflow ./charts/ottoflow -n ottoflow --set webhook.enabled=false
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `networkPolicy.create` | Create NetworkPolicy | `true` |
-| `networkPolicy.egress` | Egress rules | See values.yaml |
+| `networkPolicy.egress` | Egress rules (Helm replaces this list; see [Network Policy egress](#network-policy-egress)) | See values.yaml |
 
 ### CRD Parameters
 
@@ -378,6 +380,18 @@ networkPolicy:
   create: false
 ```
 
+### Network Policy egress
+
+Helm replaces a list value instead of merging it. If you set `networkPolicy.egress`, your list replaces the chart defaults, so copy the defaults from `values.yaml` and add this rule for the API server's endpoint port, or the controller cannot reach the API server on clusters where that port is not 443 (for example kind, kubeadm, k3s and RKE2 use 6443; minikube uses 8443):
+
+```yaml
+networkPolicy:
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 6443
+```
+
 ### Skip CRD Installation
 
 ```yaml
@@ -429,7 +443,7 @@ kubectl get clusterrolebinding -l app.kubernetes.io/part-of=ottoflow -o name \
   | xargs -r kubectl delete
 ```
 
-For installs using `fullnameOverride`, substitute the rendered fullname for the `ottoflow-` prefix in both `grep` patterns above.
+The controller hard-codes the `ottoflow-` prefix of these binding names, so use both `grep` patterns above unchanged whatever `fullnameOverride` is.
 
 Then remove the corresponding orphaned ServiceAccounts per namespace, filtering similarly by name or age before deleting in a shared cluster, since the same label is applied to all OttoFlow-managed objects:
 

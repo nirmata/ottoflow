@@ -340,6 +340,7 @@ These are the mistakes most frequently seen in real workflows. All of them were 
 - **`resource` is a macro namespace, not your query result.** In a `resourceQuery` step the fetched object is bound to `object` and list results to `items`. `resource.status.phase` can never compile — use `object.status.phase`.
 - **`resource.Get()` returns `null` for a missing resource** — not an error and not an empty map. Guard with `!= null` before field access.
 - **`resource.List(...)` returns an object that wraps the list.** Iterate `dyn(resource.List(...)).items`, not the return value itself — `size()` of the wrapper counts its keys (e.g. `3`), which is a silently wrong answer.
+- **`resource.List()` fails the expression above 10000 items per call.** Narrow the list by namespace or labels, or use a `resourceQuery` step with `limit` (which returns only the first `limit` items).
 - **`+` does not work on maps.** To add keys, build a new map literal; for mutate steps return a partial object to deep-merge.
 - **Heterogeneous map literals are all-or-nothing on `dyn()`.** The first entry fixes the map's value type; wrap values in `dyn()` if they differ (e.g. `{"a": dyn(1), "b": dyn("x")}`).
 - **No int/double division overload.** Cast both sides: `double(a) / double(b)`.
@@ -356,6 +357,7 @@ In CEL expressions, you can access:
 - **`inputs.<name>`** - Workflow input parameters (always strings; use `json.unmarshal()` for structured values)
 - **`variables.<name>`** - Workflow-level variables and outputs from completed steps (flat namespace, no step prefix)
 - **`steps.<stepName>.<key>`** - Step-scoped results (e.g. forEach `steps.<name>.results`)
+- **`stepStatus.<stepName>.{phase,succeeded,failed,error}`** - Status of a step that has finished (Succeeded, Failed or Skipped); a step that has not finished is absent (`no such key`). Add the step to `dependsOn`. A forEach item sees the statuses as they were when the forEach step started.
 - **`expressions.<name>`** - Current step's expression results
 - **`outputs.<name>`** - Earlier workflow-level outputs (only while workflow outputs and metric labels are evaluated)
 - **`object`** - Fetched resource in resourceQuery steps; target resource in mutate steps

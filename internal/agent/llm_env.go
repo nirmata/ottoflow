@@ -31,7 +31,7 @@ func WithLLMEnvOverride(ctx context.Context, env map[string]string) context.Cont
 
 // GetLLMEnv returns the value for the given key from the context's LLM env override
 // map if present, otherwise from os.Getenv(key). Used for credentials and LLM config
-// (e.g. NIRMATA_LLM_TOKEN, GEMINI_API_KEY, OPENAI_MODEL).
+// (e.g. NIRMATA_LLM_TOKEN, NIRMATA_LLM_MODEL).
 func GetLLMEnv(ctx context.Context, key string) string {
 	if ctx != nil {
 		if m, ok := ctx.Value(llmEnvKey{}).(map[string]string); ok && m != nil {

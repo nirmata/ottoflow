@@ -37,15 +37,19 @@ import (
 // closures (resourceLogs, resourceEvents, resourceMetrics, prometheusMetrics).
 // Because CEL function bindings are registered at environment-creation time and
 // cannot receive a context argument at call time, the evaluator sets the holder
-// before each prg.Eval() call so macros always use the current caller context
+// before each prg.Eval() call of an expression that calls one of them so macros always use the current caller context
 // rather than context.Background().
 //
-// Note: programs pre-loaded from CELCompilationCache use that cache's own holder
-// (not the per-run evaluator's). Those programs fall back to context.Background()
-// for macro calls — a known limitation that will require a deeper refactor to fix.
+// Each evaluator owns its holder; compiled programs are never shared across evaluators.
 type macroContextHolder struct {
-	mu  sync.RWMutex
-	ctx context.Context
+	mu      sync.RWMutex
+	ctx     context.Context
+	readers []string
+}
+
+type cachedProgram struct {
+	prg           celapi.Program
+	readsMacroCtx bool
 }
 
 func (h *macroContextHolder) get() context.Context {
@@ -84,7 +88,7 @@ type CELEvaluator struct {
 	workflowRun         *ottoflowv1alpha1.WorkflowRun
 	// programCache caches compiled CEL programs keyed by expression string
 	// Using hashicorp/golang-lru for thread-safe bounded LRU cache
-	programCache *lru.Cache[string, celapi.Program]
+	programCache *lru.Cache[string, cachedProgram]
 	// programOptions stores ProgramOptions from all libraries that need to be passed when creating programs
 	programOptions []celapi.ProgramOption
 	// celCostLimit is the cost budget for CEL evaluation (per-workflow when set via SetCELCostLimit)
@@ -102,6 +106,8 @@ type CELEvaluator struct {
 	// goroutines that share this evaluator cannot observe each other's context in macro
 	// closures (resourceLogs, resourceEvents, resourceMetrics, prometheusMetrics).
 	macroEvalMu sync.Mutex
+	// macroOverloads holds the overload IDs of the functions named in macroCtx.readers.
+	macroOverloads map[string]struct{}
 	// resourceListPageSize overrides the default 500-item page size for resource.List()
 	// CEL expressions. 0 means use the default. Set via SetResourceListPageSize.
 	resourceListPageSize int64
@@ -155,6 +161,7 @@ func createCELEnvironment(
 		celapi.Variable("expressions", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("variables", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("steps", celapi.MapType(celapi.StringType, celapi.MapType(celapi.StringType, celapi.DynType))),
+		celapi.Variable("stepStatus", celapi.MapType(celapi.StringType, celapi.MapType(celapi.StringType, celapi.DynType))),
 		celapi.Variable("outputs", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("agentResponse", celapi.StringType),
 		celapi.Variable("agentOutputs", celapi.DynType),
@@ -237,12 +244,22 @@ func NewCELEvaluatorWithMetrics(
 		cacheSize = defaultCELCacheSize
 	}
 
-	programCache, err := lru.New[string, celapi.Program](cacheSize)
+	programCache, err := lru.New[string, cachedProgram](cacheSize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create CEL program cache: %w", err)
 	}
 
+	macroOverloads := map[string]struct{}{}
+	for _, name := range macroCtx.readers {
+		if fd, ok := env.Functions()[name]; ok {
+			for _, o := range fd.OverloadDecls() {
+				macroOverloads[o.ID()] = struct{}{}
+			}
+		}
+	}
+
 	return &CELEvaluator{
+		macroOverloads:      macroOverloads,
 		env:                 env,
 		client:              client,
 		metricsClient:       metricsClient,
@@ -286,20 +303,6 @@ func (e *CELEvaluator) SetImageDataFetcher(f ImageDataFetcher) {
 	e.imageDataFetcher = f
 }
 
-// PreloadFromCache populates the evaluator's per-instance LRU cache with
-// pre-compiled programs from the shared CELCompilationCache.  Subsequent calls
-// to getOrCompileProgram will find these programs immediately, avoiding a
-// redundant compile step.
-func (e *CELEvaluator) PreloadFromCache(cache *CELCompilationCache, workflowKey string) {
-	if cache == nil {
-		return
-	}
-	programs := cache.GetPrograms(workflowKey)
-	for exprText, prog := range programs {
-		e.programCache.Add(exprText, prog)
-	}
-}
-
 // BuildVariableMap creates a variable map from context for CEL evaluation
 // Context structure:
 //   - inputs: map[string]interface{} - workflow input values
@@ -335,6 +338,13 @@ func (e *CELEvaluator) BuildVariableMap(context map[string]interface{}) map[stri
 		vars["steps"] = steps
 	} else {
 		vars["steps"] = make(map[string]interface{})
+	}
+
+	// Add stepStatus - accessible as stepStatus.step-name.{phase,succeeded,failed,error}
+	if stepStatus, ok := context["stepStatus"].(map[string]interface{}); ok {
+		vars["stepStatus"] = stepStatus
+	} else {
+		vars["stepStatus"] = make(map[string]interface{})
 	}
 
 	// Add outputs - accessible as outputs.name (workflow-level outputs, for metric labels)
@@ -376,7 +386,7 @@ func (e *CELEvaluator) BuildVariableMap(context map[string]interface{}) map[stri
 
 // getOrCompileProgram gets a compiled program from cache or compiles it if not cached
 // Returns the compiled program and any error encountered during compilation
-func (e *CELEvaluator) getOrCompileProgram(expr string) (celapi.Program, error) {
+func (e *CELEvaluator) getOrCompileProgram(expr string) (cachedProgram, error) {
 	// Check cache first
 	if cached, ok := e.programCache.Get(expr); ok {
 		return cached, nil
@@ -385,7 +395,16 @@ func (e *CELEvaluator) getOrCompileProgram(expr string) (celapi.Program, error) 
 	// Compile expression
 	ast, issues := e.env.Compile(expr)
 	if issues != nil && issues.Err() != nil {
-		return nil, fmt.Errorf("failed to compile expression '%s': %w", expr, issues.Err())
+		return cachedProgram{}, fmt.Errorf("failed to compile expression '%s': %w", expr, issues.Err())
+	}
+
+	reads := false
+	for _, ri := range ast.NativeRep().ReferenceMap() {
+		for _, id := range ri.OverloadIDs {
+			if _, ok := e.macroOverloads[id]; ok {
+				reads = true
+			}
+		}
 	}
 
 	// ProgramOptions: When using EnvSet.Extend(), ProgramOptions from libraries should be
@@ -412,21 +431,23 @@ func (e *CELEvaluator) getOrCompileProgram(expr string) (celapi.Program, error) 
 	// Create program with ProgramOptions
 	prg, err := e.env.Program(ast, programOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create program: %w", err)
+		return cachedProgram{}, fmt.Errorf("failed to create program: %w", err)
 	}
 
 	// Store in cache (LRU will handle eviction if at capacity)
-	e.programCache.Add(expr, prg)
-	return prg, nil
+	c := cachedProgram{prg: prg, readsMacroCtx: reads}
+	e.programCache.Add(expr, c)
+	return c, nil
 }
 
 // EvaluateExpression evaluates a CEL expression with the given variables
 func (e *CELEvaluator) EvaluateExpression(ctx context.Context, expr string, vars map[string]interface{}) (interface{}, error) {
 	// Get or compile program (with caching)
-	prg, err := e.getOrCompileProgram(expr)
+	cp, err := e.getOrCompileProgram(expr)
 	if err != nil {
 		return nil, err
 	}
+	prg := cp.prg
 
 	// Add context variables to vars map (matching Kyverno's pattern)
 	// Kyverno provides http, globalContext, image, resource as variables in the evaluation data map
@@ -463,7 +484,7 @@ func (e *CELEvaluator) EvaluateExpression(ctx context.Context, expr string, vars
 	// etc.), their closures read context from the shared macroContextHolder. Serialise the
 	// set+eval window so concurrent forEach goroutines can't overwrite each other's context.
 	var out ref.Val
-	if e.macroCtx != nil {
+	if e.macroCtx != nil && cp.readsMacroCtx {
 		e.macroEvalMu.Lock()
 		e.macroCtx.set(ctx)
 		out, _, err = prg.Eval(vars)

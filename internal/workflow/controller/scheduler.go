@@ -17,6 +17,7 @@ import (
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
@@ -35,6 +36,10 @@ type Scheduler struct {
 	entries   map[string]cron.EntryID
 	workflows map[string]*ottoflowv1alpha1.Workflow
 	cronSpecs map[string]*ottoflowv1alpha1.CronTrigger
+
+	// Recorder, when set, records a Warning Event on the Workflow when createWorkflowRun fails
+	// during a cron fire. Optional; set it before the manager starts.
+	Recorder events.EventRecorder
 }
 
 // NewScheduler creates a Scheduler. The cron engine is created immediately
@@ -175,6 +180,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 	if err := s.createWorkflowRun(ctx, workflow, cronSpec); err != nil {
 		logger.Error(err, "Failed to create WorkflowRun from cron trigger")
+		s.recordCronFireFailure(workflow, err)
 		return
 	}
 	logger.Info("Created WorkflowRun from cron trigger")
@@ -269,7 +275,7 @@ func (s *Scheduler) cronInputValuesFromSecrets(ctx context.Context, workflowName
 		}
 		data, ok := secret.Data[entry.SecretRef.Key]
 		if !ok {
-			return nil, fmt.Errorf("secret %s/%s: key %q not found", ns, entry.SecretRef.Name, entry.SecretRef.Key)
+			return nil, fmt.Errorf("secret %s/%s: key %q %w", ns, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
 		}
 		out[entry.InputName] = string(data)
 	}
@@ -283,7 +289,7 @@ func (s *Scheduler) createWorkflowRun(ctx context.Context, workflow *ottoflowv1a
 	if len(cronSpec.InputValuesFrom) > 0 {
 		fromSecret, err := s.cronInputValuesFromSecrets(ctx, workflow.Namespace, cronSpec.InputValuesFrom)
 		if err != nil {
-			return fmt.Errorf("cron inputValuesFrom: %w", err)
+			return fmt.Errorf("%w: %w", errCronInputValuesFrom, err)
 		}
 		for k, v := range fromSecret {
 			inputValues[k] = v

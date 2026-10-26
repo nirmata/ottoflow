@@ -145,7 +145,7 @@ controller:
     # means no listener and no endpoint.
     enabled: false
     # addr is the listen address for the MCP server. The endpoint is /mcp.
-    addr: ":8084"
+    addr: ":8090"
     service:
       enabled: true
       type: ClusterIP
@@ -274,6 +274,25 @@ agentExecutor:
   # Environment variables
   env: []
 
+  # Origins an Agent's spec.config.endpoint may name: "scheme://host[:port]", origin only.
+  # Rendered as AGENT_LLM_ENDPOINT_ALLOWLIST on the agent-executor container.
+  # EMPTY (default): no Agent may set spec.config.endpoint; a run whose Agent sets it fails.
+  # An entry with a path, query, fragment or user:pass@ stops the agent-executor at startup.
+  #
+  # Listing an origin trusts it with this pod's LLM credentials: any Agent may name a listed
+  # origin, and every provider client that uses the endpoint (with the pinned gollm,
+  # azure-openai) sends its credential there together with the full prompt. Do not list a host
+  # you do not control.
+  #
+  # Matching: scheme exact; host case-insensitive, trailing dot ignored; default ports :443 and
+  # :80 folded. No wildcards. The Agent's endpoint must itself be origin-only (a trailing "/" is
+  # fine): a path, query, fragment or user:pass@ is refused even on a listed origin.
+  # azure-openai additionally requires an https:// endpoint.
+  #
+  # Upgrade note: Agents that set spec.config.endpoint ran before this setting existed and now
+  # fail until their origin is listed here.
+  llmEndpointAllowlist: []
+
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
   # agent-executor pod via envFrom, for Workflow steps using agentRef. Empty by default (no injection).
   llmCredentialsSecret: ""
@@ -387,7 +406,31 @@ serveA2A:
 
   # Shared ClusterRole the serve-a2a ServiceAccount is bound to (created by this chart when
   # rbac.create and serveA2A.enabled). When empty, defaults to "<fullname>-serve-a2a".
+  # MUST be set explicitly when rbac.create=false, since the default role won't exist.
   clusterRole: ""
+
+  # Caller authentication on serve-a2a pods. By default every call except the public agent card
+  # needs a bearer ServiceAccount token minted with --audience=ottoflow-a2a (checked with
+  # TokenReview) whose ServiceAccount holds "get configmaps/a2a-caller" in the Workflow's
+  # namespace (checked with SubjectAccessReview). The chart creates the ClusterRoles
+  # <fullname>-a2a-token-reviewer and <fullname>-a2a-caller; the operator binds them (see
+  # docs/user/tasks/workflows-as-a2a-agents.md).
+  #
+  # SET allowUnauthenticated TO true ONLY AS A COMPATIBILITY BRIDGE. With it, anyone who can reach
+  # a serve-a2a pod can create WorkflowRuns, in every kagent mode (unsecure and trusted-proxy). A
+  # NetworkPolicy narrows who can reach the pod, but every pod it admits (the kagent controller and
+  # calling Agent pods) can still create runs without credentials. The pod logs a warning at
+  # startup.
+  #
+  # UPGRADE NOTE: serve-a2a images in v0.1.1, v0.1.2 and v5.0.0-rc.1 accepted unauthenticated A2A
+  # calls. After upgrading, every caller gets 401 until it presents a token and is bound to
+  # a2a-caller; kagent UI chat does not send a token at all. Pods roll when the controller
+  # re-upserts the Agent (at controller start or within 10 minutes), and a pinned
+  # serveA2A.image.tag keeps the old, unauthenticated image. Exposed Workflows with no
+  # spec.run.maxConcurrentRuns are now capped at 10 active runs (explicit 0 = unlimited). The cap
+  # is enforced per serve-a2a pod: best-effort across replicas and across runs created by cron,
+  # event, webhook or MCP.
+  allowUnauthenticated: false
 
 # RBAC configuration
 rbac:
@@ -501,6 +544,10 @@ rbac:
   # create ClusterRoleBindings referencing it even if the rule grants verbs the
   # controller itself doesn't hold (Kubernetes' RBAC escalation check allows this via
   # "bind" as an alternative to holding every referenced permission).
+  # ConfigMap reads are cluster-wide, but ConfigMap writes (checkpoints, audit snapshots,
+  # mutate steps) are granted only in the run's own namespace. Cross-namespace ConfigMap
+  # writes from a mutate step need the opt-in rule in the example below. With
+  # rbac.create=false the chart renders neither role and runner access is unchanged.
   runnerClusterRole:
     extraResources: []
     # A `secrets` (or `*`) resource here is REJECTED at render time: the controller can bind
@@ -541,12 +588,14 @@ networkPolicy:
       ports:
       - protocol: TCP
         port: 8443
-    # Allow Kubernetes API access (in-cluster services on 443)
-    - to:
-      - namespaceSelector: {}
-      ports:
+    # Allow the API server's endpoint port. kube-proxy rewrites the kubernetes Service
+    # (443) to the endpoint port before some CNIs (measured: Calico) enforce egress policy,
+    # so the rule must match the endpoint port: 6443 by default on kubeadm, kind, k3s and RKE2; 8443 on
+    # minikube (add a rule for it if you use minikube). Clusters whose endpoint port is
+    # 443 are covered by the any-destination 443 rule below.
+    - ports:
       - protocol: TCP
-        port: 443
+        port: 6443
     # Allow outbound HTTPS for LLM API calls, PyPI, etc.
     - ports:
       - protocol: TCP

@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -89,7 +90,11 @@ func TestCELSyntaxCheck_InvalidExpression(t *testing.T) {
 	// '!!!' is syntactically invalid CEL
 	_, iss := celEnv.Compile("!!!")
 	if iss == nil || iss.Err() == nil {
-		t.Error("expected compile error for '!!!', got none")
+		t.Fatal("expected compile error for '!!!', got none")
+	}
+	got := formatCELError(iss.Err().Error())
+	if !regexp.MustCompile(`^[0-9]+:[0-9]+: `).MatchString(got) || strings.Contains(got, "ERROR:") {
+		t.Errorf("formatCELError(%q) = %q, want a line:col: prefix and no ERROR:", iss.Err(), got)
 	}
 }
 
@@ -699,5 +704,78 @@ spec:
 	}
 	if !strings.Contains(warnings[0].message, "missing-agent") {
 		t.Errorf("expected warning naming missing-agent, got: %s", warnings[0].message)
+	}
+}
+
+func TestCheckWorkflow_NoSteps(t *testing.T) {
+	celEnv, celEnvErr := executor.NewValidationCELEnv()
+	errs := checkWorkflow(context.Background(), &ottoflowv1alpha1.Workflow{}, nil, celEnv, celEnvErr)
+	for _, e := range errs {
+		if e.code == "NO_STEPS" {
+			return
+		}
+	}
+	t.Fatalf("expected a NO_STEPS error for a workflow with no steps, got: %+v", errs)
+}
+
+func TestFormatCELError(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "one error drops snippet and caret",
+			in:   "ERROR: <input>:6:15: unexpected token '!'\n | a ! b\n | ..............^",
+			want: "6:15: unexpected token '!'",
+		},
+		{
+			name: "several errors collapse to the first plus a count",
+			in:   "ERROR: <input>:1:1: first\n | x\n | ^\nERROR: <input>:2:3: second\n | y\n | ..^",
+			want: "1:1: first (+1 more)",
+		},
+		{
+			name: "no error line returns the input unchanged",
+			in:   "something else entirely",
+			want: "something else entirely",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatCELError(tt.in); got != tt.want {
+				t.Errorf("formatCELError() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsCELTypeOnlyError(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{
+			name: "only expected-type errors",
+			in:   "ERROR: <input>:1:5: expected type 'string' but found 'dyn'\n | a + b\n | ....^",
+			want: true,
+		},
+		{
+			name: "a syntax error",
+			in:   "ERROR: <input>:1:1: Syntax error: mismatched input\n | !!!\n | ^",
+			want: false,
+		},
+		{
+			name: "expected-type error mixed with a syntax error",
+			in:   "ERROR: <input>:1:5: expected type 'string' but found 'dyn'\nERROR: <input>:2:1: Syntax error: bad",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCELTypeOnlyError(tt.in); got != tt.want {
+				t.Errorf("isCELTypeOnlyError() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

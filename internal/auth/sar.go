@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -44,6 +45,9 @@ type TokenReviewAndSARAuthenticator struct {
 	k8sClient      kubernetes.Interface
 	checkNamespace string
 	checkResource  string // ConfigMap name to check (e.g. AgentExecutorCallerResourceName)
+	// audiences is sent as TokenReview.spec.audiences. Nil/empty omits the field, so the
+	// apiserver validates against its own audience (the behaviour every pre-existing caller has).
+	audiences []string
 }
 
 // NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
@@ -61,6 +65,15 @@ func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkName
 	}
 }
 
+// WithAudiences returns a copy of the authenticator whose TokenReview requires the token to be
+// issued for at least one of audiences. The receiver is unchanged, so callers that never call
+// this keep today's apiserver-audience behaviour.
+func (a *TokenReviewAndSARAuthenticator) WithAudiences(audiences ...string) *TokenReviewAndSARAuthenticator {
+	c := *a
+	c.audiences = append([]string(nil), audiences...)
+	return &c
+}
+
 // AuthenticateRequest validates the bearer token and then checks RBAC via SubjectAccessReview.
 func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (string, error) {
 	authHeader := r.Header.Get("Authorization")
@@ -76,7 +89,7 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 
 	// 1) TokenReview to validate token and get identity
 	tokenReview := &authenticationv1.TokenReview{
-		Spec: authenticationv1.TokenReviewSpec{Token: token},
+		Spec: authenticationv1.TokenReviewSpec{Token: token, Audiences: a.audiences},
 	}
 	result, err := a.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, tokenReview, metav1.CreateOptions{})
 	if err != nil {
@@ -86,6 +99,11 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 	if !result.Status.Authenticated {
 		klog.V(4).InfoS("TokenReview returned not authenticated", "error", result.Status.Error)
 		return "", fmt.Errorf("token not authenticated: %s", result.Status.Error)
+	}
+	// An audience-unaware reviewer can answer authenticated=true without having checked the
+	// requested audiences, so when audiences were asked for, the answer must name at least one.
+	if len(a.audiences) > 0 && !slices.ContainsFunc(result.Status.Audiences, func(got string) bool { return slices.Contains(a.audiences, got) }) {
+		return "", fmt.Errorf("token not validated for the required audience")
 	}
 	saName := result.Status.User.Username
 	if !strings.HasPrefix(saName, "system:serviceaccount:") {

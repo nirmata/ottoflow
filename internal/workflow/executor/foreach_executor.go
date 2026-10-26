@@ -116,7 +116,7 @@ func (e *WorkflowExecutor) executeForEach(ctx context.Context, workflowRun *otto
 	}
 
 	// Process items concurrently with worker pool
-	results := e.processItemsConcurrently(ctx, workflowRun, step, itemsList, itemVariable, maxConcurrency, itemFailurePolicy)
+	results := e.processItemsConcurrently(ctx, workflowRun, step, contextData, itemsList, itemVariable, maxConcurrency, itemFailurePolicy)
 	// Workers return silently on ctx.Done(), so a cancelled loop can look like a partial success.
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("forEach: cancelled with %d/%d item(s) completed: %w", len(results.Results), len(itemsList), err)
@@ -221,6 +221,7 @@ func (e *WorkflowExecutor) processItemsConcurrently(
 	ctx context.Context,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	step ottoflowv1alpha1.Step,
+	parentContext map[string]interface{},
 	items []interface{},
 	itemVariable string,
 	maxConcurrency int,
@@ -276,7 +277,7 @@ itemLoop:
 			}
 
 			// Process item
-			result, err := e.processForEachItem(ctx, workflowRun, step, currentItem, itemVariable)
+			result, err := e.processForEachItem(ctx, workflowRun, step, parentContext, currentItem, itemVariable)
 
 			// Check ctx cancellation before accumulating results
 			select {
@@ -337,15 +338,10 @@ func (e *WorkflowExecutor) processForEachItem(
 	ctx context.Context,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	parentStep ottoflowv1alpha1.Step,
+	parentContext map[string]interface{},
 	item interface{},
 	itemVariable string,
 ) (map[string]interface{}, error) {
-	// Read parent context
-	parentContext, err := e.contextManager.ReadContext(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read parent context: %w", err)
-	}
-
 	// Create isolated context snapshot with deep copy of nested maps
 	isolatedContext := make(map[string]interface{})
 	for k, v := range parentContext {

@@ -10,11 +10,15 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/google/go-cmp/cmp"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -244,6 +248,23 @@ func TestCreateRunInputMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("run copies the workflow's execution spec", func(t *testing.T) {
+		wf := newWF()
+		wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+			Job:                  &ottoflowv1alpha1.WorkflowRunJobSpec{Image: "img"},
+			Checkpointing:        &ottoflowv1alpha1.CheckpointingConfig{Enabled: true},
+			LLMCredentialsSecret: &ottoflowv1alpha1.LLMCredentialsSecretRef{Name: "llm-creds"},
+		}
+		s := NewServer(newFakeClient(t, wf), "greeter", "default", "", 0)
+		run, err := s.createRun(context.Background(), "hi")
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		if diff := cmp.Diff(wf.Spec.Execution, run.Spec.Execution); diff != "" {
+			t.Errorf("run.Spec.Execution (-want +got):\n%s", diff)
+		}
+	})
+
 	t.Run("run is refused once the workflow opts out", func(t *testing.T) {
 		wf := newWF()
 		wf.Spec.Expose = nil // opted out between reconcile and this call
@@ -356,5 +377,133 @@ func TestWriteSSEEnvelope(t *testing.T) {
 	}
 	if gotResult != evt {
 		t.Errorf("result = %+v, want %+v", gotResult, evt)
+	}
+}
+
+// --- default concurrency cap ---------------------------------------------------------
+
+func TestCreateRunDefaultConcurrencyCap(t *testing.T) {
+	activeRuns := func(n int) []client.Object {
+		var objs []client.Object
+		for i := 0; i < n; i++ {
+			objs = append(objs, &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "default", Name: fmt.Sprintf("greeter-running-%d", i),
+					Labels: map[string]string{"ottoflow.nirmata.io/workflow": "greeter"},
+				},
+				Status: ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+			})
+		}
+		return objs
+	}
+	wfWith := func(limit *int32) *ottoflowv1alpha1.Workflow {
+		wf := exposedWorkflow()
+		if limit != nil {
+			wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: limit}
+		}
+		return wf
+	}
+	i32 := func(v int32) *int32 { return &v }
+
+	cases := []struct {
+		name    string
+		limit   *int32
+		active  int
+		wantErr bool
+	}{
+		{"nil cap, 9 active: allowed", nil, 9, false},
+		{"nil cap, 10 active: refused", nil, 10, true},
+		{"explicit 0, 25 active: unlimited", i32(0), 25, false},
+		{"explicit 3, 3 active: refused", i32(3), 3, true},
+		{"explicit 20, 12 active: allowed (overrides the default)", i32(20), 12, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			objs := append([]client.Object{wfWith(tc.limit)}, activeRuns(tc.active)...)
+			s := NewServer(newFakeClient(t, objs...), "greeter", "default", "", 0)
+			_, err := s.createRun(context.Background(), "hi")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("createRun err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// Runs created by createRun have an empty phase until the controller reconciles them; they must
+// count toward the default cap.
+func TestCreateRunCapCountsUnreconciledRuns(t *testing.T) {
+	s := NewServer(newFakeClient(t, exposedWorkflow()), "greeter", "default", "", 0)
+	for i := 0; i < defaultMaxConcurrentRuns; i++ {
+		if _, err := s.createRun(context.Background(), "hi"); err != nil {
+			t.Fatalf("create %d: %v", i, err)
+		}
+	}
+	if _, err := s.createRun(context.Background(), "hi"); err == nil {
+		t.Fatalf("create %d succeeded; want concurrency-limit refusal", defaultMaxConcurrentRuns+1)
+	}
+}
+
+// listBarrierClient holds each WorkflowRun List until n callers have listed, or wait elapses, so
+// concurrent createRun calls overlap at the count step.
+type listBarrierClient struct {
+	client.Client
+	mu      sync.Mutex
+	arrived int
+	n       int
+	release chan struct{}
+	wait    time.Duration
+}
+
+func (b *listBarrierClient) List(ctx context.Context, l client.ObjectList, opts ...client.ListOption) error {
+	err := b.Client.List(ctx, l, opts...)
+	if _, ok := l.(*ottoflowv1alpha1.WorkflowRunList); ok {
+		b.mu.Lock()
+		b.arrived++
+		if b.arrived == b.n {
+			close(b.release)
+		}
+		b.mu.Unlock()
+		select {
+		case <-b.release:
+		case <-time.After(b.wait):
+		}
+	}
+	return err
+}
+
+// Two calls that count at the same time, one slot below the cap, must not both create a run.
+func TestCreateRunCapHoldsForOverlappingCalls(t *testing.T) {
+	objs := []client.Object{exposedWorkflow()}
+	for i := 0; i < defaultMaxConcurrentRuns-1; i++ {
+		objs = append(objs, &ottoflowv1alpha1.WorkflowRun{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default", Name: fmt.Sprintf("greeter-running-%d", i),
+				Labels: map[string]string{"ottoflow.nirmata.io/workflow": "greeter"},
+			},
+			Status: ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+		})
+	}
+	base := newFakeClient(t, objs...)
+	bc := &listBarrierClient{Client: base, n: 2, release: make(chan struct{}), wait: 500 * time.Millisecond}
+	s := NewServer(bc, "greeter", "default", "", 0)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range errs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = s.createRun(context.Background(), "hi")
+		}(i)
+	}
+	wg.Wait()
+
+	var runs ottoflowv1alpha1.WorkflowRunList
+	if err := base.List(context.Background(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs.Items) != defaultMaxConcurrentRuns {
+		t.Fatalf("two overlapping calls with %d active runs left %d runs, want %d (errs: %v)",
+			defaultMaxConcurrentRuns-1, len(runs.Items), defaultMaxConcurrentRuns, errs)
 	}
 }

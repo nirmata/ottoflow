@@ -33,7 +33,12 @@ type realMCPClient struct {
 	connectMu         sync.Mutex
 	connected         bool
 	connectionTimeout time.Duration // used for initial Connect() so stdio has time to start (e.g. uvx)
+	fingerprint       string
 }
+
+// Fingerprint identifies the resolved config the client was built from. It is a SHA-256 hash,
+// so it holds no Secret values.
+func (c *realMCPClient) Fingerprint() string { return c.fingerprint }
 
 // ListTools returns metadata for all tools from the MCP server (for LLM tool registration).
 func (c *realMCPClient) ListTools(ctx context.Context) ([]MCPToolMeta, error) {
@@ -168,6 +173,9 @@ func buildMCPClientConfig(ctx context.Context, k8sClient client.Client, mcpServe
 		}
 		if cfg.Timeout <= 0 {
 			cfg.Timeout = 90
+		}
+		if path := kubeConfigPathFromContext(ctx); path != "" {
+			cfg.Env = append(cfg.Env, "KUBECONFIG="+path)
 		}
 		// Resolve env from MCPServer spec
 		for _, ev := range mcpServer.Spec.Env {
