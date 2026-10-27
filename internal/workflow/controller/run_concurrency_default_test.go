@@ -118,7 +118,7 @@ func TestScheduler_EmptyPhaseRunIsActive(t *testing.T) {
 	if active, err := s.hasActiveWorkflowRun(ctx, wf); err != nil || !active {
 		t.Errorf("hasActiveWorkflowRun = %v, %v; want true (Forbid must see a run with empty phase)", active, err)
 	}
-	if err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
+	if _, err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
 		t.Fatal(err)
 	}
 	var got ottoflowv1alpha1.WorkflowRun

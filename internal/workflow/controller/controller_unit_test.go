@@ -279,7 +279,7 @@ func TestScheduler_CancelActiveWorkflowRuns(t *testing.T) {
 	wr.Labels = map[string]string{"ottoflow.nirmata.io/workflow": "wf", "ottoflow.nirmata.io/trigger": "cron"}
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr).Build()
 	s := NewScheduler(fakeClient, logr.Discard())
-	if err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
+	if _, err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
 		t.Fatal(err)
 	}
 	updated := &ottoflowv1alpha1.WorkflowRun{}
@@ -1140,6 +1140,58 @@ func TestScheduler_HandleCronFire_ReplacePolicy_CancelsAndCreates(t *testing.T) 
 	}
 	if created != 1 {
 		t.Errorf("expected 1 new pending run, got %d", created)
+	}
+}
+
+func replaceCap1Fixture() (*ottoflowv1alpha1.Workflow, *ottoflowv1alpha1.WorkflowRun, *ottoflowv1alpha1.CronTrigger) {
+	wf := cronEventWorkflow()
+	wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: ptr.To(int32(1))}
+	return wf, cronRun("wf-old", ottoflowv1alpha1.WorkflowRunPhaseRunning), &ottoflowv1alpha1.CronTrigger{Schedule: "0 * * * *", ConcurrencyPolicy: "Replace"}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_LaggingCacheStillCreates(t *testing.T) {
+	ctx := context.Background()
+	wf, old, cronSpec := replaceCap1Fixture()
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old).Build()
+	lagging := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := cl.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if runs, ok := list.(*ottoflowv1alpha1.WorkflowRunList); ok {
+				for i := range runs.Items {
+					runs.Items[i].Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+				}
+			}
+			return nil
+		},
+	})
+	fireCron(t, lagging, wf, cronSpec)
+	var list ottoflowv1alpha1.WorkflowRunList
+	if err := base.List(ctx, &list, client.InNamespace(defaultNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	var failedOld, pending int
+	for _, r := range list.Items {
+		switch {
+		case r.Name == "wf-old" && r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed:
+			failedOld++
+		case r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending:
+			pending++
+		}
+	}
+	if failedOld != 1 || pending != 1 {
+		t.Errorf("failed old runs = %d, new pending runs = %d; want 1 and 1", failedOld, pending)
+	}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_NonCronRunStillCapsFire(t *testing.T) {
+	wf, old, cronSpec := replaceCap1Fixture()
+	manual := defaultCapRun("wf-manual", ottoflowv1alpha1.WorkflowRunPhaseRunning)
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old, manual).Build()
+	fireCron(t, c, wf, cronSpec)
+	if n := countRuns(t, c); n != 2 {
+		t.Errorf("got %d runs, want 2 (no new run while a non-cron run holds the cap)", n)
 	}
 }
 
