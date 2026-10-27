@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"net"
 	"slices"
 	"sort"
 	"strings"
@@ -90,10 +91,18 @@ func (e *transientBuildError) Error() string { return e.err.Error() }
 func (e *transientBuildError) Unwrap() error { return e.err }
 
 func transientUnless(terminal bool, err error) error {
-	if terminal {
+	if terminal || !retryable(err) {
 		return err
 	}
 	return &transientBuildError{err: err}
+}
+
+func retryable(err error) bool {
+	if errors.As(err, new(apierrors.APIStatus)) {
+		return apierrors.IsServerTimeout(err) || apierrors.IsTimeout(err) || apierrors.IsTooManyRequests(err) ||
+			apierrors.IsInternalError(err) || apierrors.IsServiceUnavailable(err) || apierrors.IsUnexpectedServerError(err)
+	}
+	return errors.As(err, new(net.Error)) // *url.Error and context.DeadlineExceeded implement net.Error
 }
 
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
