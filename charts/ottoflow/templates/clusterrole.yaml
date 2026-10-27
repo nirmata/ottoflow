@@ -121,7 +121,7 @@ rules:
   # Blast radius: this delete verb is cluster-wide, not limited to OttoFlow-managed bindings.
   # A compromised controller could delete ANY ClusterRoleBinding in the cluster — an
   # availability/lockout risk that did not exist before this grant. It is a temporary
-  # migration grant needed only because roleRef is immutable; removal is tracked in #25.
+  # migration grant needed only because roleRef is immutable; removal is tracked in https://github.com/nirmata/ottoflow/issues/25.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:
