@@ -22,7 +22,7 @@
 | `events` | [EventConfig](#eventconfig) | No | Kubernetes event emission (enabled, level). |
 | `celCostLimit` | integer | No | Max CEL evaluation cost budget per expression (default: 2,097,152 units). |
 | `executionLimits` | object | No | `maxConcurrentSteps` (cap on ready-steps batch) and `outboundRequestsPerMinute` (token bucket on MCP/agent/A2A calls). |
-| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../tasks/installation.md#upgrading-default-run-history-cleanup)), `maxConcurrentRuns` (skip trigger-created runs when this many are active). |
+| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../tasks/installation.md#upgrading-default-run-history-cleanup)), `maxConcurrentRuns` (skip trigger-created runs when this many are active; default 10, 0 = no limit). |
 | `execution` | object | No | Default runner Job settings copied to trigger-created WorkflowRuns (see [WorkflowRun](workflowrun.md#workflowrunexecutionspec)). |
 
 ### Input
@@ -303,9 +303,11 @@ status:
 
 **Accessing callback outputs** in downstream steps:
 ```
-steps.awaitApproval.outputs.approved    # true/false
-steps.awaitApproval.outputs.reviewer    # "alice@example.com"
+variables.approved    # true/false
+variables.reviewer    # "alice@example.com"
 ```
+
+Callback fields are written flat as `variables.<key>` and overwrite any existing variable of that name. If `outputSchema` declares `properties`, only those keys are written (an empty `properties: {}` therefore drops every key); without a `properties` object (or with an `outputSchema` that is not a JSON object), every top-level key of the callback body is written. When the callback body omits a key, or a `Continue` timeout resumes the step with empty outputs, the corresponding variables are not written and any existing values are unchanged. Declare `properties` to bound what the callback caller can set.
 
 **Constraints:**
 - Only one `waitForCallback` can be active at a time per WorkflowRun (single `pendingCallback` slot).
