@@ -410,7 +410,7 @@ func TestSetup_Envtest(t *testing.T) {
 	env := &envtest.Environment{
 		BinaryAssetsDirectory:       filepath.Join(repoRoot, "bin", "k8s"),
 		DownloadBinaryAssets:        true,
-		DownloadBinaryAssetsVersion: "1.29.0",
+		DownloadBinaryAssetsVersion: "1.36.2",
 	}
 	cfg, err := env.Start()
 	if err != nil {
