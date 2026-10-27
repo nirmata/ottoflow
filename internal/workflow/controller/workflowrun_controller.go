@@ -285,6 +285,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				}
 			} else {
 				logger.Error(err, "failed to create runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "job", jobKey)
+				if retryable(err) {
+					return ctrl.Result{}, err
+				}
 				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err), "")
 				if err := r.Status().Update(ctx, workflowRun); err != nil {
 					return ctrl.Result{}, err

@@ -1564,6 +1564,85 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 	}
 }
 
+func TestWorkflowRunReconciler_Reconcile_RunnerJobCreateErrorClassification(t *testing.T) {
+	ns := defaultNamespace
+	connRefused := &url.Error{Op: "Post", URL: "https://apiserver", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}
+	goaway := &url.Error{Op: "Post", URL: "https://apiserver", Err: errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=3, ErrCode=NO_ERROR, debug=\"\"")}
+	urlEOF := &url.Error{Op: "Post", URL: "https://apiserver", Err: io.EOF}
+	urlParseErr := &url.Error{Op: "parse", URL: "http://[::1", Err: errors.New("missing ']' in host")}
+	x509Err := &url.Error{Op: "Post", URL: "https://apiserver", Err: x509.UnknownAuthorityError{}}
+	badGateway := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 502, Message: "bad gateway"}}
+	badRequest := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 400, Message: "admission webhook denied the request"}}
+	tests := []struct {
+		name          string
+		err           error
+		wantTransient bool
+	}{
+		{"500", apierrors.NewInternalError(errors.New("etcd unavailable")), true},
+		{"502 empty reason", badGateway, true},
+		{"429", apierrors.NewTooManyRequests("slow down", 1), true},
+		{"503", apierrors.NewServiceUnavailable("overloaded"), true},
+		{"body unexpected EOF", fmt.Errorf("reading response body: %w", io.ErrUnexpectedEOF), true},
+		{"connection refused", connRefused, true},
+		{"GOAWAY", goaway, true},
+		{"EOF", urlEOF, true},
+		{"Invalid", apierrors.NewInvalid(schema.GroupKind{Kind: "Job"}, "job", nil), false},
+		{"400 empty reason", badRequest, false},
+		{"Forbidden", apierrors.NewForbidden(schema.GroupResource{Resource: "jobs"}, "job", errors.New("no Role")), false},
+		{"non-API error", errors.New("invalid job"), false},
+		{"url.Parse", urlParseErr, false},
+		{"x509", x509Err, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1"}}},
+			}
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+			}
+			clusterRole := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}}
+			base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr, clusterRole).Build()
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*batchv1.Job); ok {
+						return tc.err
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+			r := &WorkflowRunReconciler{
+				Client:       c,
+				Scheme:       unitTestScheme,
+				RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
+			}
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: wr.Name, Namespace: ns}}); err == nil {
+				t.Fatal("expected an error")
+			}
+			updated := &ottoflowv1alpha1.WorkflowRun{}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+				t.Fatal(err)
+			}
+			failed := updated.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed
+			if tc.wantTransient {
+				if failed {
+					t.Errorf("transient Job Create error must not fail the run: %v", tc.err)
+				}
+				if err := base.Get(ctx, types.NamespacedName{Name: workflowRunnerJobName(wr.Name), Namespace: ns}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+					t.Errorf("expected no runner Job, got: %v", err)
+				}
+				return
+			}
+			if !failed || !strings.Contains(updated.Status.Message, "Failed to create runner Job") {
+				t.Errorf("terminal Job Create error must fail the run: phase=%q message=%q", updated.Status.Phase, updated.Status.Message)
+			}
+		})
+	}
+}
+
 func TestWorkflowReconciler_Reconcile_WithCELCacheCompileErrors(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{
