@@ -52,7 +52,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	workflow := &ottoflowv1alpha1.Workflow{}
 	if err := r.Get(ctx, req.NamespacedName, workflow); err != nil {
 		if apierrors.IsNotFound(err) && r.TriggerManager != nil {
-			r.TriggerManager.pruneEventTriggers(req.String(), nil)
+			r.TriggerManager.pruneTriggers(req.String(), nil)
 			r.forgetWebhookState(req.String())
 		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
