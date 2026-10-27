@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"net"
 	"slices"
 	"sort"
@@ -98,11 +99,13 @@ func transientUnless(terminal bool, err error) error {
 }
 
 func retryable(err error) bool {
-	if errors.As(err, new(apierrors.APIStatus)) {
-		return apierrors.IsServerTimeout(err) || apierrors.IsTimeout(err) || apierrors.IsTooManyRequests(err) ||
-			apierrors.IsInternalError(err) || apierrors.IsServiceUnavailable(err) || apierrors.IsUnexpectedServerError(err)
+	var st apierrors.APIStatus
+	if errors.As(err, &st) {
+		code := st.Status().Code
+		return code == 429 || code >= 500
 	}
-	return errors.As(err, new(net.Error)) // *url.Error and context.DeadlineExceeded implement net.Error
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		errors.As(err, new(net.Error)) // *url.Error and context.DeadlineExceeded implement net.Error
 }
 
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {

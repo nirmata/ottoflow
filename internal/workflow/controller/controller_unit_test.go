@@ -13,6 +13,8 @@ import (
 	cryptosha256 "crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -1478,6 +1480,8 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 	webhookDenied := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 400, Message: "admission webhook denied the request"}}
 	forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "ext-secret", errors.New("no Role"))
 	clientSide := errors.New("invalid secret name")
+	badGateway := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 502, Message: "bad gateway"}}
+	bodyEOF := fmt.Errorf("reading response body: %w", io.ErrUnexpectedEOF)
 	connRefused := &url.Error{Op: "Get", URL: "https://apiserver", Err: errors.New("connect: connection refused")}
 	runnerKey := func(k client.ObjectKey) bool { return k.Namespace == runNS }
 	sourceKey := func(k client.ObjectKey) bool { return k.Namespace == srcNS }
@@ -1517,6 +1521,10 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 		{"runner Get connection refused", getErr(runnerKey, connRefused), true, false},
 		{"source Get connection refused", getErr(sourceKey, connRefused), true, false},
 		{"Create connection refused", createErr(connRefused), true, false},
+		{"runner Get 502 empty reason", getErr(runnerKey, badGateway), true, false},
+		{"Create 502 empty reason", createErr(badGateway), true, false},
+		{"runner Get body unexpected EOF", getErr(runnerKey, bodyEOF), true, false},
+		{"Create body unexpected EOF", createErr(bodyEOF), true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
