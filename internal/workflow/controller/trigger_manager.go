@@ -89,6 +89,11 @@ type dedupEntry struct {
 // override this default via an explicit DedupWindow.
 const defaultDedupWindow = 10 * time.Minute
 
+const (
+	watchReopenDelay    = time.Second
+	watchReopenMaxDelay = 30 * time.Second
+)
+
 // runnerManagedLabel marks Jobs/Pods created by OttoFlow's WorkflowRun controller.
 const runnerManagedLabel = "ottoflow.nirmata.io/workflowrun"
 
@@ -399,28 +404,21 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 		opts.LabelSelector += ",ottoflow.nirmata.io/workflow!=" + workflow.Name
 	}
 
-	var watcher watch.Interface
-	if tm.watcherFactory != nil {
-		var err error
-		watcher, err = tm.watcherFactory.Watch(ctx, gvr, resource.Namespace, opts)
-		if err != nil {
-			return fmt.Errorf("failed to create watcher: %w", err)
+	openWatch := func() (watch.Interface, error) {
+		if tm.watcherFactory != nil {
+			return tm.watcherFactory.Watch(ctx, gvr, resource.Namespace, opts)
 		}
-	} else {
 		if tm.dynamicClient == nil {
-			return fmt.Errorf("dynamic client not initialized")
+			return nil, fmt.Errorf("dynamic client not initialized")
 		}
-		var resourceInterface dynamic.ResourceInterface
 		if resource.Namespace != "" {
-			resourceInterface = tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace)
-		} else {
-			resourceInterface = tm.dynamicClient.Resource(gvr)
+			return tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace).Watch(ctx, opts)
 		}
-		var err error
-		watcher, err = resourceInterface.Watch(ctx, opts)
-		if err != nil {
-			return fmt.Errorf("failed to create watcher: %w", err)
-		}
+		return tm.dynamicClient.Resource(gvr).Watch(ctx, opts)
+	}
+	watcher, err := openWatch()
+	if err != nil {
+		return fmt.Errorf("failed to create watcher: %w", err)
 	}
 
 	// Store watcher
@@ -431,7 +429,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 	tm.stopChans[key] = stopChan
 
 	// Start watching in goroutine
-	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, stopChan)
+	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, stopChan, openWatch)
 
 	logger.Info("Registered event trigger", "resource", gvk, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "key", key)
 
@@ -441,9 +439,9 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 // watchEvents watches for events and creates WorkflowRuns.
 // eventKey is the bare event key used as the dedup scope — scoped to the trigger,
 // not to a single resource watcher, so unregisterEventTrigger can clean it up.
-func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan chan struct{}) {
+func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan chan struct{}, openWatch func() (watch.Interface, error)) {
 	logger := log.FromContext(ctx)
-	defer watcher.Stop()
+	defer func() { watcher.Stop() }()
 
 	for {
 		select {
@@ -453,8 +451,13 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			return
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				// Channel closed
-				return
+				w, reopened := tm.reopenWatch(ctx, stopChan, openWatch, workflow)
+				if !reopened {
+					return
+				}
+				watcher.Stop()
+				watcher = w
+				continue
 			}
 
 			// Dynamic watches always return *unstructured.Unstructured.
@@ -470,6 +473,27 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 				logger.Error(err, "failed to create WorkflowRun from event", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "event", event.Type, "object", client.ObjectKeyFromObject(unstruct))
 			}
 		}
+	}
+}
+
+// reopenWatch re-creates a watch whose result channel closed, retrying with
+// exponential backoff until ctx or stopChan is done (reopened=false).
+func (tm *TriggerManager) reopenWatch(ctx context.Context, stopChan <-chan struct{}, openWatch func() (watch.Interface, error), workflow *ottoflowv1alpha1.Workflow) (watch.Interface, bool) {
+	delay := watchReopenDelay
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-stopChan:
+			return nil, false
+		case <-time.After(delay):
+		}
+		w, err := openWatch()
+		if err == nil {
+			return w, true
+		}
+		log.FromContext(ctx).Error(err, "failed to re-open closed watch", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace)
+		delay = min(delay*2, watchReopenMaxDelay)
 	}
 }
 

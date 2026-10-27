@@ -73,14 +73,27 @@ func (f *fakeWatch) ResultChan() <-chan watch.Event {
 // lastOpts records the ListOptions passed to the most recent Watch call, so tests can
 // inspect the computed label selector without a real dynamic client or envtest.
 type fakeWatcherFactory struct {
-	watcher  *fakeWatch
+	mu       sync.Mutex
+	watchers []*fakeWatch
 	lastOpts metav1.ListOptions
 }
 
 func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, _ string, opts metav1.ListOptions) (watch.Interface, error) {
-	f.watcher = &fakeWatch{ch: make(chan watch.Event)}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	w := &fakeWatch{ch: make(chan watch.Event)}
+	f.watchers = append(f.watchers, w)
 	f.lastOpts = opts
-	return f.watcher, nil
+	return w, nil
+}
+
+func (f *fakeWatcherFactory) get(i int) *fakeWatch {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < len(f.watchers) {
+		return f.watchers[i]
+	}
+	return nil
 }
 
 func TestWorkflowRunnerJobName(t *testing.T) {
@@ -681,7 +694,7 @@ func TestTriggerManager_WatchEvents_ReceivesEvent_CreatesWorkflowRun(t *testing.
 	fw := &fakeWatch{ch: ch}
 
 	stopChan := make(chan struct{})
-	go tm.watchEvents(ctx, "test-key", wf, eventSpec, fw, stopChan)
+	go tm.watchEvents(ctx, "test-key", wf, eventSpec, fw, stopChan, nil)
 
 	// Give watchEvents time to process the event
 	time.Sleep(400 * time.Millisecond)
@@ -3145,4 +3158,41 @@ func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
+}
+
+func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
+	ctx := context.Background()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: []ottoflowv1alpha1.Trigger{{Event: &ottoflowv1alpha1.EventTrigger{
+				Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+			}}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(0).Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for factory.get(1) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if factory.get(1) == nil {
+		t.Fatal("watch was not re-opened after its result channel closed")
+	}
+
+	if err := tm.UnregisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(1).Stop()
+	time.Sleep(1500 * time.Millisecond)
+	if factory.get(2) != nil {
+		t.Fatal("watch was re-opened after the trigger was unregistered")
+	}
 }
