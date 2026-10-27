@@ -33,10 +33,6 @@ const (
 	defaultRunTimeout = 10 * time.Minute
 	heartbeatEvery    = 5 * time.Second
 	maxBodyBytes      = 1 << 20
-	// defaultMaxConcurrentRuns caps active runs when the Workflow sets no
-	// spec.run.maxConcurrentRuns. 10 matches the webhook trigger burst. An explicit 0 still
-	// means unlimited, and an explicit N means N.
-	defaultMaxConcurrentRuns = 10
 
 	methodStream = "message/stream"
 	methodSend   = "message/send"
@@ -418,13 +414,9 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	}
 
 	// Honor the per-workflow concurrency cap. Without one, repeated A2A calls launch an unbounded
-	// number of runner Jobs, so an unset cap defaults to defaultMaxConcurrentRuns; an explicit 0
+	// number of runner Jobs, so an unset cap defaults to DefaultMaxConcurrentRuns; an explicit 0
 	// opts out (unlimited).
-	limit := int32(defaultMaxConcurrentRuns)
-	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil {
-		limit = *rp.MaxConcurrentRuns
-	}
-	if limit > 0 {
+	if limit := wf.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		s.admitMu.Lock()
 		defer s.admitMu.Unlock()
 		active, err := s.countActiveRuns(ctx, wf.Name)
@@ -489,8 +481,7 @@ func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error
 	}
 	active := 0
 	for i := range list.Items {
-		switch list.Items[i].Status.Phase {
-		case "", ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
+		if list.Items[i].Status.Phase.IsActive() {
 			active++
 		}
 	}

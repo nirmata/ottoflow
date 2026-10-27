@@ -116,6 +116,12 @@ See the [Helm Chart README](../../../charts/ottoflow/README.md) for chart option
 3. Check that the second command in step 1 shows `{"maxAllowed":0,"retentionMinutes":0}` for each of them. Until the upgrade, do not edit these Workflows (in particular `spec.expose` or `spec.inputs`): the old controller rewrites a Workflow when it adds or removes its finalizer, which drops the `0`s again.
 4. Then upgrade the controller first, and the new CRD second. With the old controller and the new CRD, a typed write turns an explicit `0` back into the default.
 
+## Upgrading: default concurrency cap
+
+A Workflow that leaves `spec.run.maxConcurrentRuns` unset is now capped at 10 active (Pending, Running, or not yet picked up) WorkflowRuns. Previously cron, event, webhook and MCP runs had no limit unless the field was set. At 10 active runs, cron and event triggers skip creating a run, MCP calls return an error and webhooks answer `429`. The cap is in the controller, so it applies without re-applying CRDs.
+
+**To keep the old behavior,** set `maxConcurrentRuns: 0` (no limit) on the Workflow.
+
 ## Nirmata LLM credentials (optional)
 
 > **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `azure-openai`, `google`/`gemini`, and `local`. The Nirmata LLM credentials below apply only when running with the enterprise plugin.
