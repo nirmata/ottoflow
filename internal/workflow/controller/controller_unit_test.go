@@ -3245,3 +3245,103 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 		t.Fatal("stalled re-open was not cancelled by unregistration")
 	}
 }
+
+func eventTestWorkflow(name string, triggers ...ottoflowv1alpha1.Trigger) *ottoflowv1alpha1.Workflow {
+	return &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps:    []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: triggers,
+		},
+	}
+}
+
+func podEventTrigger() ottoflowv1alpha1.Trigger {
+	return ottoflowv1alpha1.Trigger{Event: &ottoflowv1alpha1.EventTrigger{
+		Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+	}}
+}
+
+func watchClosed(w *fakeWatch) bool {
+	select {
+	case _, ok := <-w.ch:
+		return !ok
+	default:
+		return false
+	}
+}
+
+func TestWorkflowReconciler_Reconcile_NotFound_StopsEventWatchers(t *testing.T) {
+	ctx := context.Background()
+	wf := eventTestWorkflow("wf", podEventTrigger())
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	r := &WorkflowReconciler{Client: fakeClient, Scheme: unitTestScheme, TriggerManager: tm}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "wf"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.eventWatchers) != 0 || len(tm.eventSpecMap) != 0 {
+		t.Fatalf("event state left after NotFound: watchers=%v specs=%v", tm.eventWatchers, tm.eventSpecMap)
+	}
+	factory.get(0).Stop()
+	time.Sleep(watchReopenDelay + 500*time.Millisecond)
+	if factory.get(1) != nil {
+		t.Fatal("watch was re-opened for a deleted Workflow")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_ShrunkTriggers_StopsRemovedIndex(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger(), podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if !watchClosed(factory.get(1)) {
+		t.Fatal("watcher for removed trigger index 1 was not stopped")
+	}
+	if _, ok := tm.eventSpecMap["default/wf-event-1"]; ok {
+		t.Fatal("eventSpecMap still holds removed trigger index 1")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_EventReplacedByCron_StopsWatcher(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	cron := ottoflowv1alpha1.Trigger{Cron: &ottoflowv1alpha1.CronTrigger{Schedule: "0 * * * *"}}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", cron)); err != nil {
+		t.Fatal(err)
+	}
+	if !watchClosed(factory.get(0)) {
+		t.Fatal("event watcher was not stopped after trigger 0 became cron")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a-event-0-x", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tm.eventWatchers["default/a-event-0-x-event-0-resource-0"]; !ok || watchClosed(factory.get(1)) {
+		t.Fatal("re-registering a stopped the watcher of a-event-0-x")
+	}
+}

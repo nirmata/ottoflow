@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -221,6 +222,8 @@ func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottofl
 	logger := log.FromContext(ctx)
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
 
+	tm.pruneEventTriggers(workflowKey, workflow.Spec.Triggers)
+
 	for i, trigger := range workflow.Spec.Triggers {
 		if trigger.Cron != nil && tm.scheduler != nil {
 			cronKey := fmt.Sprintf("%s-cron-%d", workflowKey, i)
@@ -246,27 +249,43 @@ func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottofl
 func (tm *TriggerManager) UnregisterWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow) error {
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
 
-	for i := range workflow.Spec.Triggers {
-		cronKey := fmt.Sprintf("%s-cron-%d", workflowKey, i)
-		if tm.scheduler != nil {
-			tm.scheduler.RemoveSchedule(cronKey)
-		}
-		eventKey := fmt.Sprintf("%s-event-%d", workflowKey, i)
-		if err := tm.unregisterEventTrigger(eventKey); err != nil {
-			return err
+	if tm.scheduler != nil {
+		for i := range workflow.Spec.Triggers {
+			tm.scheduler.RemoveSchedule(fmt.Sprintf("%s-cron-%d", workflowKey, i))
 		}
 	}
+	tm.pruneEventTriggers(workflowKey, nil)
 
 	return nil
 }
 
-// stopWatchersForKey stops and removes all watchers whose keys equal key or are
-// prefixed by key (e.g. key + "-resource-0"). Used by both registerEventTrigger
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
+// pruneEventTriggers unregisters every event trigger of workflowKey that is not
+// an event trigger in triggers (nil prunes all).
+func (tm *TriggerManager) pruneEventTriggers(workflowKey string, triggers []ottoflowv1alpha1.Trigger) {
+	prefix := workflowKey + "-event-"
+	for key := range tm.eventSpecMap {
+		idx, ok := strings.CutPrefix(key, prefix)
+		if !ok || !isDigits(idx) {
+			continue
+		}
+		if i, err := strconv.Atoi(idx); err == nil && i < len(triggers) && triggers[i].Event != nil {
+			continue
+		}
+		tm.unregisterEventTrigger(key)
+	}
+}
+
+// stopWatchersForKey stops and removes all watchers whose keys are key + "-resource-" + digits. Used by both registerEventTrigger
 // (to clean up before re-registering) and unregisterEventTrigger.
 func (tm *TriggerManager) stopWatchersForKey(key string) {
 	keysToRemove := []string{}
+	prefix := key + "-resource-"
 	for k := range tm.eventWatchers {
-		if k == key || strings.HasPrefix(k, key+"-") {
+		if idx, ok := strings.CutPrefix(k, prefix); ok && isDigits(idx) {
 			keysToRemove = append(keysToRemove, k)
 		}
 	}
@@ -498,7 +517,7 @@ func (tm *TriggerManager) reopenWatch(ctx context.Context, stopChan <-chan struc
 }
 
 // unregisterEventTrigger removes an event trigger
-func (tm *TriggerManager) unregisterEventTrigger(key string) error {
+func (tm *TriggerManager) unregisterEventTrigger(key string) {
 	// Stop all watchers and channels for this trigger key (including resource-specific keys)
 	tm.stopWatchersForKey(key)
 
@@ -508,8 +527,6 @@ func (tm *TriggerManager) unregisterEventTrigger(key string) error {
 	tm.dedupMu.Lock()
 	delete(tm.dedupState, key)
 	tm.dedupMu.Unlock()
-
-	return nil
 }
 
 // buildWorkflowRun constructs a *WorkflowRun with the given name, inputs, and trigger info.
