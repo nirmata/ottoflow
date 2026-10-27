@@ -3196,3 +3196,52 @@ func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 		t.Fatal("watch was re-opened after the trigger was unregistered")
 	}
 }
+
+type stallingWatcherFactory struct {
+	fakeWatcherFactory
+	blocked  chan struct{}
+	released chan struct{}
+}
+
+func (f *stallingWatcherFactory) Watch(ctx context.Context, gvr schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
+	if f.get(0) == nil {
+		return f.fakeWatcherFactory.Watch(ctx, gvr, ns, opts)
+	}
+	close(f.blocked)
+	defer close(f.released)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
+	ctx := context.Background()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: []ottoflowv1alpha1.Trigger{{Event: &ottoflowv1alpha1.EventTrigger{
+				Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+			}}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
+	factory := &stallingWatcherFactory{blocked: make(chan struct{}), released: make(chan struct{})}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(0).Stop()
+	select {
+	case <-factory.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch was not re-opened")
+	}
+	if err := tm.UnregisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-factory.released:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stalled re-open was not cancelled by unregistration")
+	}
+}

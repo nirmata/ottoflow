@@ -140,7 +140,7 @@ type TriggerManager struct {
 	scheme           *runtime.Scheme
 	scheduler        *Scheduler
 	eventWatchers    map[string]watch.Interface
-	stopChans        map[string]chan struct{}
+	stopCancels      map[string]context.CancelFunc
 	eventWorkflowMap map[string]*ottoflowv1alpha1.Workflow
 	eventSpecMap     map[string]*ottoflowv1alpha1.EventTrigger
 	// triggerCELEnv is a minimal CEL environment exposing only `object` for trigger-level
@@ -171,7 +171,7 @@ func NewTriggerManager(client client.Client, scheme *runtime.Scheme, scheduler *
 		scheme:           scheme,
 		scheduler:        scheduler,
 		eventWatchers:    make(map[string]watch.Interface),
-		stopChans:        make(map[string]chan struct{}),
+		stopCancels:      make(map[string]context.CancelFunc),
 		eventWorkflowMap: make(map[string]*ottoflowv1alpha1.Workflow),
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
@@ -208,7 +208,7 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 		scheme:           scheme,
 		scheduler:        scheduler,
 		eventWatchers:    make(map[string]watch.Interface),
-		stopChans:        make(map[string]chan struct{}),
+		stopCancels:      make(map[string]context.CancelFunc),
 		eventWorkflowMap: make(map[string]*ottoflowv1alpha1.Workflow),
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
@@ -271,9 +271,9 @@ func (tm *TriggerManager) stopWatchersForKey(key string) {
 		}
 	}
 	for _, k := range keysToRemove {
-		if stopChan, exists := tm.stopChans[k]; exists {
-			close(stopChan)
-			delete(tm.stopChans, k)
+		if cancel, exists := tm.stopCancels[k]; exists {
+			cancel()
+			delete(tm.stopCancels, k)
 		}
 		if watcher, exists := tm.eventWatchers[k]; exists {
 			watcher.Stop()
@@ -404,32 +404,32 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 		opts.LabelSelector += ",ottoflow.nirmata.io/workflow!=" + workflow.Name
 	}
 
+	wctx, cancel := context.WithCancel(ctx)
 	openWatch := func() (watch.Interface, error) {
 		if tm.watcherFactory != nil {
-			return tm.watcherFactory.Watch(ctx, gvr, resource.Namespace, opts)
+			return tm.watcherFactory.Watch(wctx, gvr, resource.Namespace, opts)
 		}
 		if tm.dynamicClient == nil {
 			return nil, fmt.Errorf("dynamic client not initialized")
 		}
 		if resource.Namespace != "" {
-			return tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace).Watch(ctx, opts)
+			return tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace).Watch(wctx, opts)
 		}
-		return tm.dynamicClient.Resource(gvr).Watch(ctx, opts)
+		return tm.dynamicClient.Resource(gvr).Watch(wctx, opts)
 	}
 	watcher, err := openWatch()
 	if err != nil {
+		cancel()
 		return fmt.Errorf("failed to create watcher: %w", err)
 	}
 
 	// Store watcher
 	tm.eventWatchers[key] = watcher
 
-	// Create stop channel for this watcher
-	stopChan := make(chan struct{})
-	tm.stopChans[key] = stopChan
+	tm.stopCancels[key] = cancel
 
 	// Start watching in goroutine
-	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, stopChan, openWatch)
+	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, wctx.Done(), openWatch)
 
 	logger.Info("Registered event trigger", "resource", gvk, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "key", key)
 
@@ -439,7 +439,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 // watchEvents watches for events and creates WorkflowRuns.
 // eventKey is the bare event key used as the dedup scope — scoped to the trigger,
 // not to a single resource watcher, so unregisterEventTrigger can clean it up.
-func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan chan struct{}, openWatch func() (watch.Interface, error)) {
+func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func() (watch.Interface, error)) {
 	logger := log.FromContext(ctx)
 	defer func() { watcher.Stop() }()
 
