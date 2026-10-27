@@ -11,14 +11,18 @@ import (
 	"context"
 	cryptohmac "crypto/hmac"
 	cryptosha256 "crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1482,7 +1486,12 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 	clientSide := errors.New("invalid secret name")
 	badGateway := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 502, Message: "bad gateway"}}
 	bodyEOF := fmt.Errorf("reading response body: %w", io.ErrUnexpectedEOF)
-	connRefused := &url.Error{Op: "Get", URL: "https://apiserver", Err: errors.New("connect: connection refused")}
+	connRefused := &url.Error{Op: "Get", URL: "https://apiserver", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}
+	urlParseErr := &url.Error{Op: "parse", URL: "http://[::1", Err: errors.New("missing ']' in host")}
+	x509Err := &url.Error{Op: "Get", URL: "https://apiserver", Err: x509.UnknownAuthorityError{}}
+	goaway := &url.Error{Op: "Get", URL: "https://apiserver", Err: errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=3, ErrCode=NO_ERROR, debug=\"\"")}
+	urlEOF := &url.Error{Op: "Get", URL: "https://apiserver", Err: io.EOF}
+	urlTimeout := &url.Error{Op: "Get", URL: "https://apiserver", Err: context.DeadlineExceeded}
 	runnerKey := func(k client.ObjectKey) bool { return k.Namespace == runNS }
 	sourceKey := func(k client.ObjectKey) bool { return k.Namespace == srcNS }
 	getErr := func(match func(client.ObjectKey) bool, err error) func(client.WithWatch) client.WithWatch {
@@ -1525,6 +1534,12 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 		{"Create 502 empty reason", createErr(badGateway), true, false},
 		{"runner Get body unexpected EOF", getErr(runnerKey, bodyEOF), true, false},
 		{"Create body unexpected EOF", createErr(bodyEOF), true, false},
+		{"runner Get url.Parse", getErr(runnerKey, urlParseErr), false, false},
+		{"runner Get x509", getErr(runnerKey, x509Err), false, false},
+		{"Create x509", createErr(x509Err), false, false},
+		{"runner Get GOAWAY", getErr(runnerKey, goaway), true, false},
+		{"runner Get EOF", getErr(runnerKey, urlEOF), true, false},
+		{"runner Get timeout", getErr(runnerKey, urlTimeout), true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
