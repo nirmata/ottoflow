@@ -1432,6 +1432,106 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_SecretNotFoundInSource_Return
 	}
 }
 
+func TestWorkflowRunReconciler_Reconcile_TransientRunnerSecretError_Requeues(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1"}}},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+		Spec: ottoflowv1alpha1.WorkflowRunSpec{
+			WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns},
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+				Job: &ottoflowv1alpha1.WorkflowRunJobSpec{
+					Volumes: []corev1.Volume{{Name: "ext", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "ext-secret"}}}},
+				},
+			},
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr).Build()
+	c := secretGetErrorReader(base,
+		func(key client.ObjectKey) bool { return key.Name == "ext-secret" },
+		func(client.ObjectKey) error { return apierrors.NewInternalError(errors.New("etcd unavailable")) })
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerClusterRole: "runner-role"}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected Reconcile to return the transient error for requeue")
+	}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := base.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Errorf("a transient error must not fail the run: %+v", updated.Status)
+	}
+	if err := base.Get(ctx, types.NamespacedName{Namespace: ns, Name: workflowRunnerJobName(wr.Name)}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Errorf("no runner Job must be created, got err=%v", err)
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testing.T) {
+	const runNS, srcNS = "tenant", "source"
+	internal := apierrors.NewInternalError(errors.New("etcd unavailable"))
+	invalid := apierrors.NewInvalid(schema.GroupKind{Kind: "Secret"}, "ext-secret", nil)
+	webhookDenied := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 400, Message: "admission webhook denied the request"}}
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "ext-secret", errors.New("no Role"))
+	runnerKey := func(k client.ObjectKey) bool { return k.Namespace == runNS }
+	sourceKey := func(k client.ObjectKey) bool { return k.Namespace == srcNS }
+	getErr := func(match func(client.ObjectKey) bool, err error) func(client.WithWatch) client.WithWatch {
+		return func(b client.WithWatch) client.WithWatch {
+			return secretGetErrorReader(b, match, func(client.ObjectKey) error { return err })
+		}
+	}
+	createErr := func(err error) func(client.WithWatch) client.WithWatch {
+		return func(b client.WithWatch) client.WithWatch {
+			return interceptor.NewClient(b, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*corev1.Secret); ok {
+						return err
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+		}
+	}
+	tests := []struct {
+		name          string
+		wrap          func(client.WithWatch) client.WithWatch
+		wantTransient bool
+		wantDenied    bool
+	}{
+		{"runner Get 5xx", getErr(runnerKey, internal), true, false},
+		{"runner Get Forbidden", getErr(runnerKey, forbidden), false, true},
+		{"source Get 5xx", getErr(sourceKey, internal), true, false},
+		{"Create 5xx", createErr(internal), true, false},
+		{"Create Invalid", createErr(invalid), false, false},
+		{"Create 400 empty reason", createErr(webhookDenied), false, false},
+		{"Create Forbidden", createErr(forbidden), false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: runNS, UID: "run-uid"}}
+			job := &batchv1.Job{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{Name: "ext", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "ext-secret"}}}},
+			}}}}
+			src := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ext-secret", Namespace: srcNS}, Data: map[string][]byte{"k": []byte("v")}}
+			base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr, src).Build()
+			r := &WorkflowRunReconciler{Client: tc.wrap(base), Scheme: unitTestScheme}
+			err := r.ensureRunnerSecrets(context.Background(), wr, job, srcNS)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := isTransient(err); got != tc.wantTransient {
+				t.Errorf("transient = %v, want %v (err: %v)", got, tc.wantTransient, err)
+			}
+			if got := errors.Is(err, errSecretAccessDenied); got != tc.wantDenied {
+				t.Errorf("SecretAccessDenied = %v, want %v (err: %v)", got, tc.wantDenied, err)
+			}
+		})
+	}
+}
+
 func TestWorkflowReconciler_Reconcile_WithCELCacheCompileErrors(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{
