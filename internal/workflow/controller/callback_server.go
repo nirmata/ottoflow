@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 	"github.com/nirmata/ottoflow/internal/workflow/token"
 )
 
@@ -44,6 +45,8 @@ type CallbackServer struct {
 	addr          string
 	server        *http.Server
 	mux           *http.ServeMux
+	// ControllerNamespace is the Workflow lookup fallback, same as WorkflowRunReconciler's.
+	ControllerNamespace string
 }
 
 // NewCallbackServer creates a CallbackServer that listens on addr.
@@ -271,12 +274,8 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 // Returns nil if no schema is defined (all payloads are accepted).
 func (cs *CallbackServer) validateCallbackSchema(ctx context.Context, wr *ottoflowv1alpha1.WorkflowRun, stepName string, payload map[string]interface{}) error {
 	// Look up the Workflow to find the step's outputSchema
-	wfNamespace := wr.Spec.WorkflowRef.Namespace
-	if wfNamespace == "" {
-		wfNamespace = wr.Namespace
-	}
-	wf := &ottoflowv1alpha1.Workflow{}
-	if err := cs.client.Get(ctx, types.NamespacedName{Namespace: wfNamespace, Name: wr.Spec.WorkflowRef.Name}, wf); err != nil {
+	wf, _, err := resolveWorkflow(ctx, cs.client, cs.ControllerNamespace, wr)
+	if err != nil {
 		// If we can't load the workflow, skip schema validation (don't block callback)
 		klog.Warningf("CallbackServer: could not load Workflow for schema validation, skipping: %v", err)
 		return nil
@@ -323,7 +322,7 @@ func validatePayloadAgainstSchema(schema *apiextensionsv1.JSON, payload map[stri
 	}
 
 	// Validate property types
-	if properties, ok := s["properties"].(map[string]interface{}); ok {
+	if properties, ok := executor.SchemaProperties(s); ok {
 		for propName, propDef := range properties {
 			propMap, ok := propDef.(map[string]interface{})
 			if !ok {

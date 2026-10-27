@@ -520,6 +520,7 @@ func buildWorkflowRun(
 				Namespace: workflow.Namespace,
 			},
 			InputValues: inputs,
+			Execution:   workflow.Spec.Execution.DeepCopy(),
 		},
 		Status: ottoflowv1alpha1.WorkflowRunStatus{
 			Phase:   ottoflowv1alpha1.WorkflowRunPhasePending,

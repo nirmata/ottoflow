@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/mark3labs/mcp-go/mcp"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -331,6 +332,7 @@ func TestCallWorkflowHonoursMaxConcurrentRuns(t *testing.T) {
 // where it came from.
 func TestCallWorkflowCreatesALabelledRun(t *testing.T) {
 	wf := newWorkflow("default", "wf", ottoflowv1alpha1.Input{Name: "namespace", Required: true})
+	wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{Job: &ottoflowv1alpha1.WorkflowRunJobSpec{Env: []corev1.EnvVar{{Name: "LLM_TOKEN", Value: "test-value"}}}}
 	s := newTestMCPServer(t, wf)
 	s.callTimeout = 10 * time.Millisecond
 	s.pollInterval = time.Millisecond
@@ -359,6 +361,9 @@ func TestCallWorkflowCreatesALabelledRun(t *testing.T) {
 	}
 	if diff := cmp.Diff(map[string]string{"namespace": "prod"}, run.Spec.InputValues); diff != "" {
 		t.Errorf("input values (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(wf.Spec.Execution, run.Spec.Execution); diff != "" {
+		t.Errorf("run execution (-want +got):\n%s", diff)
 	}
 	if !strings.Contains(textOf(result), run.Name) {
 		t.Errorf("deadline result %q does not name the run %q", textOf(result), run.Name)

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -244,6 +245,23 @@ func TestCreateRunInputMapping(t *testing.T) {
 		}
 		if owners[0].Controller == nil || !*owners[0].Controller {
 			t.Errorf("owner ref Controller = %v, want true", owners[0].Controller)
+		}
+	})
+
+	t.Run("run copies the workflow's execution spec", func(t *testing.T) {
+		wf := newWF()
+		wf.Spec.Execution = &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+			Job:                  &ottoflowv1alpha1.WorkflowRunJobSpec{Image: "img"},
+			Checkpointing:        &ottoflowv1alpha1.CheckpointingConfig{Enabled: true},
+			LLMCredentialsSecret: &ottoflowv1alpha1.LLMCredentialsSecretRef{Name: "llm-creds"},
+		}
+		s := NewServer(newFakeClient(t, wf), "greeter", "default", "", 0)
+		run, err := s.createRun(context.Background(), "hi")
+		if err != nil {
+			t.Fatalf("createRun: %v", err)
+		}
+		if diff := cmp.Diff(wf.Spec.Execution, run.Spec.Execution); diff != "" {
+			t.Errorf("run.Spec.Execution (-want +got):\n%s", diff)
 		}
 	})
 

@@ -346,3 +346,33 @@ func TestValidatePayloadAgainstSchema_Required(t *testing.T) {
 		}
 	})
 }
+
+func TestCallbackServer_SchemaEnforcedViaControllerNamespaceFallback(t *testing.T) {
+	tok := validTestToken()
+	wr := newWRWithPendingCallback("run-fallback", tok, 1*time.Hour)
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "ottoflow-alt"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{
+			Name: "approve",
+			WaitForCallback: &ottoflowv1alpha1.WaitForCallbackStep{
+				OutputSchema: &apiextensionsv1.JSON{Raw: []byte(`{"type":"object","required":["approved"]}`)},
+			},
+		}}},
+	}
+	k8s := fake.NewClientBuilder().
+		WithScheme(newCallbackTestScheme()).
+		WithStatusSubresource(wr).
+		WithObjects(wr, wf).
+		Build()
+
+	cs := NewCallbackServer(k8s, nil, ":0")
+	cs.ControllerNamespace = "ottoflow-alt"
+
+	path := fmt.Sprintf("/api/v1/workflow-runs/default/run-fallback/callback/%s", tok)
+	w := httptest.NewRecorder()
+	cs.mux.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(`{}`)))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for payload missing required field, got %d: %s", w.Code, w.Body.String())
+	}
+}

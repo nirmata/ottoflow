@@ -145,7 +145,7 @@ controller:
     # means no listener and no endpoint.
     enabled: false
     # addr is the listen address for the MCP server. The endpoint is /mcp.
-    addr: ":8084"
+    addr: ":8090"
     service:
       enabled: true
       type: ClusterIP
@@ -406,6 +406,7 @@ serveA2A:
 
   # Shared ClusterRole the serve-a2a ServiceAccount is bound to (created by this chart when
   # rbac.create and serveA2A.enabled). When empty, defaults to "<fullname>-serve-a2a".
+  # MUST be set explicitly when rbac.create=false, since the default role won't exist.
   clusterRole: ""
 
   # Caller authentication on serve-a2a pods. By default every call except the public agent card
@@ -543,6 +544,10 @@ rbac:
   # create ClusterRoleBindings referencing it even if the rule grants verbs the
   # controller itself doesn't hold (Kubernetes' RBAC escalation check allows this via
   # "bind" as an alternative to holding every referenced permission).
+  # ConfigMap reads are cluster-wide, but ConfigMap writes (checkpoints, audit snapshots,
+  # mutate steps) are granted only in the run's own namespace. Cross-namespace ConfigMap
+  # writes from a mutate step need the opt-in rule in the example below. With
+  # rbac.create=false the chart renders neither role and runner access is unchanged.
   runnerClusterRole:
     extraResources: []
     # A `secrets` (or `*`) resource here is REJECTED at render time: the controller can bind

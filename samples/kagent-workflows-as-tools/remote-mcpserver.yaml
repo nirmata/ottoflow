@@ -71,16 +71,46 @@ spec:
       description: Whether to list container images
       default: "true"
   steps:
-    - name: summarize
-      message: Summarize the namespace
-      expressions:
-        - name: summary
-          expression: |
-            "Reporting on namespace " + inputs.namespace +
-            (inputs.includeImages == "true" ? " including container images" : "")
+    - name: collect
+      message: List the pods in the namespace
+      resourceQuery:
+        apiVersion: v1
+        resource: Pod
+        namespace: inputs.namespace
+        outputs:
+          podCount: size(items)
+          unhealthy: |-
+            items.filter(i, has(i.status) &&
+              ((has(i.status.phase) && i.status.phase in ["Failed", "Unknown"]) ||
+               (has(i.status.containerStatuses) &&
+                i.status.containerStatuses.exists(c, int(c.restartCount) > 3 ||
+                  (has(c.state) && has(c.state.waiting) && has(c.state.waiting.reason) &&
+                    c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]))) ||
+               (has(i.status.phase) && i.status.phase == "Running" &&
+                has(i.status.containerStatuses) &&
+                i.status.containerStatuses.exists(c, !c.ready)) ||
+               (has(i.status.initContainerStatuses) &&
+                i.status.initContainerStatuses.exists(c, has(c.state) &&
+                  ((has(c.state.waiting) && has(c.state.waiting.reason) &&
+                    c.state.waiting.reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]) ||
+                   (has(c.state.terminated) && int(c.state.terminated.exitCode) != 0)))) ||
+               (has(i.status.conditions) &&
+                i.status.conditions.exists(c, c.type == "PodScheduled" && c.status == "False" &&
+                  has(c.reason) && c.reason == "Unschedulable")))
+            ).map(i, i.metadata.name)
+          images: |-
+            inputs.includeImages == "true" ?
+              items.map(i, (i.spec.containers +
+                (has(i.spec.initContainers) ? i.spec.initContainers : []) +
+                (has(i.spec.ephemeralContainers) ? i.spec.ephemeralContainers : [])
+              ).map(c, c.image)).flatten().distinct() : []
   outputs:
-    - name: summary
-      expression: "variables.summary"
+    - name: podCount
+      expression: variables.podCount
+    - name: unhealthy
+      expression: variables.unhealthy
+    - name: images
+      expression: variables.images
 ---
 # 4. The agent, with the workflow tool attached.
 apiVersion: kagent.dev/v1alpha2

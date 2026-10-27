@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"sync"
 	"time"
@@ -389,7 +390,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 
 	err = e.contextManager.InitializeContext(ctx, workflow, workflowRun.Spec.InputValues)
 	if err != nil {
-		return fmt.Errorf("failed to initialize context: %w", err)
+		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to initialize context: %w", err))
 	}
 
 	if !restoredFromCheckpoint {
@@ -403,18 +404,13 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	// A workflow with no steps would otherwise finish as Succeeded without doing anything.
 	// Record the failure so Phase and Message are set before the runner exits.
 	if len(workflow.Spec.Steps) == 0 {
-		const msg = "workflow has no steps"
-		e.recordWorkflowFailure(workflow, workflowRun, msg)
-		// Retention cleanup keys off Status.CompletionTime, which the success path also sets.
-		now := metav1.Now()
-		workflowRun.Status.CompletionTime = &now
-		return errors.New(msg)
+		return e.failBeforeSteps(workflow, workflowRun, errors.New("workflow has no steps"))
 	}
 
 	// Build DAG
 	dag, err := BuildDAG(workflow.Spec.Steps)
 	if err != nil {
-		return fmt.Errorf("failed to build DAG: %w", err)
+		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to build DAG: %w", err))
 	}
 
 	// Initialize step statuses
@@ -432,6 +428,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	// Set current workflow so forEach (and other steps) can invoke progress callback with workflow for CLI display
 	e.currentWorkflow = workflow
 	defer func() { e.currentWorkflow = nil }()
+	e.contextManager.workflowRun = workflowRun
 
 	// Set rate limiter for outbound calls (MCP, agent) when spec limits are set
 	if workflow.Spec.ExecutionLimits != nil && workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute != nil && *workflow.Spec.ExecutionLimits.OutboundRequestsPerMinute > 0 {
@@ -680,6 +677,19 @@ func (e *WorkflowExecutor) recordWorkflowFailure(
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseFailed
 	workflowRun.Status.Message = message
 	e.emitWorkflowLevelEvent(workflow, workflowRun, "WorkflowFailed", corev1.EventTypeWarning, message)
+}
+
+// failBeforeSteps records a deterministic pre-step failure so the runner persists Phase=Failed.
+// Retention cleanup keys off Status.CompletionTime, which the success path also sets.
+func (e *WorkflowExecutor) failBeforeSteps(
+	workflow *ottoflowv1alpha1.Workflow,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	err error,
+) error {
+	e.recordWorkflowFailure(workflow, workflowRun, err.Error())
+	now := metav1.Now()
+	workflowRun.Status.CompletionTime = &now
+	return err
 }
 
 func (e *WorkflowExecutor) recordWorkflowSuccess(
@@ -937,7 +947,9 @@ func (e *WorkflowExecutor) executeWorkflowReference(ctx context.Context, workflo
 		return nil, fmt.Errorf("failed to create executor for sub-workflow: %w", err)
 	}
 
-	if err := childExec.ExecuteWorkflow(ctx, subWorkflow, childRun); err != nil {
+	// The child has its own context; the caller's forEach scope would shadow it (incl. stepStatus).
+	childCtx := context.WithValue(ctx, scopedContextKey, nil)
+	if err := childExec.ExecuteWorkflow(childCtx, subWorkflow, childRun); err != nil {
 		if workflowRun.Status.StepStatuses == nil {
 			workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
 		}
@@ -990,11 +1002,15 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 	outputsMap := make(map[string]interface{})
 	contextData["outputs"] = outputsMap
 
+	// stepStatus goes only on a per-evaluation copy so the live context stays unchanged.
+	evalContext := maps.Clone(contextData)
+	evalContext["stepStatus"] = e.contextManager.stepStatusProjection()
+
 	// Evaluate outputs
 	outputs := make(map[string]apiextensionsv1.JSON)
 	for _, outputDef := range workflow.Spec.Outputs {
 		// Build variable map (includes outputs from previous iterations)
-		vars := e.celEvaluator.BuildVariableMap(contextData)
+		vars := e.celEvaluator.BuildVariableMap(evalContext)
 
 		var result interface{}
 		var err error
@@ -1044,7 +1060,7 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 
 		// Emit custom metric if output has metric config (vars now includes this output)
 		if outputDef.Metric != nil {
-			metricVars := e.celEvaluator.BuildVariableMap(contextData)
+			metricVars := e.celEvaluator.BuildVariableMap(evalContext)
 			metrics.EmitOutputMetric(ctx, result, outputDef, workflowName, namespace, metricVars, e.celEvaluator)
 		}
 	}
