@@ -1120,9 +1120,7 @@ func (e *WorkflowExecutor) checkpointCleanup(ctx context.Context, workflow *otto
 	return func() {
 		_ = e.checkpointManager.Flush(ctx)
 
-		terminal := workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-			workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed
-		if !terminal {
+		if !workflowRun.Status.Phase.IsTerminal() {
 			return
 		}
 
