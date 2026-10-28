@@ -50,7 +50,7 @@ var _ = BeforeSuite(func() {
 	repoRoot := filepath.Join(suiteDir, "..", "..", "..")
 	crdPath := filepath.Join(repoRoot, "config", "crd", "bases")
 
-	// BinaryAssetsDirectory is the parent dir; envtest appends "1.29.0-{os}-{arch}".
+	// BinaryAssetsDirectory is the parent dir; envtest appends "1.36.2-{os}-{arch}".
 	binDir := filepath.Join(repoRoot, "bin", "k8s")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{crdPath},
@@ -58,7 +58,7 @@ var _ = BeforeSuite(func() {
 
 		BinaryAssetsDirectory:       binDir,
 		DownloadBinaryAssets:        true,
-		DownloadBinaryAssetsVersion: "1.29.0",
+		DownloadBinaryAssetsVersion: "1.36.2",
 	}
 
 	var err error
