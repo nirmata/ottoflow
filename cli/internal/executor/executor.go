@@ -124,8 +124,7 @@ func (e *WorkflowExecutor) WatchWorkflow(ctx context.Context, workflowRun *ottof
 		display.PrintWorkflowStatus(current, outputFormat, includeInputs)
 
 		// Check if completed
-		if current.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-			current.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		if current.Status.Phase.IsTerminal() {
 			fmt.Println()
 			if current.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded {
 				fmt.Println("✅ Workflow completed successfully!")

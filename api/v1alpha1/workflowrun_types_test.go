@@ -186,3 +186,17 @@ func enumMarkerBefore(t *testing.T, src, anchor string) string {
 	}
 	return value
 }
+
+func TestWorkflowRunPhaseIsTerminal(t *testing.T) {
+	for phase, want := range map[WorkflowRunPhase]bool{
+		"":                        false,
+		WorkflowRunPhasePending:   false,
+		WorkflowRunPhaseRunning:   false,
+		WorkflowRunPhaseSucceeded: true,
+		WorkflowRunPhaseFailed:    true,
+	} {
+		if got := phase.IsTerminal(); got != want {
+			t.Errorf("%q.IsTerminal() = %v, want %v", phase, got, want)
+		}
+	}
+}
