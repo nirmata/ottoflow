@@ -42,6 +42,10 @@ func TestControllerListenPortClashFails(t *testing.T) {
 		"single-dash probe arg and callback": "controller:\n  args:\n    - -health-probe-bind-address=:8084\n",
 		"single-dash probe split arg and callback": "controller:\n  args:\n    - -health-probe-bind-address\n" +
 			"    - \":8084\"\n",
+		"mcp arg while disabled":       "controller:\n  args:\n    - --leader-elect\n    - --mcp-addr=:8084\n",
+		"mcp split arg while disabled": "controller:\n  args:\n    - --mcp-addr\n    - \":8084\"\n",
+		"webhook trigger arg while disabled": "controller:\n  webhookTrigger:\n    enabled: false\n" +
+			"  args:\n    - -webhook-trigger-addr=:8084\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := renderWithValuesFile(t, writeSecretAccessValues(t, values))
@@ -73,5 +77,12 @@ func TestControllerMovedProbeFreesDefaultPort(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestControllerArgsAddrOverriddenByChart(t *testing.T) {
+	values := "controller:\n  mcp:\n    enabled: true\n  args:\n    - --leader-elect\n    - --mcp-addr=:8084\n"
+	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -1,19 +1,24 @@
 {{- $c := .Values.controller }}
 {{- $callback := ":8084" }}
 {{- if and $c.callback $c.callback.addr }}{{- $callback = $c.callback.addr }}{{- end }}
-{{- $probe := ":8081" }}
-{{- $prev := "" }}
+{{- $argAddr := dict "health-probe-bind-address" ":8081" }}
+{{- $pending := "" }}
 {{- range $c.args }}
 {{- $a := toString . }}
-{{- if or (regexMatch "^--?health-probe-bind-address=" $a) (regexMatch "^--?health-probe-bind-address$" $prev) }}{{- $probe = $a }}{{- end }}
-{{- $prev = $a }}
+{{- $m := regexFind "^--?(health-probe-bind-address|mcp-addr|webhook-trigger-addr)(=|$)" $a }}
+{{- if $pending }}{{- $_ := set $argAddr $pending $a }}{{- $pending = "" }}
+{{- else if hasSuffix "=" $m }}{{- $_ := set $argAddr (trimAll "-=" $m) (trimPrefix $m $a) }}
+{{- else if $m }}{{- $pending = trimAll "-" $m }}
 {{- end }}
-{{- $ports := dict "probe" (splitList ":" $probe | last) "webhook" "9443" "callback" (splitList ":" $callback | last) }}
+{{- end }}
+{{- if and $c.webhookTrigger $c.webhookTrigger.enabled }}{{- $_ := set $argAddr "webhook-trigger-addr" ($c.webhookTrigger.addr | default ":8083") }}{{- end }}
+{{- if and $c.mcp $c.mcp.enabled }}{{- $_ := set $argAddr "mcp-addr" ($c.mcp.addr | default ":8090") }}{{- end }}
+{{- $ports := dict "probe" (splitList ":" (index $argAddr "health-probe-bind-address") | last) "webhook" "9443" "callback" (splitList ":" $callback | last) }}
 {{- if and $c.metrics $c.metrics.enabled }}{{- $_ := set $ports "metrics" (toString ($c.metrics.port | default 8080)) }}{{- end }}
-{{- if and $c.webhookTrigger $c.webhookTrigger.enabled }}{{- $_ := set $ports "webhookTrigger" (splitList ":" ($c.webhookTrigger.addr | default ":8083") | last) }}{{- end }}
-{{- if and $c.mcp $c.mcp.enabled }}{{- $_ := set $ports "mcp" (splitList ":" ($c.mcp.addr | default ":8090") | last) }}{{- end }}
+{{- with index $argAddr "webhook-trigger-addr" }}{{- $_ := set $ports "webhookTrigger" (splitList ":" . | last) }}{{- end }}
+{{- with index $argAddr "mcp-addr" }}{{- $_ := set $ports "mcp" (splitList ":" . | last) }}{{- end }}
 {{- if ne (len (values $ports | uniq)) (len $ports) }}
-{{- fail (printf "controller listeners must bind distinct ports, got %v; change controller.callback.addr, controller.webhookTrigger.addr, controller.mcp.addr or controller.metrics.port" $ports) }}
+{{- fail (printf "controller listeners must bind distinct ports, got %v; change controller.callback.addr, controller.webhookTrigger.addr, controller.mcp.addr, controller.metrics.port or the listener flags in controller.args" $ports) }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
