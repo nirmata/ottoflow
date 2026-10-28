@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -147,6 +148,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 	logger := s.logger.WithValues("key", key, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace)
 
+	var cancelled []string
 	switch cronSpec.ConcurrencyPolicy {
 	case "Forbid":
 		hasActive, err := s.hasActiveWorkflowRun(ctx, workflow)
@@ -159,7 +161,8 @@ func (s *Scheduler) handleCronFire(key string) {
 			return
 		}
 	case "Replace":
-		if err := s.cancelActiveWorkflowRuns(ctx, workflow, logger); err != nil {
+		var err error
+		if cancelled, err = s.cancelActiveWorkflowRuns(ctx, workflow, logger); err != nil {
 			logger.Error(err, "Failed to cancel active WorkflowRuns for Replace policy")
 			return
 		}
@@ -167,7 +170,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
 	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, s.client, workflow)
+		active, err := countActiveWorkflowRuns(ctx, s.client, workflow, cancelled...)
 		if err != nil {
 			logger.Error(err, "Failed to count active WorkflowRuns")
 			return
@@ -188,7 +191,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 // countActiveWorkflowRuns returns the number of WorkflowRuns (not yet picked up, Pending or Running) for the workflow.
 // Used to enforce spec.run.maxConcurrentRuns in scheduler and trigger manager.
-func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow) (int, error) {
+func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow, skip ...string) (int, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := c.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
@@ -198,7 +201,7 @@ func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ott
 	}
 	count := 0
 	for _, wr := range list.Items {
-		if wr.Status.Phase.IsActive() {
+		if wr.Status.Phase.IsActive() && !slices.Contains(skip, wr.Name) {
 			count++
 		}
 	}
@@ -224,7 +227,7 @@ func (s *Scheduler) hasActiveWorkflowRun(ctx context.Context, workflow *ottoflow
 	return false, nil
 }
 
-func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, logger logr.Logger) error {
+func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, logger logr.Logger) ([]string, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
@@ -233,19 +236,21 @@ func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *otto
 			"ottoflow.nirmata.io/trigger":  "cron",
 		},
 	); err != nil {
-		return err
+		return nil, err
 	}
+	var cancelled []string
 	for i := range list.Items {
 		wr := &list.Items[i]
 		if wr.Status.Phase.IsActive() {
 			setRunFailed(wr, "Replaced by newer cron trigger execution", "")
 			if err := s.client.Status().Update(ctx, wr); err != nil {
-				return fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)
+				return nil, fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)
 			}
+			cancelled = append(cancelled, wr.Name)
 			logger.Info("Cancelled active WorkflowRun for Replace policy", logging.KeyWorkflowRun, wr.Name, logging.KeyNamespace, wr.Namespace)
 		}
 	}
-	return nil
+	return cancelled, nil
 }
 
 // deepCopyExecution returns a deep copy of the execution spec, or nil if in is nil.
