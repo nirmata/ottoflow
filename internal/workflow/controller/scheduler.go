@@ -195,7 +195,7 @@ func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ott
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := c.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
-		client.MatchingLabels{"ottoflow.nirmata.io/workflow": workflow.Name},
+		client.MatchingLabels{ottoflowv1alpha1.WorkflowLabelKey: workflow.Name},
 	); err != nil {
 		return 0, err
 	}
@@ -213,8 +213,8 @@ func (s *Scheduler) hasActiveWorkflowRun(ctx context.Context, workflow *ottoflow
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
 		client.MatchingLabels{
-			"ottoflow.nirmata.io/workflow": workflow.Name,
-			"ottoflow.nirmata.io/trigger":  "cron",
+			ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+			"ottoflow.nirmata.io/trigger":     "cron",
 		},
 	); err != nil {
 		return false, err
@@ -232,8 +232,8 @@ func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *otto
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
 		client.MatchingLabels{
-			"ottoflow.nirmata.io/workflow": workflow.Name,
-			"ottoflow.nirmata.io/trigger":  "cron",
+			ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+			"ottoflow.nirmata.io/trigger":     "cron",
 		},
 	); err != nil {
 		return nil, err
@@ -312,9 +312,9 @@ func (s *Scheduler) createWorkflowRun(ctx context.Context, workflow *ottoflowv1a
 				},
 			},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow":   workflow.Name,
-				"ottoflow.nirmata.io/trigger":    "cron",
-				"ottoflow.nirmata.io/managed-by": "ottoflow-scheduler",
+				ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+				"ottoflow.nirmata.io/trigger":     "cron",
+				"ottoflow.nirmata.io/managed-by":  "ottoflow-scheduler",
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{

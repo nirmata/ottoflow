@@ -149,8 +149,7 @@ func (r *WorkflowRunReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// If already completed, apply run policy (retention / maxAllowed) then skip
-	if workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-		workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+	if workflowRun.Status.Phase.IsTerminal() {
 		workflow := &ottoflowv1alpha1.Workflow{}
 		workflowNamespace := workflowRun.Spec.WorkflowRef.Namespace
 		if workflowNamespace == "" {
@@ -360,7 +359,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if jobFailureConfirmed(job) && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+	if jobFailureConfirmed(job) && !workflowRun.Status.Phase.IsTerminal() {
 		result, handled, err := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		if handled {
 			return result, err
@@ -1412,9 +1411,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			Name:      jobName,
 			Namespace: workflowRun.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/part-of":    partOf, // same as pod template so Kyverno restrict-automount-sa-token skips this Job
-				runnerManagedLabel:             workflowRun.Name,
-				"ottoflow.nirmata.io/workflow": workflowName, // for cleanup: delete job -l ottoflow.nirmata.io/workflow=cloud-cost-daily
+				"app.kubernetes.io/part-of":       partOf, // same as pod template so Kyverno restrict-automount-sa-token skips this Job
+				runnerManagedLabel:                workflowRun.Name,
+				ottoflowv1alpha1.WorkflowLabelKey: workflowName, // for cleanup: delete job -l ottoflow.nirmata.io/workflow=cloud-cost-daily
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -1571,7 +1570,7 @@ func (r *WorkflowRunReconciler) listCompletedRunsForWorkflow(ctx context.Context
 		if wrRefNs != refNamespace {
 			continue
 		}
-		if wr.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && wr.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		if !wr.Status.Phase.IsTerminal() {
 			continue
 		}
 		completed = append(completed, wr)

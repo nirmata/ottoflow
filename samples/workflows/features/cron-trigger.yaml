@@ -1,6 +1,6 @@
 # Simple cron trigger: runs every 5 minutes.
 # The Forbid concurrency policy prevents overlapping runs — if a previous
-# run is still Pending or Running when the schedule fires, the new run is
+# run is still active (phase empty, Pending or Running) when the schedule fires, the new run is
 # skipped.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow

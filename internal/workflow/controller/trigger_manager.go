@@ -396,7 +396,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 	// remains the precise arbiter (defense in depth): a name-keyed label wouldn't
 	// survive the Workflow being deleted and recreated under the same name.
 	if gvk.GroupKind() == workflowRunGroupKind {
-		opts.LabelSelector += ",ottoflow.nirmata.io/workflow!=" + workflow.Name
+		opts.LabelSelector += "," + ottoflowv1alpha1.WorkflowLabelKey + "!=" + workflow.Name
 	}
 
 	var watcher watch.Interface
@@ -511,7 +511,7 @@ func buildWorkflowRun(
 				},
 			},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow": workflow.Name,
+				ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{

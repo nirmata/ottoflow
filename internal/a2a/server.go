@@ -451,8 +451,8 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 				Controller: &[]bool{true}[0],
 			}},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow":   wf.Name,
-				"ottoflow.nirmata.io/created-by": "serve-a2a",
+				ottoflowv1alpha1.WorkflowLabelKey: wf.Name,
+				"ottoflow.nirmata.io/created-by":  "serve-a2a",
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{
@@ -475,7 +475,7 @@ func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(s.wfNS),
-		client.MatchingLabels{"ottoflow.nirmata.io/workflow": wfName},
+		client.MatchingLabels{ottoflowv1alpha1.WorkflowLabelKey: wfName},
 	); err != nil {
 		return 0, err
 	}
@@ -514,14 +514,12 @@ func (s *Server) pollToTerminal(ctx context.Context, name string, onHeartbeat fu
 		if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.wfNS, Name: name}, &run); err != nil {
 			return nil, fmt.Errorf("getting workflowrun %s: %w", name, err)
 		}
-		switch run.Status.Phase {
-		case ottoflowv1alpha1.WorkflowRunPhaseSucceeded, ottoflowv1alpha1.WorkflowRunPhaseFailed:
+		if run.Status.Phase.IsTerminal() {
 			return &run, nil
-		default:
-			if onHeartbeat != nil && time.Since(lastBeat) >= heartbeatEvery {
-				onHeartbeat()
-				lastBeat = time.Now()
-			}
+		}
+		if onHeartbeat != nil && time.Since(lastBeat) >= heartbeatEvery {
+			onHeartbeat()
+			lastBeat = time.Now()
 		}
 	}
 }
