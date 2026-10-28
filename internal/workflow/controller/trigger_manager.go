@@ -222,7 +222,7 @@ func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottofl
 	logger := log.FromContext(ctx)
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
 
-	tm.pruneEventTriggers(workflowKey, workflow.Spec.Triggers)
+	tm.pruneTriggers(workflowKey, workflow.Spec.Triggers)
 
 	for i, trigger := range workflow.Spec.Triggers {
 		if trigger.Cron != nil && tm.scheduler != nil {
@@ -249,12 +249,7 @@ func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottofl
 func (tm *TriggerManager) UnregisterWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow) error {
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
 
-	if tm.scheduler != nil {
-		for i := range workflow.Spec.Triggers {
-			tm.scheduler.RemoveSchedule(fmt.Sprintf("%s-cron-%d", workflowKey, i))
-		}
-	}
-	tm.pruneEventTriggers(workflowKey, nil)
+	tm.pruneTriggers(workflowKey, nil)
 
 	return nil
 }
@@ -263,20 +258,31 @@ func isDigits(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789") == ""
 }
 
-// pruneEventTriggers unregisters every event trigger of workflowKey that is not
-// an event trigger in triggers (nil prunes all).
-func (tm *TriggerManager) pruneEventTriggers(workflowKey string, triggers []ottoflowv1alpha1.Trigger) {
-	prefix := workflowKey + "-event-"
+// pruneTriggers unregisters every cron and event trigger of workflowKey that is
+// not a trigger of the same kind in triggers (nil prunes all).
+func (tm *TriggerManager) pruneTriggers(workflowKey string, triggers []ottoflowv1alpha1.Trigger) {
 	for key := range tm.eventSpecMap {
-		idx, ok := strings.CutPrefix(key, prefix)
-		if !ok || !isDigits(idx) {
-			continue
+		if staleTriggerKey(key, workflowKey+"-event-", triggers, func(t ottoflowv1alpha1.Trigger) bool { return t.Event != nil }) {
+			tm.unregisterEventTrigger(key)
 		}
-		if i, err := strconv.Atoi(idx); err == nil && i < len(triggers) && triggers[i].Event != nil {
-			continue
-		}
-		tm.unregisterEventTrigger(key)
 	}
+	if tm.scheduler != nil {
+		for _, key := range tm.scheduler.scheduleKeys() {
+			if staleTriggerKey(key, workflowKey+"-cron-", triggers, func(t ottoflowv1alpha1.Trigger) bool { return t.Cron != nil }) {
+				tm.scheduler.RemoveSchedule(key)
+			}
+		}
+	}
+}
+
+// staleTriggerKey reports whether key is prefix+N and triggers[N] is missing or fails want.
+func staleTriggerKey(key, prefix string, triggers []ottoflowv1alpha1.Trigger, want func(ottoflowv1alpha1.Trigger) bool) bool {
+	idx, ok := strings.CutPrefix(key, prefix)
+	if !ok || !isDigits(idx) {
+		return false
+	}
+	i, err := strconv.Atoi(idx)
+	return err != nil || i >= len(triggers) || !want(triggers[i])
 }
 
 // stopWatchersForKey stops and removes all watchers whose keys are key + "-resource-" + digits. Used by both registerEventTrigger
