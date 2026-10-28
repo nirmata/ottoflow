@@ -13,3 +13,6 @@ controller:
   mcp:
     enabled: true
     addr: ":8085"
+# Renders ottoflow-a2a-caller for the caller-gate spec.
+serveA2A:
+  enabled: true
