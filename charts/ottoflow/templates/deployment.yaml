@@ -1,7 +1,14 @@
 {{- $c := .Values.controller }}
 {{- $callback := ":8084" }}
 {{- if and $c.callback $c.callback.addr }}{{- $callback = $c.callback.addr }}{{- end }}
-{{- $ports := dict "probe" "8081" "webhook" "9443" "callback" (splitList ":" $callback | last) }}
+{{- $probe := ":8081" }}
+{{- $prev := "" }}
+{{- range $c.args }}
+{{- $a := toString . }}
+{{- if or (hasPrefix "--health-probe-bind-address=" $a) (eq $prev "--health-probe-bind-address") }}{{- $probe = $a }}{{- end }}
+{{- $prev = $a }}
+{{- end }}
+{{- $ports := dict "probe" (splitList ":" $probe | last) "webhook" "9443" "callback" (splitList ":" $callback | last) }}
 {{- if and $c.metrics $c.metrics.enabled }}{{- $_ := set $ports "metrics" (toString ($c.metrics.port | default 8080)) }}{{- end }}
 {{- if and $c.webhookTrigger $c.webhookTrigger.enabled }}{{- $_ := set $ports "webhookTrigger" (splitList ":" ($c.webhookTrigger.addr | default ":8083") | last) }}{{- end }}
 {{- if and $c.mcp $c.mcp.enabled }}{{- $_ := set $ports "mcp" (splitList ":" ($c.mcp.addr | default ":8090") | last) }}{{- end }}

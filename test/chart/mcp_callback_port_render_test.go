@@ -35,6 +35,10 @@ func TestControllerListenPortClashFails(t *testing.T) {
 		"host form":            "controller:\n  mcp:\n    enabled: true\n  callback:\n    addr: \"0.0.0.0:8090\"\n",
 		"callback and trigger": "controller:\n  callback:\n    addr: \":8083\"\n",
 		"metrics and callback": "controller:\n  metrics:\n    port: 8084\n",
+		"probe arg and callback": "controller:\n  args:\n    - --leader-elect\n" +
+			"    - --health-probe-bind-address=:8084\n",
+		"probe split arg and callback": "controller:\n  args:\n    - --health-probe-bind-address\n" +
+			"    - \":8084\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := renderWithValuesFile(t, writeSecretAccessValues(t, values))
@@ -47,6 +51,15 @@ func TestControllerListenPortClashFails(t *testing.T) {
 
 func TestControllerDisabledListenerNotCounted(t *testing.T) {
 	values := "controller:\n  webhookTrigger:\n    enabled: false\n  callback:\n    addr: \":8083\"\n"
+	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestControllerMovedProbeFreesDefaultPort(t *testing.T) {
+	values := "controller:\n  args:\n    - --leader-elect\n    - --health-probe-bind-address=:9000\n" +
+		"  livenessProbe:\n    httpGet:\n      port: 9000\n  readinessProbe:\n    httpGet:\n      port: 9000\n" +
+		"  callback:\n    addr: \":8081\"\n"
 	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
 		t.Fatal(err)
 	}
