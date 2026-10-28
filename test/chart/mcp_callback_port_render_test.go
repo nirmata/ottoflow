@@ -8,38 +8,46 @@ that can be found in the LICENSE.md file.
 package chart
 
 import (
-	"net"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// The callback server binds a literal port (cmd/controller/main.go); the MCP default must differ.
-func TestMCPAddrDiffersFromCallbackAddr(t *testing.T) {
-	src, err := os.ReadFile(filepath.Join(chartDir(t), "..", "..", "cmd", "controller", "main.go"))
+func TestControllerListenPortsMatchFlags(t *testing.T) {
+	out, err := renderWithValuesFile(t, writeSecretAccessValues(t, "controller:\n  mcp:\n    enabled: true\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := regexp.MustCompile(`NewCallbackServer\(.*"([^"]*:\d+)"\)`).FindStringSubmatch(string(src))
-	if m == nil {
-		t.Fatal("callback server address literal not found in cmd/controller/main.go")
+	for flagName, portName := range map[string]string{
+		"callback-addr": "callback", "webhook-trigger-addr": "webhook-trigger", "mcp-addr": "mcp",
+	} {
+		flag := regexp.MustCompile(`--` + flagName + `=\S*:(\d+)`).FindStringSubmatch(out)
+		port := regexp.MustCompile(`containerPort: (\d+)\n\s+name: ` + portName + `\n`).FindStringSubmatch(out)
+		if flag == nil || port == nil || flag[1] != port[1] {
+			t.Errorf("--%s %v does not match the %s containerPort %v", flagName, flag, portName, port)
+		}
 	}
-	mcp := regexp.MustCompile(`--mcp-addr=(\S+)`).FindStringSubmatch(
-		strings.Join(renderDocs(t, "--set", "controller.mcp.enabled=true"), "\n"))
-	if mcp == nil {
-		t.Fatal("--mcp-addr not rendered with controller.mcp.enabled=true")
+}
+
+func TestControllerListenPortClashFails(t *testing.T) {
+	for name, values := range map[string]string{
+		"mcp and callback":     "controller:\n  mcp:\n    enabled: true\n    addr: \":8084\"\n",
+		"host form":            "controller:\n  mcp:\n    enabled: true\n  callback:\n    addr: \"0.0.0.0:8090\"\n",
+		"callback and trigger": "controller:\n  callback:\n    addr: \":8083\"\n",
+		"metrics and callback": "controller:\n  metrics:\n    port: 8084\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := renderWithValuesFile(t, writeSecretAccessValues(t, values))
+			if err == nil || !strings.Contains(err.Error(), "must bind distinct ports") {
+				t.Errorf("want a distinct-ports failure, got %v", err)
+			}
+		})
 	}
-	_, mcpPort, err := net.SplitHostPort(mcp[1])
-	if err != nil {
-		t.Fatalf("--mcp-addr %q: %v", mcp[1], err)
-	}
-	_, callbackPort, err := net.SplitHostPort(m[1])
-	if err != nil {
-		t.Fatalf("callback address %q: %v", m[1], err)
-	}
-	if mcpPort == callbackPort {
-		t.Errorf("default --mcp-addr %s shares a port with the callback server address %s", mcp[1], m[1])
+}
+
+func TestControllerDisabledListenerNotCounted(t *testing.T) {
+	values := "controller:\n  webhookTrigger:\n    enabled: false\n  callback:\n    addr: \":8083\"\n"
+	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
+		t.Fatal(err)
 	}
 }

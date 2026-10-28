@@ -97,6 +97,11 @@ controller:
   args:
     - --leader-elect
 
+  # Callback server for waitForCallback steps (POST /api/v1/workflow-runs/.../callback/...).
+  callback:
+    # addr is the listen address for the callback server. Always on.
+    addr: ":8084"
+
   # Webhook trigger HTTP server configuration.
   # The server receives signed POST requests and creates WorkflowRuns.
   # TLS must be terminated at ingress or a service mesh sidecar — the server itself

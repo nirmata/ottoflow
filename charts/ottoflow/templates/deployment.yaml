@@ -1,3 +1,13 @@
+{{- $c := .Values.controller }}
+{{- $callback := ":8084" }}
+{{- if and $c.callback $c.callback.addr }}{{- $callback = $c.callback.addr }}{{- end }}
+{{- $ports := dict "probe" "8081" "webhook" "9443" "callback" (splitList ":" $callback | last) }}
+{{- if and $c.metrics $c.metrics.enabled }}{{- $_ := set $ports "metrics" (toString ($c.metrics.port | default 8080)) }}{{- end }}
+{{- if and $c.webhookTrigger $c.webhookTrigger.enabled }}{{- $_ := set $ports "webhookTrigger" (splitList ":" ($c.webhookTrigger.addr | default ":8083") | last) }}{{- end }}
+{{- if and $c.mcp $c.mcp.enabled }}{{- $_ := set $ports "mcp" (splitList ":" ($c.mcp.addr | default ":8090") | last) }}{{- end }}
+{{- if ne (len (values $ports | uniq)) (len $ports) }}
+{{- fail (printf "controller listeners must bind distinct ports, got %v; change controller.callback.addr, controller.webhookTrigger.addr, controller.mcp.addr or controller.metrics.port" $ports) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -99,6 +109,7 @@ spec:
         - --serve-a2a-allow-unauthenticated
         {{- end }}
         {{- end }}
+        - --callback-addr={{ $callback }}
         {{- if and .Values.controller.webhookTrigger .Values.controller.webhookTrigger.enabled }}
         - --webhook-trigger-addr={{ .Values.controller.webhookTrigger.addr | default ":8083" }}
         {{- end }}
@@ -150,8 +161,10 @@ spec:
           {{- toYaml .Values.controller.readinessProbe | nindent 10 }}
         resources:
           {{- toYaml .Values.controller.resources | nindent 10 }}
-        {{- if or .Values.webhook.enabled (and .Values.controller.webhookTrigger .Values.controller.webhookTrigger.enabled) (and .Values.controller.mcp .Values.controller.mcp.enabled) (and .Values.controller.metrics .Values.controller.metrics.enabled) }}
         ports:
+          - containerPort: {{ $ports.callback | int }}
+            name: callback
+            protocol: TCP
         {{- if and .Values.controller.metrics .Values.controller.metrics.enabled }}
           - containerPort: {{ .Values.controller.metrics.port | default 8080 }}
             name: metrics
@@ -163,7 +176,7 @@ spec:
             protocol: TCP
         {{- end }}
         {{- if and .Values.controller.webhookTrigger .Values.controller.webhookTrigger.enabled }}
-          - containerPort: 8083
+          - containerPort: {{ $ports.webhookTrigger | int }}
             name: webhook-trigger
             protocol: TCP
         {{- end }}
@@ -171,7 +184,6 @@ spec:
           - containerPort: {{ (splitList ":" (.Values.controller.mcp.addr | default ":8090")) | last | int }}
             name: mcp
             protocol: TCP
-        {{- end }}
         {{- end }}
       {{- if and .Values.agentExecutor.enabled .Values.agentExecutor.tls.internal.enabled (not .Values.agentExecutor.tls.secretName) }}
       volumes:
