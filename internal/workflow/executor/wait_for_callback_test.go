@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -121,6 +122,9 @@ func TestExecuteWaitForCallback_RecoveryWithOutputs(t *testing.T) {
 	}
 
 	ctx := context.Background()
+	if err := exec.GetContextManager().InitializeContext(ctx, &ottoflowv1alpha1.Workflow{}, nil); err != nil {
+		t.Fatalf("InitializeContext: %v", err)
+	}
 	outputs, err := exec.executeWaitForCallback(ctx, wr, step)
 	if err != nil {
 		t.Fatalf("expected nil error (outputs received), got: %v", err)
@@ -132,9 +136,38 @@ func TestExecuteWaitForCallback_RecoveryWithOutputs(t *testing.T) {
 	if !ok || !approved {
 		t.Errorf("expected outputs[approved]=true, got %v", outputs["approved"])
 	}
+	cd, err := exec.GetContextManager().ReadContext(ctx)
+	if err != nil {
+		t.Fatalf("ReadContext: %v", err)
+	}
+	vars := cd["variables"].(map[string]interface{})
+	if vars["approved"] != true || vars["comment"] != "LGTM" {
+		t.Errorf("variables = %v, want approved=true comment=LGTM", vars)
+	}
 	// PendingCallback should be cleared
 	if wr.Status.PendingCallback != nil {
 		t.Error("expected PendingCallback to be cleared after consuming outputs")
+	}
+}
+
+func TestWaitForCallback_KeepDeclaredPropertiesExactKey(t *testing.T) {
+	for name, tc := range map[string]struct {
+		schema string
+		want   int
+	}{
+		"exact key filters":          {`{"properties":{"a":{}}}`, 1},
+		"wrong-case key not matched": {`{"Properties":{"a":{}}}`, 2},
+		"boolean sub-schema":         {`{"properties":{"a":true}}`, 1},
+		"null properties":            {`{"properties":null}`, 2},
+		"non-object properties":      {`{"properties":"x"}`, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := map[string]interface{}{"a": 1, "b": 2}
+			keepDeclaredProperties(logr.Discard(), out, &apiextensionsv1.JSON{Raw: []byte(tc.schema)})
+			if len(out) != tc.want {
+				t.Errorf("len(out) = %d, want %d: %v", len(out), tc.want, out)
+			}
+		})
 	}
 }
 
@@ -227,5 +260,58 @@ func TestErrAwaitingCallback_IsCheck(t *testing.T) {
 	fmtErr := errors.New("waiting")
 	if errors.Is(fmtErr, ErrAwaitingCallback) {
 		t.Error("plain string error should not match ErrAwaitingCallback")
+	}
+}
+
+// TestExecuteWorkflow_WaitForCallbackOutputsReachDownstream verifies that declared
+// callback fields reach downstream CEL as variables.<key> and undeclared ones do not.
+func TestExecuteWorkflow_WaitForCallbackOutputsReachDownstream(t *testing.T) {
+	wr := newTestWorkflowRun("run-cb")
+	wr.Status.PendingCallback = &ottoflowv1alpha1.CallbackState{
+		StepName:  "awaitApproval",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+		Outputs:   apiextensionsv1.JSON{Raw: []byte(`{"approved":true,"reviewer":"alice","injected":"x"}`)},
+	}
+	k8s := fake.NewClientBuilder().WithScheme(newTestScheme()).
+		WithStatusSubresource(wr).
+		WithObjects(wr).Build()
+	exec, err := NewWorkflowExecutor(k8s, wr)
+	if err != nil {
+		t.Fatalf("NewWorkflowExecutor: %v", err)
+	}
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
+			{Name: "awaitApproval", WaitForCallback: &ottoflowv1alpha1.WaitForCallbackStep{
+				Timeout:      "1h",
+				OutputSchema: &apiextensionsv1.JSON{Raw: []byte(`{"type":"object","properties":{"approved":{"type":"boolean"},"reviewer":{"type":"string"}}}`)},
+			}},
+			{Name: "postApproval", DependsOn: []string{"awaitApproval"}, Outputs: []ottoflowv1alpha1.Output{
+				{Name: "decision", Expression: `variables.approved ? "go" : "stop"`},
+				{Name: "who", Expression: `variables.reviewer`},
+			}},
+		}},
+	}
+
+	ctx := context.Background()
+	if err := exec.ExecuteWorkflow(ctx, wf, wr); err != nil {
+		t.Fatalf("ExecuteWorkflow: %v", err)
+	}
+	if wr.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded {
+		t.Fatalf("phase = %s, want Succeeded", wr.Status.Phase)
+	}
+	cd, err := exec.GetContextManager().ReadContext(ctx)
+	if err != nil {
+		t.Fatalf("ReadContext: %v", err)
+	}
+	vars := cd["variables"].(map[string]interface{})
+	if vars["decision"] != "go" || vars["who"] != "alice" {
+		t.Errorf("variables = %v, want decision=go who=alice", vars)
+	}
+	if _, ok := vars["injected"]; ok {
+		t.Errorf("undeclared key injected reached variables: %v", vars)
+	}
+	if wr.Status.PendingCallback != nil {
+		t.Error("expected PendingCallback to be cleared")
 	}
 }

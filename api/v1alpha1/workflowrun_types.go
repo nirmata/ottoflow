@@ -460,6 +460,12 @@ const (
 	WorkflowRunPhaseFailed WorkflowRunPhase = "Failed"
 )
 
+// IsActive reports whether a run in this phase has not finished: the empty phase (created, not yet
+// reconciled), Pending or Running.
+func (p WorkflowRunPhase) IsActive() bool {
+	return p == "" || p == WorkflowRunPhasePending || p == WorkflowRunPhaseRunning
+}
+
 // WorkflowRunFailureReason classifies a subset of well-known WorkflowRun failure causes, for
 // programmatic consumers (alerting, dashboards) that need to distinguish these specific causes
 // from every other failure without parsing Status.Message. Not every Failed run gets one — see

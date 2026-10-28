@@ -506,6 +506,7 @@ var _ = Describe("WorkflowRun Controller", func() {
 			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
 			now := metav1.Now()
 			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue, LastProbeTime: now, LastTransitionTime: now},
 				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastProbeTime: now, LastTransitionTime: now},
 			}
 			job.Status.Succeeded = 1
@@ -704,6 +705,7 @@ var _ = Describe("WorkflowRun Controller", func() {
 			job.Status.StartTime = &now
 			job.Status.Failed = 1
 			job.Status.Conditions = []batchv1.JobCondition{
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue, LastTransitionTime: now},
 				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue, LastTransitionTime: now},
 			}
 			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())

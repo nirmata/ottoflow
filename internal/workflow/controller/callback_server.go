@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 	"github.com/nirmata/ottoflow/internal/workflow/token"
 )
 
@@ -321,7 +322,7 @@ func validatePayloadAgainstSchema(schema *apiextensionsv1.JSON, payload map[stri
 	}
 
 	// Validate property types
-	if properties, ok := s["properties"].(map[string]interface{}); ok {
+	if properties, ok := executor.SchemaProperties(s); ok {
 		for propName, propDef := range properties {
 			propMap, ok := propDef.(map[string]interface{})
 			if !ok {
