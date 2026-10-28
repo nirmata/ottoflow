@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"net"
 	"slices"
 	"sort"
 	"strings"
@@ -88,6 +90,23 @@ type transientBuildError struct{ err error }
 
 func (e *transientBuildError) Error() string { return e.err.Error() }
 func (e *transientBuildError) Unwrap() error { return e.err }
+
+func transientUnless(terminal bool, err error) error {
+	if terminal || !retryable(err) {
+		return err
+	}
+	return &transientBuildError{err: err}
+}
+
+func retryable(err error) bool {
+	var st apierrors.APIStatus
+	if errors.As(err, &st) {
+		code := st.Status().Code
+		return code == 429 || code >= 500
+	}
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		errors.As(err, new(net.Error)) // *url.Error and context.DeadlineExceeded implement net.Error
+}
 
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
 	switch corev1.PullPolicy(r.ImagePullPolicy) {
@@ -236,6 +255,14 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 		sourceNamespace := runnerSecretSourceNamespace(r.RunnerConfig, workflowNamespace)
 		if err := r.ensureRunnerSecrets(ctx, workflowRun, createdJob, sourceNamespace); err != nil {
+			var te *transientBuildError
+			if errors.As(err, &te) {
+				logger.Error(te.err, "transient error ensuring runner secrets, will requeue",
+					logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name,
+					logging.KeyWorkflowRun, req.Name,
+					logging.KeyNamespace, req.Namespace)
+				return ctrl.Result{}, te.err
+			}
 			logger.Error(err, "failed to ensure runner secrets", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
 			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
@@ -917,7 +944,7 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			return r.forbiddenSecretRoleError(ctx, runnerKey, workflowRun.Namespace, err)
 		}
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err)
+			return transientUnless(apierrors.IsInvalid(err), fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err))
 		}
 		sourceSecret := &corev1.Secret{}
 		sourceKey := types.NamespacedName{Namespace: sourceNamespace, Name: secretName}
@@ -928,7 +955,7 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			if apierrors.IsForbidden(err) {
 				return r.forbiddenSecretRoleError(ctx, sourceKey, workflowRun.Namespace, err)
 			}
-			return fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err)
+			return transientUnless(apierrors.IsInvalid(err), fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err))
 		}
 		copySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -952,7 +979,7 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			if apierrors.IsForbidden(err) {
 				return forbiddenSecretCopyError(sourceKey, runnerKey, err)
 			}
-			return fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err)
+			return transientUnless(apierrors.IsInvalid(err) || apierrors.IsBadRequest(err), fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err))
 		}
 	}
 	return nil
