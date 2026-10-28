@@ -39,6 +39,9 @@ func TestControllerListenPortClashFails(t *testing.T) {
 			"    - --health-probe-bind-address=:8084\n",
 		"probe split arg and callback": "controller:\n  args:\n    - --health-probe-bind-address\n" +
 			"    - \":8084\"\n",
+		"single-dash probe arg and callback": "controller:\n  args:\n    - -health-probe-bind-address=:8084\n",
+		"single-dash probe split arg and callback": "controller:\n  args:\n    - -health-probe-bind-address\n" +
+			"    - \":8084\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := renderWithValuesFile(t, writeSecretAccessValues(t, values))
@@ -57,10 +60,18 @@ func TestControllerDisabledListenerNotCounted(t *testing.T) {
 }
 
 func TestControllerMovedProbeFreesDefaultPort(t *testing.T) {
-	values := "controller:\n  args:\n    - --leader-elect\n    - --health-probe-bind-address=:9000\n" +
-		"  livenessProbe:\n    httpGet:\n      port: 9000\n  readinessProbe:\n    httpGet:\n      port: 9000\n" +
-		"  callback:\n    addr: \":8081\"\n"
-	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
-		t.Fatal(err)
+	for name, args := range map[string]string{
+		"double dash":       "    - --health-probe-bind-address=:9000\n",
+		"single dash":       "    - -health-probe-bind-address=:9000\n",
+		"single dash split": "    - -health-probe-bind-address\n    - \":9000\"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			values := "controller:\n  args:\n    - --leader-elect\n" + args +
+				"  livenessProbe:\n    httpGet:\n      port: 9000\n  readinessProbe:\n    httpGet:\n      port: 9000\n" +
+				"  callback:\n    addr: \":8081\"\n"
+			if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

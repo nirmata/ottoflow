@@ -5,7 +5,7 @@
 {{- $prev := "" }}
 {{- range $c.args }}
 {{- $a := toString . }}
-{{- if or (hasPrefix "--health-probe-bind-address=" $a) (eq $prev "--health-probe-bind-address") }}{{- $probe = $a }}{{- end }}
+{{- if or (regexMatch "^--?health-probe-bind-address=" $a) (regexMatch "^--?health-probe-bind-address$" $prev) }}{{- $probe = $a }}{{- end }}
 {{- $prev = $a }}
 {{- end }}
 {{- $ports := dict "probe" (splitList ":" $probe | last) "webhook" "9443" "callback" (splitList ":" $callback | last) }}
