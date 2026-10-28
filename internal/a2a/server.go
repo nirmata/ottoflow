@@ -166,7 +166,7 @@ type artifactUpdateEvent struct {
 	LastChunk bool     `json:"lastChunk"`
 }
 
-// taskResult is the terminal Task returned by the non-streaming message/send.
+// taskResult is the Task returned by the non-streaming message/send.
 type taskResult struct {
 	ID        string     `json:"id"`
 	ContextID string     `json:"contextId"`
@@ -267,8 +267,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, req *rpcRe
 	send(statusEvt)
 }
 
-// handleSend runs the workflow to completion and returns a single terminal Task
-// (non-streaming). Cheap fallback for A2A clients that don't stream.
+// handleSend runs the workflow and returns a single Task (non-streaming), terminal unless the
+// deadline hits first. Cheap fallback for A2A clients that don't stream.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
 	ctx := r.Context()
 	run, err := s.createRun(ctx, promptText(req))
@@ -361,7 +361,7 @@ func stillRunningText(runName, ns string, d time.Duration) string {
 		runName, d, ns, runName)
 }
 
-// buildStillRunningEvents is the streaming terminal pair for a deadline hit: an artifact carrying
+// buildStillRunningEvents is the streaming closing pair for a deadline hit: an artifact carrying
 // the honest notice, and a final status that is NOT "failed" — the run continues and may succeed.
 func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (artifactUpdateEvent, statusUpdateEvent) {
 	text := stillRunningText(taskID, ns, d)
@@ -373,7 +373,7 @@ func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (art
 	}
 	statusEvt := statusUpdateEvent{
 		TaskID: taskID, ContextID: contextID, Kind: kindStatusUpdate,
-		Status: taskStatus{State: stateCompleted, Timestamp: now()}, Final: true,
+		Status: taskStatus{State: stateWorking, Timestamp: now()}, Final: true,
 	}
 	return artifactEvt, statusEvt
 }
@@ -383,7 +383,7 @@ func buildStillRunningTask(runName, contextID, ns string, d time.Duration) taskR
 	text := stillRunningText(runName, ns, d)
 	return taskResult{
 		ID: runName, ContextID: contextID, Kind: kindTask,
-		Status:    taskStatus{State: stateCompleted, Timestamp: now()},
+		Status:    taskStatus{State: stateWorking, Timestamp: now()},
 		Artifacts: []artifact{{ArtifactID: runName + "-notice", Name: "notice", Parts: []textPart{{Kind: "text", Text: text}}}},
 	}
 }
