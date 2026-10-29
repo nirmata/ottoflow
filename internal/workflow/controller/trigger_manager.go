@@ -396,7 +396,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 	// remains the precise arbiter (defense in depth): a name-keyed label wouldn't
 	// survive the Workflow being deleted and recreated under the same name.
 	if gvk.GroupKind() == workflowRunGroupKind {
-		opts.LabelSelector += ",ottoflow.nirmata.io/workflow!=" + workflow.Name
+		opts.LabelSelector += "," + ottoflowv1alpha1.WorkflowLabelKey + "!=" + workflow.Name
 	}
 
 	var watcher watch.Interface
@@ -511,7 +511,7 @@ func buildWorkflowRun(
 				},
 			},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow": workflow.Name,
+				ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{
@@ -642,12 +642,12 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	tm.dedupMu.Unlock()
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
-	if workflow.Spec.Run != nil && workflow.Spec.Run.MaxConcurrentRuns != nil && *workflow.Spec.Run.MaxConcurrentRuns > 0 {
+	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
 		if err != nil {
 			return fmt.Errorf("count active WorkflowRuns: %w", err)
 		}
-		if active >= int(*workflow.Spec.Run.MaxConcurrentRuns) {
+		if active >= int(limit) {
 			return nil // Skip creating; event is dropped
 		}
 	}
@@ -855,12 +855,12 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 	}
 
 	// Gate 4: MaxConcurrentRuns.
-	if workflow.Spec.Run != nil && workflow.Spec.Run.MaxConcurrentRuns != nil && *workflow.Spec.Run.MaxConcurrentRuns > 0 {
+	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
 		if err != nil {
 			return nil, 0, fmt.Errorf("count active WorkflowRuns: %w", err)
 		}
-		if active >= int(*workflow.Spec.Run.MaxConcurrentRuns) {
+		if active >= int(limit) {
 			return nil, WebhookConcurrencyLimited, nil
 		}
 	}

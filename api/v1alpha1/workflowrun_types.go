@@ -460,6 +460,20 @@ const (
 	WorkflowRunPhaseFailed WorkflowRunPhase = "Failed"
 )
 
+// IsTerminal reports whether a run in this phase has finished (Succeeded or Failed).
+func (p WorkflowRunPhase) IsTerminal() bool {
+	return p == WorkflowRunPhaseSucceeded || p == WorkflowRunPhaseFailed
+}
+
+// IsActive reports whether a run in this phase has not finished: the empty phase (created, not yet
+// reconciled), Pending or Running.
+func (p WorkflowRunPhase) IsActive() bool {
+	return p == "" || p == WorkflowRunPhasePending || p == WorkflowRunPhaseRunning
+}
+
+// WorkflowLabelKey is the label on a WorkflowRun and its Job that names the owning Workflow.
+const WorkflowLabelKey = "ottoflow.nirmata.io/workflow"
+
 // WorkflowRunFailureReason classifies a subset of well-known WorkflowRun failure causes, for
 // programmatic consumers (alerting, dashboards) that need to distinguish these specific causes
 // from every other failure without parsing Status.Message. Not every Failed run gets one — see

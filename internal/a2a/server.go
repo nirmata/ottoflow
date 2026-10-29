@@ -33,10 +33,6 @@ const (
 	defaultRunTimeout = 10 * time.Minute
 	heartbeatEvery    = 5 * time.Second
 	maxBodyBytes      = 1 << 20
-	// defaultMaxConcurrentRuns caps active runs when the Workflow sets no
-	// spec.run.maxConcurrentRuns. 10 matches the webhook trigger burst. An explicit 0 still
-	// means unlimited, and an explicit N means N.
-	defaultMaxConcurrentRuns = 10
 
 	methodStream = "message/stream"
 	methodSend   = "message/send"
@@ -170,7 +166,7 @@ type artifactUpdateEvent struct {
 	LastChunk bool     `json:"lastChunk"`
 }
 
-// taskResult is the terminal Task returned by the non-streaming message/send.
+// taskResult is the Task returned by the non-streaming message/send.
 type taskResult struct {
 	ID        string     `json:"id"`
 	ContextID string     `json:"contextId"`
@@ -271,8 +267,8 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request, req *rpcRe
 	send(statusEvt)
 }
 
-// handleSend runs the workflow to completion and returns a single terminal Task
-// (non-streaming). Cheap fallback for A2A clients that don't stream.
+// handleSend runs the workflow and returns a single Task (non-streaming), terminal unless the
+// deadline hits first. Cheap fallback for A2A clients that don't stream.
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, req *rpcRequest) {
 	ctx := r.Context()
 	run, err := s.createRun(ctx, promptText(req))
@@ -365,7 +361,7 @@ func stillRunningText(runName, ns string, d time.Duration) string {
 		runName, d, ns, runName)
 }
 
-// buildStillRunningEvents is the streaming terminal pair for a deadline hit: an artifact carrying
+// buildStillRunningEvents is the streaming closing pair for a deadline hit: an artifact carrying
 // the honest notice, and a final status that is NOT "failed" — the run continues and may succeed.
 func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (artifactUpdateEvent, statusUpdateEvent) {
 	text := stillRunningText(taskID, ns, d)
@@ -377,7 +373,7 @@ func buildStillRunningEvents(taskID, contextID, ns string, d time.Duration) (art
 	}
 	statusEvt := statusUpdateEvent{
 		TaskID: taskID, ContextID: contextID, Kind: kindStatusUpdate,
-		Status: taskStatus{State: stateCompleted, Timestamp: now()}, Final: true,
+		Status: taskStatus{State: stateWorking, Timestamp: now()}, Final: true,
 	}
 	return artifactEvt, statusEvt
 }
@@ -387,7 +383,7 @@ func buildStillRunningTask(runName, contextID, ns string, d time.Duration) taskR
 	text := stillRunningText(runName, ns, d)
 	return taskResult{
 		ID: runName, ContextID: contextID, Kind: kindTask,
-		Status:    taskStatus{State: stateCompleted, Timestamp: now()},
+		Status:    taskStatus{State: stateWorking, Timestamp: now()},
 		Artifacts: []artifact{{ArtifactID: runName + "-notice", Name: "notice", Parts: []textPart{{Kind: "text", Text: text}}}},
 	}
 }
@@ -418,13 +414,9 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 	}
 
 	// Honor the per-workflow concurrency cap. Without one, repeated A2A calls launch an unbounded
-	// number of runner Jobs, so an unset cap defaults to defaultMaxConcurrentRuns; an explicit 0
+	// number of runner Jobs, so an unset cap defaults to DefaultMaxConcurrentRuns; an explicit 0
 	// opts out (unlimited).
-	limit := int32(defaultMaxConcurrentRuns)
-	if rp := wf.Spec.Run; rp != nil && rp.MaxConcurrentRuns != nil {
-		limit = *rp.MaxConcurrentRuns
-	}
-	if limit > 0 {
+	if limit := wf.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
 		s.admitMu.Lock()
 		defer s.admitMu.Unlock()
 		active, err := s.countActiveRuns(ctx, wf.Name)
@@ -459,8 +451,8 @@ func (s *Server) createRun(ctx context.Context, text string) (*ottoflowv1alpha1.
 				Controller: &[]bool{true}[0],
 			}},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow":   wf.Name,
-				"ottoflow.nirmata.io/created-by": "serve-a2a",
+				ottoflowv1alpha1.WorkflowLabelKey: wf.Name,
+				"ottoflow.nirmata.io/created-by":  "serve-a2a",
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{
@@ -483,14 +475,13 @@ func (s *Server) countActiveRuns(ctx context.Context, wfName string) (int, error
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(s.wfNS),
-		client.MatchingLabels{"ottoflow.nirmata.io/workflow": wfName},
+		client.MatchingLabels{ottoflowv1alpha1.WorkflowLabelKey: wfName},
 	); err != nil {
 		return 0, err
 	}
 	active := 0
 	for i := range list.Items {
-		switch list.Items[i].Status.Phase {
-		case "", ottoflowv1alpha1.WorkflowRunPhasePending, ottoflowv1alpha1.WorkflowRunPhaseRunning:
+		if list.Items[i].Status.Phase.IsActive() {
 			active++
 		}
 	}
@@ -523,14 +514,12 @@ func (s *Server) pollToTerminal(ctx context.Context, name string, onHeartbeat fu
 		if err := s.client.Get(ctx, client.ObjectKey{Namespace: s.wfNS, Name: name}, &run); err != nil {
 			return nil, fmt.Errorf("getting workflowrun %s: %w", name, err)
 		}
-		switch run.Status.Phase {
-		case ottoflowv1alpha1.WorkflowRunPhaseSucceeded, ottoflowv1alpha1.WorkflowRunPhaseFailed:
+		if run.Status.Phase.IsTerminal() {
 			return &run, nil
-		default:
-			if onHeartbeat != nil && time.Since(lastBeat) >= heartbeatEvery {
-				onHeartbeat()
-				lastBeat = time.Now()
-			}
+		}
+		if onHeartbeat != nil && time.Since(lastBeat) >= heartbeatEvery {
+			onHeartbeat()
+			lastBeat = time.Now()
 		}
 	}
 }

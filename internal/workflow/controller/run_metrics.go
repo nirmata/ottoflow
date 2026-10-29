@@ -89,7 +89,7 @@ func recordRunTransition(old, current *ottoflowv1alpha1.WorkflowRun) {
 	// to be non-terminal keeps a terminal-to-terminal update from counting the
 	// run twice — a cron run marked Failed for Replace whose runner then
 	// persists Succeeded is one.
-	if runIsTerminal(old) || !runIsTerminal(current) {
+	if old.Status.Phase.IsTerminal() || !current.Status.Phase.IsTerminal() {
 		return
 	}
 

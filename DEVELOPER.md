@@ -254,7 +254,7 @@ pull requests. Its jobs:
 - **verify-codegen** — `make verify-codegen`; fails if generated CRDs, deepcopy code, or docs
   (CRD API reference, CLI reference) are stale or uncommitted.
 - **validate-samples** — builds the CLI, then `ottoflow validate --workflow-dir samples`.
-- **test** — `make test` (with cached envtest binaries for Kubernetes 1.29.0).
+- **test** — `make test` (with cached envtest binaries for Kubernetes 1.36.2).
 - **images** — on pushes to `main` (not on PRs or tags), builds and pushes all four
   container images with `ko` to `ghcr.io/nirmata/ottoflow`.
 

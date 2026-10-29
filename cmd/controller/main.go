@@ -89,6 +89,7 @@ func main() {
 	var secretRefAllowedNamespacesFlag string
 	var webhookTriggerAddr string
 	var mcpAddr string
+	var callbackAddr string
 	var mcpCallerNamespace string
 	var serveA2AImage string
 	var serveA2AServiceAccount string
@@ -190,6 +191,8 @@ func main() {
 	logConfig := textlogger.NewConfig()
 	flag.StringVar(&mcpAddr, "mcp-addr", "",
 		"The address the MCP server binds to, serving Workflows as MCP tools. Empty disables it.")
+	flag.StringVar(&callbackAddr, "callback-addr", ":8084",
+		"The address the workflow callback server binds to.")
 	flag.StringVar(&mcpCallerNamespace, "mcp-caller-namespace", "",
 		"Namespace in which SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/mcp-caller for MCP callers. "+
 			"Defaults to --namespace.")
@@ -307,7 +310,7 @@ func main() {
 
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
-	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, ":8084")
+	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, callbackAddr)
 	callbackServer.ControllerNamespace = namespace
 	if err := mgr.Add(callbackServer); err != nil {
 		setupLog.Error(err, "unable to add callback server to manager")
