@@ -517,6 +517,9 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				e.emitStepEventWarning(workflow, workflowRun, fmt.Sprintf("Step %q failed: %v", stepName, err))
 				e.invokeProgressCallback(workflowRun, workflow)
 				if step.FailurePolicy == ottoflowv1alpha1.FailurePolicyContinue {
+					if !live {
+						return cancelledContinueErr(ctx, stepName, err)
+					}
 					continue
 				}
 				e.recordWorkflowFailure(workflow, workflowRun, fmt.Sprintf("Step %s failed: %v", stepName, err))
@@ -593,6 +596,9 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				e.invokeProgressCallback(workflowRun, workflow)
 
 				if step.FailurePolicy == ottoflowv1alpha1.FailurePolicyContinue {
+					if !live {
+						return cancelledContinueErr(ctx, stepName, err)
+					}
 					e.saveCheckpoint(ctx, workflowRun, stepName)
 					continue
 				}
@@ -688,6 +694,12 @@ func markIfLive(live bool, err error) error {
 		return err
 	}
 	return failedBeforeCancel{err}
+}
+
+// cancelledContinueErr stops the run so the runner's interrupted path stores the step Pending; %v (not %w) on err drops any child ErrFailedBeforeCancel marker.
+// A step whose own failure is seen after SIGTERM also counts as interrupted and reruns on retry.
+func cancelledContinueErr(ctx context.Context, stepName string, err error) error {
+	return fmt.Errorf("step %s interrupted after failure: %v: %w", stepName, err, ctx.Err())
 }
 
 func (e *WorkflowExecutor) recordWorkflowFailure(
