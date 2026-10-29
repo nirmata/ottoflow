@@ -697,6 +697,7 @@ func markIfLive(live bool, err error) error {
 }
 
 // cancelledContinueErr stops the run so the runner's interrupted path stores the step Pending; %v (not %w) on err drops any child ErrFailedBeforeCancel marker.
+// A step whose own failure is seen after SIGTERM also counts as interrupted and reruns on retry.
 func cancelledContinueErr(ctx context.Context, stepName string, err error) error {
 	return fmt.Errorf("step %s interrupted after failure: %v: %w", stepName, err, ctx.Err())
 }
