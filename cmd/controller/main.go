@@ -77,6 +77,7 @@ func main() {
 	var workflowRunnerImage string
 	var workflowRunnerServiceAccount string
 	var workflowRunnerClusterRole string
+	var legacyRunnerClusterRole, legacyRunnerServiceAccount string
 	var agentExecutorCallerClusterRole string
 	var runnerConfigMapWriterClusterRole string
 	var workflowRunnerAgentExecutorCASecret string
@@ -123,6 +124,12 @@ func main() {
 		"Service account name for the workflow runner Job. If empty, derived from Workflow name as {workflow-name}-runner.")
 	flag.StringVar(&workflowRunnerClusterRole, "workflow-runner-cluster-role", os.Getenv("WORKFLOW_RUNNER_CLUSTER_ROLE"),
 		"ClusterRole name for runner Job RBAC (required; the Helm chart sets this to <release>-runner-role).")
+	flag.StringVar(&legacyRunnerClusterRole, "legacy-runner-cluster-role", os.Getenv("LEGACY_RUNNER_CLUSTER_ROLE"),
+		"This release's controller ClusterRole (<release>-role). At startup the leader deletes runner "+
+			"ClusterRoleBindings bound to it that predate the per-workflow runner ServiceAccount; empty disables (optional).")
+	flag.StringVar(&legacyRunnerServiceAccount, "legacy-runner-service-account",
+		os.Getenv("LEGACY_RUNNER_SERVICE_ACCOUNT"),
+		"This release's controller ServiceAccount; only its legacy runner bindings are deleted; empty disables (optional).")
 	flag.StringVar(&runnerConfigMapWriterClusterRole, "runner-configmap-writer-cluster-role",
 		os.Getenv("RUNNER_CONFIGMAP_WRITER_CLUSTER_ROLE"),
 		"ClusterRole bound per run namespace to give runners ConfigMap write access there; empty disables (optional).")
@@ -359,6 +366,13 @@ func main() {
 			setupLog.Error(err, "unable to add MCP server to manager")
 			os.Exit(1)
 		}
+	}
+
+	if err := mgr.Add(workflowcontroller.NewLegacyRunnerBindingGC(
+		mgr.GetClient(), mgr.GetAPIReader(),
+		legacyRunnerClusterRole, legacyRunnerServiceAccount, workflowRunnerServiceAccount)); err != nil {
+		setupLog.Error(err, "unable to add legacy runner binding GC to manager")
+		os.Exit(1)
 	}
 
 	runMetrics := workflowcontroller.NewRunMetrics(mgr.GetCache(), mgr.GetClient())
