@@ -1,9 +1,9 @@
 {{- if and .Values.controller.mcp .Values.controller.mcp.enabled .Values.rbac.create }}
-# MCP auth ClusterRole - lets the controller authenticate and authorize MCP
-# callers. TokenReview turns the caller's bearer token into an identity;
-# SubjectAccessReview asks whether that identity may get the mcp-caller
-# ConfigMap. Aggregated into the controller role only while the MCP server is
-# enabled, so a deployment that does not serve MCP never holds these verbs.
+# MCP auth ClusterRole - lets the controller authenticate MCP callers.
+# TokenReview turns the caller's bearer token into an identity. Aggregated into
+# the controller role only while the MCP server is enabled, so a deployment that
+# does not serve MCP never holds this verb. SubjectAccessReview is in the core
+# role, since the admission webhook needs it too.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -18,12 +18,6 @@ rules:
       - authentication.k8s.io
     resources:
       - tokenreviews
-    verbs:
-      - create
-  - apiGroups:
-      - authorization.k8s.io
-    resources:
-      - subjectaccessreviews
     verbs:
       - create
 {{- end }}
