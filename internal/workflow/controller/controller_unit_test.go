@@ -1619,6 +1619,7 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 	x509Err := &url.Error{Op: "Get", URL: "https://apiserver", Err: x509.UnknownAuthorityError{}}
 	goaway := &url.Error{Op: "Get", URL: "https://apiserver", Err: errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=3, ErrCode=NO_ERROR, debug=\"\"")}
 	urlEOF := &url.Error{Op: "Get", URL: "https://apiserver", Err: io.EOF}
+	tlsAlert := &url.Error{Op: "Get", URL: "https://apiserver", Err: &net.OpError{Op: "remote error", Err: errors.New("remote error: tls: bad certificate")}}
 	urlTimeout := &url.Error{Op: "Get", URL: "https://apiserver", Err: context.DeadlineExceeded}
 	runnerKey := func(k client.ObjectKey) bool { return k.Namespace == runNS }
 	sourceKey := func(k client.ObjectKey) bool { return k.Namespace == srcNS }
@@ -1668,6 +1669,7 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testin
 		{"runner Get GOAWAY", getErr(runnerKey, goaway), true, false},
 		{"runner Get EOF", getErr(runnerKey, urlEOF), true, false},
 		{"runner Get timeout", getErr(runnerKey, urlTimeout), true, false},
+		{"runner Get fatal TLS alert", getErr(runnerKey, tlsAlert), true, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
