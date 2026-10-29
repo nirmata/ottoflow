@@ -81,8 +81,10 @@ const (
 	// exitInterrupted is 128+SIGTERM. It must be non-zero: the controller reads exit 0 as "run complete".
 	exitInterrupted = 143
 	// persistTimeout bounds a post-signal write. The interrupted path shares one budget for the
-	// checkpoint flush and the status update; the failure and success paths use it per write.
-	persistTimeout = 5 * time.Second
+	// checkpoint flush and the status update; failure uses it per write, success shares it with the Job read.
+	persistTimeout   = 5 * time.Second
+	jobCheckTimeout  = 2 * time.Second
+	jobCheckInterval = 300 * time.Millisecond
 	// otelFlushTimeout bounds the span flush deferred in run().
 	otelFlushTimeout = 5 * time.Second
 	// defaultHardStop is how long after the signal the runner force-exits, whatever it is doing.
@@ -784,6 +786,14 @@ func persistExecutionSuccess(
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	jobName, podName string,
 ) {
+	writeCtx, cancel := boundedCtx(ctx)
+	defer cancel()
+	jobKey := client.ObjectKey{Namespace: runKey.Namespace, Name: jobName}
+	if ctx.Err() != nil && jobDeadlineExceeded(writeCtx, controlClient, jobKey) {
+		klog.InfoS("Job carries a DeadlineExceeded condition; not writing success so the controller fails the run",
+			append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, runKey.Namespace, runKey.Name), "job", jobName)...)
+		return
+	}
 	end := metav1.Now()
 	// A resumed run still carries the marker markInterrupted wrote; a normal success writes no message.
 	if workflowRun.Status.Message == interruptedMessage {
@@ -797,11 +807,43 @@ func persistExecutionSuccess(
 	workflowRun.Status.Execution.PodName = podName
 	workflowRun.Status.Execution.Message = workflowRun.Status.Message
 	workflowRun.Status.Execution.CompletionTime = &end
-	if err := persistBounded(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	err := persistWorkflowRunStatus(writeCtx, controlClient, runKey, workflowRun.Status, preserveDeadlineFailure)
+	if err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, string(workflowRun.Status.Phase))
 		klog.ErrorS(err, "workflow succeeded but failed to persist final status", keys...)
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+}
+
+// jobDeadlineExceeded skips only on a recorded DeadlineExceeded condition, not the clock alone; read errors fail open.
+func jobDeadlineExceeded(ctx context.Context, c client.Client, key client.ObjectKey) bool {
+	ctx, cancel := context.WithTimeout(ctx, jobCheckTimeout)
+	defer cancel()
+	tick := time.NewTicker(jobCheckInterval)
+	defer tick.Stop()
+	for {
+		job := &batchv1.Job{}
+		if err := c.Get(ctx, key, job); err != nil {
+			klog.InfoS("could not read Job before the success write",
+				logging.KeyNamespace, key.Namespace, "job", key.Name, "error", err)
+			return false
+		}
+		for _, cond := range job.Status.Conditions {
+			if (cond.Type == batchv1.JobFailureTarget || cond.Type == batchv1.JobFailed) &&
+				cond.Status == corev1.ConditionTrue && cond.Reason == batchv1.JobReasonDeadlineExceeded {
+				return true
+			}
+		}
+		if job.Status.StartTime == nil || job.Spec.ActiveDeadlineSeconds == nil ||
+			job.Status.StartTime.Add(time.Duration(*job.Spec.ActiveDeadlineSeconds)*time.Second).After(time.Now()) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
 	}
 }
 

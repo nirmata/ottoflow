@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -427,6 +428,9 @@ func TestShutdownBudgetFitsGracePeriod(t *testing.T) {
 	// Normal interrupted path: shared flush+write budget plus the OTel flush deferred in run().
 	if normal := persistTimeout + otelFlushTimeout; normal > defaultHardStop {
 		t.Fatalf("normal interrupted path %s outlasts the hard stop %s", normal, defaultHardStop)
+	}
+	if persistTimeout-jobCheckTimeout < 3*time.Second {
+		t.Fatalf("Job check leaves the success write under 3s of %s", persistTimeout)
 	}
 }
 
@@ -915,6 +919,105 @@ func TestRerunStepClearsInterruptedMessage(t *testing.T) {
 			t.Logf("err=%v runPhase=%s step1=%s msg=%q error=%q", err, run.Status.Phase, got.Phase, got.Message, got.Error)
 			if got.Phase == ottoflowv1alpha1.StepPhasePending || strings.HasPrefix(got.Message, interruptedMessage) {
 				t.Fatalf("re-run step kept the interrupt note: %+v", got)
+			}
+		})
+	}
+}
+
+func deadlineCond(t batchv1.JobConditionType) batchv1.JobCondition {
+	return batchv1.JobCondition{Type: t, Status: corev1.ConditionTrue, Reason: batchv1.JobReasonDeadlineExceeded}
+}
+
+func deadlineJob(started time.Time, conds ...batchv1.JobCondition) *batchv1.Job {
+	start, deadline := metav1.NewTime(started), int64(60)
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "job", Namespace: "default"},
+		Spec:       batchv1.JobSpec{ActiveDeadlineSeconds: &deadline},
+		Status:     batchv1.JobStatus{StartTime: &start, Conditions: conds},
+	}
+}
+
+// After SIGTERM the runner writes success unless its Job already carries a DeadlineExceeded condition.
+func TestSuccessAfterSignalChecksJobDeadline(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
+	for _, tc := range []struct {
+		name        string
+		job         *batchv1.Job
+		getJob      func(ctx context.Context, n int, job *batchv1.Job) error
+		wantUpdates int
+		fast        bool
+		noSignal    bool
+	}{
+		{name: "FailureTarget observed", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget))},
+		{name: "Failed observed", job: deadlineJob(past, deadlineCond(batchv1.JobFailed))},
+		{name: "condition seen on second GET", job: deadlineJob(past),
+			getJob: func(_ context.Context, n int, job *batchv1.Job) error {
+				if n == 2 {
+					job.Status.Conditions = []batchv1.JobCondition{deadlineCond(batchv1.JobFailureTarget)}
+				}
+				return nil
+			}},
+		{name: "clock past, no condition", job: deadlineJob(past), wantUpdates: 1},
+		{name: "Forbidden", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget)), wantUpdates: 1, fast: true,
+			getJob: func(context.Context, int, *batchv1.Job) error {
+				return apierrors.NewForbidden(schema.GroupResource{Resource: "jobs"}, "job", fmt.Errorf("denied"))
+			}},
+		{name: "NotFound", wantUpdates: 1, fast: true},
+		{name: "hung GET", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget)), wantUpdates: 1,
+			getJob: func(ctx context.Context, _ int, _ *batchv1.Job) error { <-ctx.Done(); return ctx.Err() }},
+		{name: "deadline in the future", job: deadlineJob(time.Now()), wantUpdates: 1, fast: true},
+		{name: "no signal", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget)), wantUpdates: 1, fast: true,
+			noSignal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := newRun()
+			run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+			objs := []client.Object{run}
+			if tc.job != nil {
+				objs = append(objs, tc.job)
+			}
+			base, updates := ctxAwareClient(objs...)
+			jobGets := 0
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object,
+					opts ...client.GetOption) error {
+					err := c.Get(ctx, k, o, opts...)
+					if job, ok := o.(*batchv1.Job); ok {
+						jobGets++
+						if err == nil && tc.getJob != nil {
+							err = tc.getJob(ctx, jobGets, job)
+						}
+					}
+					return err
+				},
+			})
+			key := client.ObjectKeyFromObject(run)
+			inMemory := newRun()
+			inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if !tc.noSignal {
+				cancel()
+			}
+			start := time.Now()
+			code := runCapturingExit(t, func() int {
+				persistExecutionSuccess(ctx, c, key, inMemory, "job", "pod")
+				return 0
+			})
+			stored := mustLoadWorkflowRun(context.Background(), base, key)
+			wantPhase := ottoflowv1alpha1.WorkflowRunPhaseRunning
+			if tc.wantUpdates > 0 {
+				wantPhase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+			}
+			if code != 0 || *updates != tc.wantUpdates || stored.Status.Phase != wantPhase {
+				t.Fatalf("exit=%d updates=%d phase=%s; want exit=0 updates=%d phase=%s",
+					code, *updates, stored.Status.Phase, tc.wantUpdates, wantPhase)
+			}
+			if tc.noSignal && jobGets != 0 {
+				t.Fatalf("read the Job %d times without a signal; want 0", jobGets)
+			}
+			if elapsed := time.Since(start); tc.fast && elapsed > time.Second {
+				t.Fatalf("waited %s for a Job that needs no wait", elapsed)
 			}
 		})
 	}
