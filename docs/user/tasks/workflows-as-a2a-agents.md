@@ -79,8 +79,6 @@ readiness probe fetches the card, so it stays public). A caller must present
 2. that ServiceAccount may `invoke` `callers.gate.ottoflow.nirmata.io/a2a-caller` in the **Workflow's
    namespace** (checked with a SubjectAccessReview; nothing serves this resource).
 
-Upgrading: a Role you wrote by hand on `configmaps/a2a-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`. Creating that RoleBinding now needs `invoke` on `callers.gate.ottoflow.nirmata.io` or `bind` on `<fullname>-a2a-caller`; a namespace `admin` holds neither, so a cluster administrator creates the binding (or grants `bind` on that ClusterRole to the namespace admin).
-
 Any other request gets a bare `401 Unauthorized`; the reason is logged by serve-a2a at verbosity 4.
 A token minted with the default audience is rejected. On a cluster that issues legacy
 Secret-based ServiceAccount tokens, those are rejected too.
@@ -109,6 +107,8 @@ kubectl -n <ns> create rolebinding a2a-caller-<caller> \
 # mint a token for the caller
 kubectl -n <caller-ns> create token <caller-sa> --audience=ottoflow-a2a --duration=<d>
 ```
+
+Creating the `a2a-caller-<caller>` RoleBinding above needs `bind` on `<fullname>-a2a-caller` (or `invoke` on `callers.gate.ottoflow.nirmata.io`). A namespace `admin` holds neither, so a cluster administrator creates the binding or grants that `bind` to the namespace admin.
 
 If the `serve-a2a` ServiceAccount lacks the token-reviewer binding, every call is refused with
 401. serve-a2a runs a SelfSubjectAccessReview at startup and logs an error naming the missing

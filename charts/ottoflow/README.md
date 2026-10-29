@@ -161,11 +161,12 @@ agentExecutor:
 
 Runner ServiceAccounts hold ConfigMap `get`/`list`/`watch` cluster-wide but can write ConfigMaps (checkpoints, audit snapshots, `mutate` steps) only in the namespace of their run: the controller binds each runner ServiceAccount to `ottoflow-runner-configmap-writer` with a RoleBinding in that namespace. A `mutate` step that writes a ConfigMap in another namespace is denied unless you add a ConfigMap `update`/`patch` rule to `rbac.runnerClusterRole.extraResources` (see the example in `values.yaml`). With `rbac.create=false` the chart renders no such role and the controller creates no binding. The controller flag `--runner-configmap-writer-cluster-role` is new: an older controller image pinned through `controller.image.tag` exits at flag parse, so upgrade the image with the chart.
 
-**Breaking change:** caller gates (agent-executor, MCP, serve-a2a) check `invoke` on `callers.gate.ottoflow.nirmata.io/<name>` instead of `get` on `configmaps/<name>`.
-- Chart roles: for this release the MCP and agent-executor caller ClusterRoles grant both rules, so a server still on an older image keeps accepting chart-bound callers while it rolls; new images ignore the `configmaps` rule. The `configmaps` rule is removed in the next release. The serve-a2a gate first ships in this release, so `<fullname>-a2a-caller` grants `invoke` only.
-- serve-a2a: pods roll only when the controller re-upserts the Agent (controller start or within 10 minutes).
+**Breaking change:** the agent-executor and MCP caller gates check `invoke` on `callers.gate.ottoflow.nirmata.io/<name>` instead of `get` on `configmaps/<name>`; the new serve-a2a gate checks `invoke` only.
+- Chart roles: for this release the MCP and agent-executor caller ClusterRoles grant both rules, so a server still on an older image keeps accepting chart-bound callers while it rolls; new images ignore the `configmaps` rule. The `configmaps` rule is removed in the next release.
+- serve-a2a: images in v0.1.1, v0.1.2 and v5.0.0-rc.1 accepted unauthenticated A2A calls. After upgrading, every caller gets 401 until it presents a token and is bound to `a2a-caller`, and a pinned `serveA2A.image.tag` (or `fullOverride`) keeps the older image without the gate. Pods roll when the controller re-upserts the Agent (controller start or within 10 minutes).
 - Pinned images: before upgrading to the next release, make sure no `image.tag` or `image.fullOverride` under `controller` or `agentExecutor` pins an image older than this release, because an older image still checks `configmaps/<name>`.
 - Hand-written Roles on `configmaps/<caller>` must be re-granted with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
+- Creating a RoleBinding to a caller ClusterRole needs `bind` on that ClusterRole or every permission it grants. A namespace `admin` lacks `invoke`, so a cluster administrator creates the binding (the controller makes the agent-executor runner bindings itself).
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -188,7 +189,7 @@ subjects:
   - {kind: ServiceAccount, name: <caller-sa>, namespace: <caller-sa-namespace>}
 ```
 
-For MCP and agent-executor, bind `<fullname>-mcp-caller` or `<fullname>-agent-executor-caller` the same way, but put the RoleBinding in the namespace the server checks: the release namespace (`--mcp-caller-namespace`, `agentExecutor.callerNamespace`), not the Workflow's namespace.
+For MCP and agent-executor, bind `<fullname>-mcp-caller` or `<fullname>-agent-executor-caller` the same way, but put the RoleBinding in the namespace the server checks: the release namespace (`agentExecutor.callerNamespace` defaults to it; MCP uses `--mcp-caller-namespace`), not the Workflow's namespace.
 
 None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
 
