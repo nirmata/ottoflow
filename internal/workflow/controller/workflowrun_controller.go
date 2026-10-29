@@ -107,7 +107,7 @@ func retryable(err error) bool {
 	}
 	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
 		utilnet.IsProbableEOF(err) || utilnet.IsHTTP2ConnectionLost(err) || utilnet.IsTimeout(err) ||
-		errors.As(err, new(*net.OpError))
+		errors.As(err, new(*net.OpError)) // includes fatal remote TLS alerts; retried on purpose
 }
 
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
