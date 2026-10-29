@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	// CallerResourceName is the virtual ConfigMap whose "get" a caller must hold, in the
+	// CallerResourceName is the callers.gate.ottoflow.nirmata.io name whose "invoke" a caller must hold, in the
 	// Workflow's namespace, to run that Workflow over A2A. It is distinct from the MCP and
 	// agent-executor caller names so each grant can be given out on its own.
 	CallerResourceName = "a2a-caller"

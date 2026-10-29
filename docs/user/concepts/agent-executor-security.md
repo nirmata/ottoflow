@@ -6,21 +6,21 @@ This document explains how the agent executor authenticates and authorizes calle
 
 The **agent executor** is the service that runs agent steps for workflows. Workflow runner Jobs call it over HTTPS via `POST /api/exec/{namespace}/{agentName}` to execute agent tools. Only trusted identities—the OttoFlow controller and runner ServiceAccounts—should be able to call this service.
 
-Authorization is **RBAC-based**: the executor allows any identity that has a specific Kubernetes permission, checked via **SubjectAccessReview** (SAR). There is no allowlist of ServiceAccount names; who can call is determined entirely by ClusterRole and ClusterRoleBindings.
+Authorization is **RBAC-based**: the executor allows any identity that has a specific Kubernetes permission, checked via **SubjectAccessReview** (SAR). There is no allowlist of ServiceAccount names; who can call is determined entirely by RBAC (a ClusterRole or Role, bound with a ClusterRoleBinding or a RoleBinding in the checked namespace).
 
 ## How Authentication Works
 
 Every request to the agent executor (except health checks) must include a **Bearer token** (the caller’s ServiceAccount token). The executor then:
 
 1. **Validates the token** using the Kubernetes **TokenReview** API. This proves the token is valid and returns the identity (e.g. `system:serviceaccount:namespace:name`).
-2. **Checks authorization** using **SubjectAccessReview**: “Can this identity `get` the ConfigMap `agent-executor-caller` in namespace N?” (N is configurable, typically the release namespace.) Only identities that have been granted this permission via a ClusterRole and ClusterRoleBindings are allowed.
+2. **Checks authorization** using **SubjectAccessReview**: “Can this identity `invoke` `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in namespace N?” (N is configurable, typically the release namespace.) Only identities that have been granted this permission through a ClusterRole or Role bound with a ClusterRoleBinding or a RoleBinding (the check is namespaced, so either passes) are allowed.
 
 So: **authentication** is “who are you?” (TokenReview), and **authorization** is “are you allowed to call the agent executor?” (SAR).
 
 ## How It’s Set Up
 
 1. **ClusterRole**  
-   A ClusterRole grants a single, narrow permission: `get` on `configmaps` with `resourceNames: ["agent-executor-caller"]`. The ConfigMap does not need to exist; the permission is used only for the SAR check.
+   A ClusterRole grants the narrow permission: `invoke` on `callers` in API group `gate.ottoflow.nirmata.io` with `resourceNames: ["agent-executor-caller"]`. The resource is virtual and nothing serves it; the permission is used only for the SAR check, so ConfigMap read access never passes it. Upgrading: a hand-written Role on `configmaps/agent-executor-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`. The legacy `get configmaps/agent-executor-caller` rule is kept in the chart role for this release for older images; new images ignore it.
 
 2. **ClusterRoleBindings**  
    - The **controller** ServiceAccount is bound to this ClusterRole (so the controller, and runner Jobs in the same namespace, can call the agent executor).
@@ -33,7 +33,7 @@ So: **authentication** is “who are you?” (TokenReview), and **authorization*
 
 | What you control | How |
 |------------------|-----|
-| Who can call     | ClusterRoleBindings to the agent-executor-caller ClusterRole (controller creates these for runner SAs when `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` is set). |
+| Who can call     | ClusterRoleBindings, or RoleBindings in the checked namespace, to the agent-executor-caller ClusterRole (controller creates these for runner SAs when `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` is set). |
 | Namespace for SAR | `agentExecutor.callerNamespace` (Helm; default: release namespace) or `-agent-executor-caller-namespace` (flag). |
 
 With default Helm values, the controller receives `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` and creates the runner→caller bindings automatically.
@@ -42,7 +42,7 @@ With default Helm values, the controller receives `AGENT_EXECUTOR_CALLER_CLUSTER
 
 ### 1. Restrict Runner Permissions
 
-Runner ServiceAccounts need enough permissions to run workflows (resource queries, mutations, MCP, etc.). Follow least privilege: give the runner ClusterRole only the APIs and verbs your workflows need. The agent-executor-caller role is separate and only grants the narrow “get configmap/agent-executor-caller” permission used for the SAR check.
+Runner ServiceAccounts need enough permissions to run workflows (resource queries, mutations, MCP, etc.). Follow least privilege: give the runner ClusterRole only the APIs and verbs your workflows need. The agent-executor-caller role is separate and grants the narrow “invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller” permission used for the SAR check (the legacy `get configmaps/agent-executor-caller` rule is kept for this release for older images; new images ignore it).
 
 ### 2. Use TLS and Restrict Network Access
 
@@ -61,7 +61,7 @@ The executor’s “caller namespace” (used in the SAR check) should match whe
 
 ### 5. Audit Who Has the Caller Role
 
-Periodically list ClusterRoleBindings that reference the agent-executor-caller ClusterRole. Only the controller and runner SAs should be bound. Remove any bindings that are no longer needed (e.g. after decommissioning a namespace).
+Periodically list ClusterRoleBindings and RoleBindings (in the checked namespace) that reference the agent-executor-caller ClusterRole, and any Role or ClusterRole granting `invoke` on `callers.gate.ottoflow.nirmata.io`. Only the controller and runner SAs should be bound; identities with wildcard permissions (such as `cluster-admin`) also pass. Remove any bindings that are no longer needed (e.g. after decommissioning a namespace).
 
 ### 6. Multi-Tenant or Multi-Namespace Setups
 
