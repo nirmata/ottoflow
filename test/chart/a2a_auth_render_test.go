@@ -109,14 +109,11 @@ func TestA2AAuthRoles_ExactRules(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing ClusterRole %s", a2aCallerRole)
 	}
-	if len(caller.Rules) != 2 {
-		t.Fatalf("caller rules = %+v, want the invoke rule and the legacy get rule", caller.Rules)
+	if len(caller.Rules) != 1 {
+		t.Fatalf("caller rules = %+v, want exactly one", caller.Rules)
 	}
 	if !ruleIs(caller.Rules[0], "gate.ottoflow.nirmata.io", "callers", "a2a-caller", "invoke") {
 		t.Errorf("caller rule = %+v, want invoke callers.gate.ottoflow.nirmata.io/a2a-caller", caller.Rules[0])
-	}
-	if !ruleIs(caller.Rules[1], "", "configmaps", "a2a-caller", "get") {
-		t.Errorf("caller rule = %+v, want legacy get configmaps/a2a-caller", caller.Rules[1])
 	}
 }
 

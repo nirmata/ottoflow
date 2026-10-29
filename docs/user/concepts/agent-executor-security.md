@@ -20,7 +20,7 @@ So: **authentication** is “who are you?” (TokenReview), and **authorization*
 ## How It’s Set Up
 
 1. **ClusterRole**  
-   A ClusterRole grants a single, narrow permission: `invoke` on `callers` in API group `gate.ottoflow.nirmata.io` with `resourceNames: ["agent-executor-caller"]`. The resource is virtual and nothing serves it; the permission is used only for the SAR check, so ConfigMap read access never passes it. Upgrading: a hand-written Role on `configmaps/agent-executor-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`. The legacy `get configmaps/agent-executor-caller` rule is kept in the chart role for this release for older images; new images ignore it.
+   A ClusterRole grants the narrow permission: `invoke` on `callers` in API group `gate.ottoflow.nirmata.io` with `resourceNames: ["agent-executor-caller"]`. The resource is virtual and nothing serves it; the permission is used only for the SAR check, so ConfigMap read access never passes it. Upgrading: a hand-written Role on `configmaps/agent-executor-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`. The legacy `get configmaps/agent-executor-caller` rule is kept in the chart role for this release for older images; new images ignore it.
 
 2. **ClusterRoleBindings**  
    - The **controller** ServiceAccount is bound to this ClusterRole (so the controller, and runner Jobs in the same namespace, can call the agent executor).
