@@ -3501,6 +3501,58 @@ func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey
 	})
 }
 
+// The runner Job states its grace period and passes the runner its hard stop; an author's
+// spec.execution.job.env entry of the same name comes last, so it wins.
+func TestBuildWorkflowRunnerJob_ShutdownGraceAndHardStop(t *testing.T) {
+	for name, tc := range map[string]struct {
+		authorEnv []corev1.EnvVar
+		want      string
+	}{
+		"default":         {want: executor.RunnerShutdownHardStop.String()},
+		"author override": {authorEnv: []corev1.EnvVar{{Name: executor.RunnerShutdownHardStopEnv, Value: "20s"}}, want: "20s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "grace-run", Namespace: defaultNamespace},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf"},
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+						Job: &ottoflowv1alpha1.WorkflowRunJobSpec{Env: tc.authorEnv},
+					},
+				},
+			}
+			r := &WorkflowRunReconciler{
+				Client:       fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr).Build(),
+				Scheme:       unitTestScheme,
+				RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager"},
+			}
+			job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
+			if err != nil {
+				t.Fatalf("buildWorkflowRunnerJob: %v", err)
+			}
+			// A pod being deleted must not count as failed until it has exited, or the retry Job starts
+			// while the interrupted runner is still writing its status.
+			if p := job.Spec.PodReplacementPolicy; p == nil || *p != batchv1.Failed {
+				t.Errorf("podReplacementPolicy = %v, want %s", p, batchv1.Failed)
+			}
+			spec := job.Spec.Template.Spec
+			if g := spec.TerminationGracePeriodSeconds; g == nil ||
+				*g != int64(executor.RunnerTerminationGracePeriod/time.Second) {
+				t.Errorf("terminationGracePeriodSeconds = %v, want %d", g, int64(executor.RunnerTerminationGracePeriod/time.Second))
+			}
+			got := ""
+			for _, e := range spec.Containers[0].Env {
+				if e.Name == executor.RunnerShutdownHardStopEnv {
+					got = e.Value // the container environment keeps the last entry of a name
+				}
+			}
+			if got != tc.want {
+				t.Errorf("%s = %q, want %q", executor.RunnerShutdownHardStopEnv, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{

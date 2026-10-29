@@ -697,6 +697,10 @@ func (e *CELEvaluator) EvaluateOutputValue(ctx context.Context, value interface{
 		if err == nil {
 			return result, nil
 		}
+		// A cancel is not an ordinary evaluation failure: the literal fallback would store the expression text as the value.
+		if ctx.Err() != nil {
+			return nil, err
+		}
 		// Evaluation failed or not a CEL expression, return literal string
 		return v, nil
 

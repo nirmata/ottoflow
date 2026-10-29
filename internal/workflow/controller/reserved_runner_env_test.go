@@ -200,6 +200,8 @@ func TestReservedRunnerEnvNames_CoverEveryControllerEnvAheadOfAuthorEntries(t *t
 	// is a deliberate decision that the variable carries no authority.
 	unreservedByDesign := map[string]string{
 		"PROMETHEUS_URL": "nothing in the runner reads it from the environment; it carries no authority",
+		"OTTOFLOW_SHUTDOWN_HARD_STOP": "raising it only delays the author's own runner's exit, " +
+			"which the pod's grace period still caps",
 	}
 	var ahead []string
 	for _, e := range env[:markerAt] {

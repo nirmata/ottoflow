@@ -18,6 +18,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -294,6 +295,13 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 			}
 		} else {
 			job = createdJob
+			if createdJob.Spec.PodReplacementPolicy == nil {
+				warnPodReplacementPolicyDropped.Do(func() {
+					logger.Info("the API server dropped the runner Job's podReplacementPolicy (JobPodReplacementPolicy "+
+						"feature gate off?); a retry may start while an interrupted runner is still writing its status",
+						"job", jobKey)
+				})
+			}
 		}
 	} else if sa := job.Spec.Template.Spec.ServiceAccountName; sa != "" && !workflowRunUsesExplicitRunnerServiceAccount(workflowRun) {
 		// Existing Job may predate the writer binding; log and fall through so Job supervision below still runs.
@@ -342,7 +350,11 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if job.Status.Active > 0 && workflowRun.Status.Execution != nil {
+	// An active Job may still be replacing a failed pod. Keep that pod's diagnostic until
+	// the replacement runner writes its own Running execution status at startup.
+	if job.Status.Active > 0 && workflowRun.Status.Execution != nil &&
+		(workflowRun.Status.Execution.JobName != jobName ||
+			workflowRun.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 		newPhase := string(ottoflowv1alpha1.WorkflowRunPhaseRunning)
 		newMsg := "Runner Job is running"
 		if workflowRun.Status.Execution.Phase != newPhase || workflowRun.Status.Execution.Message != newMsg {
@@ -352,7 +364,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if job.Status.Failed > 0 && !workflowRun.Status.Phase.IsTerminal() {
+	if jobFailureConfirmed(job) && !workflowRun.Status.Phase.IsTerminal() {
 		result, handled, err := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		if handled {
 			return result, err
@@ -412,6 +424,10 @@ func resolveWorkflow(ctx context.Context, c client.Client, controllerNamespace s
 	return nil, "", fmt.Errorf("failed to get Workflow %s: %w", workflowKey, err)
 }
 
+// warnPodReplacementPolicyDropped logs once per process when the API server dropped the runner Job's
+// podReplacementPolicy.
+var warnPodReplacementPolicyDropped sync.Once
+
 func workflowRunnerJobName(runName string) string {
 	base := strings.ToLower(fmt.Sprintf("%s-runner", runName))
 	base = strings.ReplaceAll(base, "_", "-")
@@ -431,6 +447,20 @@ func workflowRunnerJobName(runName string) string {
 func jobConditionTrue(job *batchv1.Job, t batchv1.JobConditionType) bool {
 	for _, c := range job.Status.Conditions {
 		if c.Type == t && c.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// jobFailureConfirmed distinguishes a failed Job from failed pods awaiting a same-Job replacement.
+// A deadline FailureTarget is authoritative even before the terminating pods are counted as failed.
+func jobFailureConfirmed(job *batchv1.Job) bool {
+	if jobConditionTrue(job, batchv1.JobFailed) {
+		return true
+	}
+	for _, c := range job.Status.Conditions {
+		if c.Type == batchv1.JobFailureTarget && c.Status == corev1.ConditionTrue && c.Reason == batchv1.JobReasonDeadlineExceeded {
 			return true
 		}
 	}
@@ -1332,6 +1362,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
 			},
 		},
+		{Name: executor.RunnerShutdownHardStopEnv, Value: executor.RunnerShutdownHardStop.String()},
 	}
 	if secretMountsJSON != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: secretmount.EnvVar, Value: secretMountsJSON})
@@ -1394,6 +1425,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttlSecondsAfterFinished,
 			ActiveDeadlineSeconds:   activeDeadlineSeconds,
+			// Count a deleted pod as failed only once it has exited. The default counts it at once, so
+			// the retry Job started while the interrupted runner was still writing its status.
+			PodReplacementPolicy: ptr.To(batchv1.Failed),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: runnerPodLabels,
@@ -1439,6 +1473,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 							},
 						},
 					},
+					TerminationGracePeriodSeconds: ptr.To(int64(executor.RunnerTerminationGracePeriod / time.Second)),
 				},
 			},
 		},
@@ -1688,6 +1723,11 @@ func setRunFailed(workflowRun *ottoflowv1alpha1.WorkflowRun, message string, rea
 // markRunTerminallyFailed marks a WorkflowRun as Failed and cleans up the checkpoint ConfigMap.
 func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, jobName, terminationReason string, attempts int32) (ctrl.Result, bool, error) {
 	now := metav1.Now()
+	runnerFailureMessage := ""
+	if execution := workflowRun.Status.Execution; execution != nil &&
+		execution.JobName == jobName && execution.Phase == string(ottoflowv1alpha1.WorkflowRunPhaseFailed) {
+		runnerFailureMessage = execution.Message
+	}
 	var msg string
 	switch {
 	case isDeterministicTermination(terminationReason):
@@ -1705,6 +1745,10 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	workflowRun.Status.Execution.Phase = string(ottoflowv1alpha1.WorkflowRunPhaseFailed)
 	workflowRun.Status.Execution.JobName = jobName
 	workflowRun.Status.Execution.Message = msg
+	if runnerFailureMessage != "" {
+		// Keep the runner's actionable cause; the run-level message records the Job verdict.
+		workflowRun.Status.Execution.Message = runnerFailureMessage
+	}
 	workflowRun.Status.Execution.CompletionTime = &now
 	workflowRun.Status.Execution.LastTerminationReason = terminationReason
 	// Delete before update: prevents a racing new runner from reading a stale checkpoint
@@ -1889,11 +1933,8 @@ func (r *WorkflowRunReconciler) resumeRunnerJob(ctx context.Context, req ctrl.Re
 		res, _, hfErr := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		return res, false, hfErr
 	default:
-		// Job exists and is still active ⇒ resume already in progress. Do NOT proceed: falling
-		// through to the normal Job-creation block would hit its crude job.Status.Failed>0 check
-		// instead of the JobFailed-*condition* gate above, so monitoring stays here where that
-		// gate is authoritative for backoffLimit>0 (a transient first-pod failure sets Failed>0
-		// with no JobFailed condition yet).
+		// Job has not reached the completion/failure branches above. Keep monitoring here
+		// while the callback is pending, including same-Job pod retries with Failed>0.
 		if err := ensureRunning(); err != nil {
 			return ctrl.Result{}, false, err
 		}
