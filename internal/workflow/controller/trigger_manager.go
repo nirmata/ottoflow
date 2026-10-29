@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,6 +90,11 @@ type dedupEntry struct {
 // override this default via an explicit DedupWindow.
 const defaultDedupWindow = 10 * time.Minute
 
+const (
+	watchReopenDelay    = time.Second
+	watchReopenMaxDelay = 30 * time.Second
+)
+
 // runnerManagedLabel marks Jobs/Pods created by OttoFlow's WorkflowRun controller.
 const runnerManagedLabel = "ottoflow.nirmata.io/workflowrun"
 
@@ -135,7 +141,7 @@ type TriggerManager struct {
 	scheme           *runtime.Scheme
 	scheduler        *Scheduler
 	eventWatchers    map[string]watch.Interface
-	stopChans        map[string]chan struct{}
+	stopCancels      map[string]context.CancelFunc
 	eventWorkflowMap map[string]*ottoflowv1alpha1.Workflow
 	eventSpecMap     map[string]*ottoflowv1alpha1.EventTrigger
 	// triggerCELEnv is a minimal CEL environment exposing only `object` for trigger-level
@@ -166,7 +172,7 @@ func NewTriggerManager(client client.Client, scheme *runtime.Scheme, scheduler *
 		scheme:           scheme,
 		scheduler:        scheduler,
 		eventWatchers:    make(map[string]watch.Interface),
-		stopChans:        make(map[string]chan struct{}),
+		stopCancels:      make(map[string]context.CancelFunc),
 		eventWorkflowMap: make(map[string]*ottoflowv1alpha1.Workflow),
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
@@ -203,7 +209,7 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 		scheme:           scheme,
 		scheduler:        scheduler,
 		eventWatchers:    make(map[string]watch.Interface),
-		stopChans:        make(map[string]chan struct{}),
+		stopCancels:      make(map[string]context.CancelFunc),
 		eventWorkflowMap: make(map[string]*ottoflowv1alpha1.Workflow),
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
@@ -215,6 +221,8 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow) error {
 	logger := log.FromContext(ctx)
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
+
+	tm.pruneTriggers(workflowKey, workflow.Spec.Triggers)
 
 	for i, trigger := range workflow.Spec.Triggers {
 		if trigger.Cron != nil && tm.scheduler != nil {
@@ -241,34 +249,56 @@ func (tm *TriggerManager) RegisterWorkflow(ctx context.Context, workflow *ottofl
 func (tm *TriggerManager) UnregisterWorkflow(ctx context.Context, workflow *ottoflowv1alpha1.Workflow) error {
 	workflowKey := client.ObjectKeyFromObject(workflow).String()
 
-	for i := range workflow.Spec.Triggers {
-		cronKey := fmt.Sprintf("%s-cron-%d", workflowKey, i)
-		if tm.scheduler != nil {
-			tm.scheduler.RemoveSchedule(cronKey)
-		}
-		eventKey := fmt.Sprintf("%s-event-%d", workflowKey, i)
-		if err := tm.unregisterEventTrigger(eventKey); err != nil {
-			return err
-		}
-	}
+	tm.pruneTriggers(workflowKey, nil)
 
 	return nil
 }
 
-// stopWatchersForKey stops and removes all watchers whose keys equal key or are
-// prefixed by key (e.g. key + "-resource-0"). Used by both registerEventTrigger
+func isDigits(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789") == ""
+}
+
+// pruneTriggers unregisters every cron and event trigger of workflowKey that is
+// not a trigger of the same kind in triggers (nil prunes all).
+func (tm *TriggerManager) pruneTriggers(workflowKey string, triggers []ottoflowv1alpha1.Trigger) {
+	for key := range tm.eventSpecMap {
+		if staleTriggerKey(key, workflowKey+"-event-", triggers, func(t ottoflowv1alpha1.Trigger) bool { return t.Event != nil }) {
+			tm.unregisterEventTrigger(key)
+		}
+	}
+	if tm.scheduler != nil {
+		for _, key := range tm.scheduler.scheduleKeys() {
+			if staleTriggerKey(key, workflowKey+"-cron-", triggers, func(t ottoflowv1alpha1.Trigger) bool { return t.Cron != nil }) {
+				tm.scheduler.RemoveSchedule(key)
+			}
+		}
+	}
+}
+
+// staleTriggerKey reports whether key is prefix+N and triggers[N] is missing or fails want.
+func staleTriggerKey(key, prefix string, triggers []ottoflowv1alpha1.Trigger, want func(ottoflowv1alpha1.Trigger) bool) bool {
+	idx, ok := strings.CutPrefix(key, prefix)
+	if !ok || !isDigits(idx) {
+		return false
+	}
+	i, err := strconv.Atoi(idx)
+	return err != nil || i >= len(triggers) || !want(triggers[i])
+}
+
+// stopWatchersForKey stops and removes all watchers whose keys are key + "-resource-" + digits. Used by both registerEventTrigger
 // (to clean up before re-registering) and unregisterEventTrigger.
 func (tm *TriggerManager) stopWatchersForKey(key string) {
 	keysToRemove := []string{}
+	prefix := key + "-resource-"
 	for k := range tm.eventWatchers {
-		if k == key || strings.HasPrefix(k, key+"-") {
+		if idx, ok := strings.CutPrefix(k, prefix); ok && isDigits(idx) {
 			keysToRemove = append(keysToRemove, k)
 		}
 	}
 	for _, k := range keysToRemove {
-		if stopChan, exists := tm.stopChans[k]; exists {
-			close(stopChan)
-			delete(tm.stopChans, k)
+		if cancel, exists := tm.stopCancels[k]; exists {
+			cancel()
+			delete(tm.stopCancels, k)
 		}
 		if watcher, exists := tm.eventWatchers[k]; exists {
 			watcher.Stop()
@@ -399,39 +429,32 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 		opts.LabelSelector += "," + ottoflowv1alpha1.WorkflowLabelKey + "!=" + workflow.Name
 	}
 
-	var watcher watch.Interface
-	if tm.watcherFactory != nil {
-		var err error
-		watcher, err = tm.watcherFactory.Watch(ctx, gvr, resource.Namespace, opts)
-		if err != nil {
-			return fmt.Errorf("failed to create watcher: %w", err)
+	wctx, cancel := context.WithCancel(ctx)
+	openWatch := func() (watch.Interface, error) {
+		if tm.watcherFactory != nil {
+			return tm.watcherFactory.Watch(wctx, gvr, resource.Namespace, opts)
 		}
-	} else {
 		if tm.dynamicClient == nil {
-			return fmt.Errorf("dynamic client not initialized")
+			return nil, fmt.Errorf("dynamic client not initialized")
 		}
-		var resourceInterface dynamic.ResourceInterface
 		if resource.Namespace != "" {
-			resourceInterface = tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace)
-		} else {
-			resourceInterface = tm.dynamicClient.Resource(gvr)
+			return tm.dynamicClient.Resource(gvr).Namespace(resource.Namespace).Watch(wctx, opts)
 		}
-		var err error
-		watcher, err = resourceInterface.Watch(ctx, opts)
-		if err != nil {
-			return fmt.Errorf("failed to create watcher: %w", err)
-		}
+		return tm.dynamicClient.Resource(gvr).Watch(wctx, opts)
+	}
+	watcher, err := openWatch()
+	if err != nil {
+		cancel()
+		return fmt.Errorf("failed to create watcher: %w", err)
 	}
 
 	// Store watcher
 	tm.eventWatchers[key] = watcher
 
-	// Create stop channel for this watcher
-	stopChan := make(chan struct{})
-	tm.stopChans[key] = stopChan
+	tm.stopCancels[key] = cancel
 
 	// Start watching in goroutine
-	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, stopChan)
+	go tm.watchEvents(ctx, eventKey, workflow, eventSpec, watcher, wctx.Done(), openWatch)
 
 	logger.Info("Registered event trigger", "resource", gvk, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "key", key)
 
@@ -441,9 +464,9 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 // watchEvents watches for events and creates WorkflowRuns.
 // eventKey is the bare event key used as the dedup scope — scoped to the trigger,
 // not to a single resource watcher, so unregisterEventTrigger can clean it up.
-func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan chan struct{}) {
+func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func() (watch.Interface, error)) {
 	logger := log.FromContext(ctx)
-	defer watcher.Stop()
+	defer func() { watcher.Stop() }()
 
 	for {
 		select {
@@ -453,8 +476,13 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			return
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				// Channel closed
-				return
+				w, reopened := tm.reopenWatch(ctx, stopChan, openWatch, workflow)
+				if !reopened {
+					return
+				}
+				watcher.Stop()
+				watcher = w
+				continue
 			}
 
 			// Dynamic watches always return *unstructured.Unstructured.
@@ -473,8 +501,29 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 	}
 }
 
+// reopenWatch re-creates a watch whose result channel closed, retrying with
+// exponential backoff until ctx or stopChan is done (reopened=false).
+func (tm *TriggerManager) reopenWatch(ctx context.Context, stopChan <-chan struct{}, openWatch func() (watch.Interface, error), workflow *ottoflowv1alpha1.Workflow) (watch.Interface, bool) {
+	delay := watchReopenDelay
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-stopChan:
+			return nil, false
+		case <-time.After(delay):
+		}
+		w, err := openWatch()
+		if err == nil {
+			return w, true
+		}
+		log.FromContext(ctx).Error(err, "failed to re-open closed watch", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace)
+		delay = min(delay*2, watchReopenMaxDelay)
+	}
+}
+
 // unregisterEventTrigger removes an event trigger
-func (tm *TriggerManager) unregisterEventTrigger(key string) error {
+func (tm *TriggerManager) unregisterEventTrigger(key string) {
 	// Stop all watchers and channels for this trigger key (including resource-specific keys)
 	tm.stopWatchersForKey(key)
 
@@ -484,8 +533,6 @@ func (tm *TriggerManager) unregisterEventTrigger(key string) error {
 	tm.dedupMu.Lock()
 	delete(tm.dedupState, key)
 	tm.dedupMu.Unlock()
-
-	return nil
 }
 
 // buildWorkflowRun constructs a *WorkflowRun with the given name, inputs, and trigger info.

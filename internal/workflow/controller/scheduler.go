@@ -126,6 +126,17 @@ func (s *Scheduler) RemoveSchedule(key string) {
 	}
 }
 
+// scheduleKeys returns a snapshot of the registered schedule keys.
+func (s *Scheduler) scheduleKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.entries))
+	for k := range s.entries {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // HasSchedule returns true if a schedule is registered for the given key.
 func (s *Scheduler) HasSchedule(key string) bool {
 	s.mu.Lock()
