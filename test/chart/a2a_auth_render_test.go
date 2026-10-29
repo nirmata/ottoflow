@@ -109,11 +109,14 @@ func TestA2AAuthRoles_ExactRules(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing ClusterRole %s", a2aCallerRole)
 	}
-	if len(caller.Rules) != 1 {
-		t.Fatalf("caller rules = %+v, want exactly one", caller.Rules)
+	if len(caller.Rules) != 2 {
+		t.Fatalf("caller rules = %+v, want the invoke rule and the legacy get rule", caller.Rules)
 	}
 	if !ruleIs(caller.Rules[0], "gate.ottoflow.nirmata.io", "callers", "a2a-caller", "invoke") {
 		t.Errorf("caller rule = %+v, want invoke callers.gate.ottoflow.nirmata.io/a2a-caller", caller.Rules[0])
+	}
+	if !ruleIs(caller.Rules[1], "", "configmaps", "a2a-caller", "get") {
+		t.Errorf("caller rule = %+v, want legacy get configmaps/a2a-caller", caller.Rules[1])
 	}
 }
 
@@ -151,8 +154,10 @@ func TestCallerRolesUseVirtualResource(t *testing.T) {
 			t.Errorf("ClusterRole %s not rendered", role)
 			continue
 		}
-		if len(cr.Rules) != 1 || !ruleIs(cr.Rules[0], "gate.ottoflow.nirmata.io", "callers", name, "invoke") {
-			t.Errorf("%s rules = %+v, want one invoke callers.gate.ottoflow.nirmata.io/%s", role, cr.Rules, name)
+		if len(cr.Rules) != 2 || !ruleIs(cr.Rules[0], "gate.ottoflow.nirmata.io", "callers", name, "invoke") ||
+			!ruleIs(cr.Rules[1], "", "configmaps", name, "get") {
+			t.Errorf("%s rules = %+v, want invoke callers.gate.ottoflow.nirmata.io/%s and legacy get configmaps/%s",
+				role, cr.Rules, name, name)
 		}
 	}
 	for _, d := range docs {

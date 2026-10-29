@@ -18,4 +18,9 @@ rules:
     resources: ["callers"]
     resourceNames: ["a2a-caller"]
     verbs: ["invoke"]
+  # Legacy check of images before this release; remove in the next release.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["a2a-caller"]
+    verbs: ["get"]
 {{- end }}
