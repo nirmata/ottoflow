@@ -206,7 +206,7 @@ func (r *WorkflowExposureReconciler) reconcileRoleBinding(ctx context.Context, d
 
 	if existing.RoleRef != desired.RoleRef {
 		// roleRef is immutable; the only way to repoint it is to recreate the binding.
-		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Delete(ctx, &existing, client.Preconditions{UID: &existing.UID}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 		return r.Create(ctx, desired)

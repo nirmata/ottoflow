@@ -845,42 +845,16 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_StaleCacheKeepsR
 	ns := defaultNamespace
 	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
 	live := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: "new-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: liveBindingUID},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "agent-caller"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "my-sa", Namespace: ns}},
 	}
 	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
-	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if err := c.Get(ctx, key, obj, opts...); err != nil {
-				return err
-			}
-			if crb, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
-				crb.UID = "old-uid"
-				crb.RoleRef.Name = "old-role"
-			}
-			return nil
-		},
-		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-			do := &client.DeleteOptions{}
-			do.ApplyOptions(opts)
-			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != "new-uid" {
-				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), errors.New("uid precondition"))
-			}
-			return c.Delete(ctx, obj, opts...)
-		},
-	})
-	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme}
 	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); !errors.Is(err, errRequeueRunnerAccess) {
 		t.Fatalf("err = %v, want requeue sentinel", err)
 	}
-	got := &rbacv1.ClusterRoleBinding{}
-	if err := base.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
-		t.Fatal(err)
-	}
-	if got.UID != "new-uid" {
-		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.UID)
-	}
+	assertNotRecreated(t, base, live)
 }
 
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
@@ -3390,4 +3364,71 @@ func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
+}
+
+const liveBindingUID types.UID = "new-uid"
+
+// staleUIDClient serves the binding as an old incarnation (old UID, old roleRef) while the
+// live object is liveBindingUID, and rejects deletes whose UID precondition does not match it.
+func staleUIDClient(base client.WithWatch) client.Client {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			switch b := obj.(type) {
+			case *rbacv1.ClusterRoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			case *rbacv1.RoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			}
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != liveBindingUID {
+				return apierrors.NewConflict(rbacv1.Resource("bindings"), obj.GetName(), errors.New("uid precondition"))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+}
+
+func assertNotRecreated(t *testing.T, c client.Client, live client.Object) {
+	t.Helper()
+	got := live.DeepCopyObject().(client.Object)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(live), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GetUID() != liveBindingUID {
+		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.GetUID())
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerAccess_StaleCacheKeepsReplacementClusterRoleBinding(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns}}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "my-sa", Namespace: ns}}
+	crbName := workflowRunnerRoleBindingName(ns, "my-sa")
+	live := buildRunnerClusterRoleBinding(crbName, "ottoflow-new-role", "my-sa", ns)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr, sa, live).Build()
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerClusterRole: "ottoflow-new-role"}}
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "my-sa", false); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerConfigMapWriter_StaleCacheKeepsReplacement(t *testing.T) {
+	live := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
+	r := cmWriterReconciler(staleUIDClient(base), cmWriterRole)
+	if err := r.ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
 }

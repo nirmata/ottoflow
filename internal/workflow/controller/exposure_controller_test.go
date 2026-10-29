@@ -352,3 +352,21 @@ func TestBuildAgentObjectAllowUnauthenticatedEnv(t *testing.T) {
 		t.Errorf("opt-out env = %q, want %q", got, "true")
 	}
 }
+
+func TestReconcileRoleBinding_StaleCacheKeepsReplacement(t *testing.T) {
+	live := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a", UID: liveBindingUID},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "ottoflow-serve-a2a"},
+	}
+	r := newExposureReconciler(t, live)
+	base := r.Client
+	r.Client = staleUIDClient(base.(client.WithWatch))
+	desired := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: "team-a"},
+		RoleRef:    live.RoleRef,
+	}
+	if err := r.reconcileRoleBinding(context.Background(), desired); !apierrors.IsConflict(err) {
+		t.Fatalf("err = %v, want Conflict", err)
+	}
+	assertNotRecreated(t, base, live)
+}
