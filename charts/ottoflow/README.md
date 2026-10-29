@@ -90,6 +90,7 @@ The following table lists the configurable parameters and their default values:
 | `controller.podLabels` | Pod labels | `{}` |
 | `controller.env` | Extra environment variables | `[]` |
 | `controller.args` | Command arguments (flags); chart injects runner image, RBAC roles, and agent-executor flags automatically | `["--leader-elect"]` |
+| `controller.callback.addr` | Listen address for the callback server (`--callback-addr`); always on. Requires a controller image from the same release as the chart (default `controller.image.tag` empty = appVersion); an older `controller.image.tag` exits at start with `flag provided but not defined: -callback-addr` | `:8084` |
 | `controller.mcp.enabled` | Serve the cluster's Workflows as MCP tools (`--mcp-addr`) | `false` |
 | `controller.mcp.addr` | Listen address for the MCP server; the endpoint is `/mcp` | `:8090` |
 | `controller.mcp.service.enabled` | Create a Service for the MCP port | `true` |
@@ -162,7 +163,7 @@ Runner ServiceAccounts hold ConfigMap `get`/`list`/`watch` cluster-wide but can 
 
 None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
 
-The controller's `ottoflow-role:core` ClusterRole grants `delete` on ClusterRoleBindings (needed to migrate a runner's binding when its target role changes — RoleRef is immutable, so migration is delete-and-recreate) and `bind` scoped to the runner ClusterRole name (needed so the controller can create ClusterRoleBindings referencing it, including when `rbac.runnerClusterRole.extraResources` grants verbs the controller itself doesn't hold — Kubernetes' RBAC escalation check allows `bind` as an alternative to holding every referenced permission). **Blast radius:** the `delete` grant on ClusterRoleBindings is cluster-wide, so a compromised controller could delete any ClusterRoleBinding in the cluster; it is a temporary grant needed only for this role migration, and is slated for removal once #153 is resolved.
+The controller's `ottoflow-role:core` ClusterRole grants `delete` on ClusterRoleBindings (needed to migrate a runner's binding when its target role changes — RoleRef is immutable, so migration is delete-and-recreate) and `bind` scoped to the runner ClusterRole name (needed so the controller can create ClusterRoleBindings referencing it, including when `rbac.runnerClusterRole.extraResources` grants verbs the controller itself doesn't hold — Kubernetes' RBAC escalation check allows `bind` as an alternative to holding every referenced permission). **Blast radius:** the `delete` grant on ClusterRoleBindings is cluster-wide, so a compromised controller could delete any ClusterRoleBinding in the cluster; it is a temporary grant needed only for this role migration, and is slated for removal once https://github.com/nirmata/ottoflow/issues/25 is resolved.
 
 #### RBAC Customization
 

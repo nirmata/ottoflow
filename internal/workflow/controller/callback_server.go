@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 	"github.com/nirmata/ottoflow/internal/workflow/token"
 )
 
@@ -151,7 +152,7 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 	// can't use this response to probe whether a run has reached a terminal phase. A run can be
 	// marked terminal (e.g. cron Replace cancellation) while a PendingCallback is still live;
 	// once terminal it must never accept a callback that can no longer be consumed.
-	if runIsTerminal(wr) {
+	if wr.Status.Phase.IsTerminal() {
 		writeTerminalCallbackError(w)
 		return
 	}
@@ -223,7 +224,7 @@ func (cs *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request)
 		}
 		// Safety: the run may have been marked terminal (e.g. cron Replace cancellation)
 		// between the admission check above and this re-fetch.
-		if runIsTerminal(fresh) {
+		if fresh.Status.Phase.IsTerminal() {
 			terminalDetected = true
 			return nil
 		}
@@ -321,7 +322,7 @@ func validatePayloadAgainstSchema(schema *apiextensionsv1.JSON, payload map[stri
 	}
 
 	// Validate property types
-	if properties, ok := s["properties"].(map[string]interface{}); ok {
+	if properties, ok := executor.SchemaProperties(s); ok {
 		for propName, propDef := range properties {
 			propMap, ok := propDef.(map[string]interface{})
 			if !ok {
@@ -382,12 +383,6 @@ func writeCallbackError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-// runIsTerminal reports whether wr has reached a terminal phase (Succeeded or Failed), at which
-// point it must never accept a callback that can no longer be consumed.
-func runIsTerminal(wr *ottoflowv1alpha1.WorkflowRun) bool {
-	return wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded || wr.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed
 }
 
 // writeTerminalCallbackError writes the 410 Gone response for a callback rejected because the

@@ -86,7 +86,7 @@ This fires at 9:00 AM Eastern time, adjusting automatically for daylight saving.
 
 ### Concurrency policy
 
-The `concurrencyPolicy` field controls what happens when a schedule fires while a previous run is still active (Pending or Running):
+The `concurrencyPolicy` field controls what happens when a schedule fires while a previous run is still active (phase empty, Pending or Running):
 
 | Policy | Behaviour |
 |--------|-----------|

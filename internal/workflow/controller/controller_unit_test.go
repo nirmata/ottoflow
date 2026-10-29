@@ -287,7 +287,7 @@ func TestScheduler_CancelActiveWorkflowRuns(t *testing.T) {
 	wr.Labels = map[string]string{"ottoflow.nirmata.io/workflow": "wf", "ottoflow.nirmata.io/trigger": "cron"}
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr).Build()
 	s := NewScheduler(fakeClient, logr.Discard())
-	if err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
+	if _, err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
 		t.Fatal(err)
 	}
 	updated := &ottoflowv1alpha1.WorkflowRun{}
@@ -811,6 +811,82 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_UpdateExisting(t
 	}
 }
 
+func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_RoleRefChangeRecreates(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
+	existing := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "old-role"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "other", Namespace: ns}},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(existing).WithInterceptorFuncs(interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.UpdateOption) error {
+			if crb, ok := o.(*rbacv1.ClusterRoleBinding); ok {
+				old := &rbacv1.ClusterRoleBinding{}
+				if err := c.Get(ctx, types.NamespacedName{Name: crb.Name}, old); err == nil && old.RoleRef != crb.RoleRef {
+					return apierrors.NewInvalid(schema.GroupKind{Group: rbacv1.GroupName, Kind: "ClusterRoleBinding"}, crb.Name, nil)
+				}
+			}
+			return c.Update(ctx, o, opts...)
+		},
+	}).Build()
+	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); err != nil {
+		t.Fatal(err)
+	}
+	got := &rbacv1.ClusterRoleBinding{}
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RoleRef.Name != "agent-caller" || len(got.Subjects) != 1 || got.Subjects[0].Name != "my-sa" {
+		t.Errorf("binding = roleRef %+v subjects %+v", got.RoleRef, got.Subjects)
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_StaleCacheKeepsReplacement(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
+	live := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: "new-uid"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "agent-caller"},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "my-sa", Namespace: ns}},
+	}
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
+	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if crb, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
+				crb.UID = "old-uid"
+				crb.RoleRef.Name = "old-role"
+			}
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != "new-uid" {
+				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), errors.New("uid precondition"))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	got := &rbacv1.ClusterRoleBinding{}
+	if err := base.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
+		t.Fatal(err)
+	}
+	if got.UID != "new-uid" {
+		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.UID)
+	}
+}
+
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
@@ -1196,6 +1272,58 @@ func TestScheduler_HandleCronFire_ReplacePolicy_CancelsAndCreates(t *testing.T) 
 	}
 	if created != 1 {
 		t.Errorf("expected 1 new pending run, got %d", created)
+	}
+}
+
+func replaceCap1Fixture() (*ottoflowv1alpha1.Workflow, *ottoflowv1alpha1.WorkflowRun, *ottoflowv1alpha1.CronTrigger) {
+	wf := cronEventWorkflow()
+	wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: ptr.To(int32(1))}
+	return wf, cronRun("wf-old", ottoflowv1alpha1.WorkflowRunPhaseRunning), &ottoflowv1alpha1.CronTrigger{Schedule: "0 * * * *", ConcurrencyPolicy: "Replace"}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_LaggingCacheStillCreates(t *testing.T) {
+	ctx := context.Background()
+	wf, old, cronSpec := replaceCap1Fixture()
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old).Build()
+	lagging := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := cl.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if runs, ok := list.(*ottoflowv1alpha1.WorkflowRunList); ok {
+				for i := range runs.Items {
+					runs.Items[i].Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+				}
+			}
+			return nil
+		},
+	})
+	fireCron(t, lagging, wf, cronSpec)
+	var list ottoflowv1alpha1.WorkflowRunList
+	if err := base.List(ctx, &list, client.InNamespace(defaultNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	var failedOld, pending int
+	for _, r := range list.Items {
+		switch {
+		case r.Name == "wf-old" && r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed:
+			failedOld++
+		case r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending:
+			pending++
+		}
+	}
+	if failedOld != 1 || pending != 1 {
+		t.Errorf("failed old runs = %d, new pending runs = %d; want 1 and 1", failedOld, pending)
+	}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_NonCronRunStillCapsFire(t *testing.T) {
+	wf, old, cronSpec := replaceCap1Fixture()
+	manual := defaultCapRun("wf-manual", ottoflowv1alpha1.WorkflowRunPhaseRunning)
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old, manual).Build()
+	fireCron(t, c, wf, cronSpec)
+	if n := countRuns(t, c); n != 2 {
+		t.Errorf("got %d runs, want 2 (no new run while a non-cron run holds the cap)", n)
 	}
 }
 

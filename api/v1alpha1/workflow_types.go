@@ -156,12 +156,23 @@ type RunPolicy struct {
 	// +kubebuilder:default=50
 	MaxAllowed *int32 `json:"maxAllowed,omitempty"`
 
-	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be Pending or Running at once for this workflow.
+	// MaxConcurrentRuns is the maximum number of WorkflowRuns that may be unfinished (phase empty, Pending or Running) at once for this workflow.
 	// When a trigger (cron, event, webhook) or an MCP call would create a new run, creation is skipped if active
-	// runs >= MaxConcurrentRuns; for those, zero or nil means no limit.
-	// serve-a2a (A2A calls) differs: nil means 10, an explicit 0 means no limit, and N means N.
+	// runs >= MaxConcurrentRuns. Nil means 10, an explicit 0 means no limit, and N means N.
 	// +optional
 	MaxConcurrentRuns *int32 `json:"maxConcurrentRuns,omitempty"`
+}
+
+// DefaultMaxConcurrentRuns applies when MaxConcurrentRuns is nil.
+const DefaultMaxConcurrentRuns int32 = 10
+
+// EffectiveMaxConcurrentRuns returns MaxConcurrentRuns, or DefaultMaxConcurrentRuns when the
+// policy or field is nil. Zero or less means no limit.
+func (r *RunPolicy) EffectiveMaxConcurrentRuns() int32 {
+	if r == nil || r.MaxConcurrentRuns == nil {
+		return DefaultMaxConcurrentRuns
+	}
+	return *r.MaxConcurrentRuns
 }
 
 // EventConfig configures event emission for workflow runs.

@@ -96,6 +96,45 @@ var _ = Describe("WorkflowRef step execution", func() {
 		Expect(variables["out"]).To(Equal("sub-result"))
 	})
 
+	It("should not write StepStatuses from concurrent forEach items running a workflowRef", func() {
+		parentWF := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "parent-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "fe",
+						ForEach: &ottoflowv1alpha1.StepForEach{
+							Items:          `[1, 2, 3, 4, 5, 6, 7, 8]`,
+							MaxConcurrency: 8,
+							Step: &ottoflowv1alpha1.StepForEachStep{
+								WorkflowRef: &ottoflowv1alpha1.StepWorkflowRef{Name: "sub-wf"},
+							},
+						},
+					},
+				},
+			},
+		}
+		subWF := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "sub-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{Name: "subStep", Outputs: []ottoflowv1alpha1.Output{{Name: "out", Expression: `"ok"`}}},
+				},
+			},
+		}
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(parentWF, subWF).Build()
+
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(workflowExecutor.ExecuteWorkflow(ctx, parentWF, workflowRun)).To(Succeed())
+		Expect(workflowRun.Status.Phase).To(Equal(ottoflowv1alpha1.WorkflowRunPhaseSucceeded))
+		Expect(workflowRun.Status.StepStatuses).To(HaveLen(1))
+		Expect(workflowRun.Status.StepStatuses).To(HaveKey("fe"))
+	})
+
 	It("should fail when WorkflowRef is nil", func() {
 		step := ottoflowv1alpha1.Step{Name: "bad"}
 		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
