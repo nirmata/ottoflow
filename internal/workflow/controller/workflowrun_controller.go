@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -105,7 +106,8 @@ func retryable(err error) bool {
 		return code == 429 || code >= 500
 	}
 	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
-		errors.As(err, new(net.Error)) // *url.Error and context.DeadlineExceeded implement net.Error
+		utilnet.IsProbableEOF(err) || utilnet.IsHTTP2ConnectionLost(err) || utilnet.IsTimeout(err) ||
+		errors.As(err, new(*net.OpError)) // includes fatal remote TLS alerts; retried on purpose
 }
 
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
@@ -281,6 +283,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				}
 			} else {
 				logger.Error(err, "failed to create runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "job", jobKey)
+				if retryable(err) {
+					return ctrl.Result{}, err
+				}
 				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err), "")
 				if err := r.Status().Update(ctx, workflowRun); err != nil {
 					return ctrl.Result{}, err
