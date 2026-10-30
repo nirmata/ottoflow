@@ -9,6 +9,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -523,6 +524,7 @@ func GetResourceMacroOptionsWithMetrics(
 	// Queries Prometheus for metrics using PromQL. Returns query results as a structured map
 	// (type, samples, value). On query failure returns the same shape with empty data and
 	// an "error" field set so workflows can check has(result.error) and fail or continue.
+	// A query failing with ctx.Err() returns a CEL error instead.
 	prometheusMetricsFunc := celapi.Function("prometheusMetrics",
 		celapi.Overload("prometheusMetrics_string_string",
 			[]*celapi.Type{celapi.StringType, celapi.StringType},
@@ -545,7 +547,11 @@ func GetResourceMacroOptionsWithMetrics(
 				}
 
 				// Query Prometheus; on failure return empty vector with error field so workflows can fail or continue
-				result, err := prometheusClient.Query(macroCtx.get(), query, time.Now().Add(-duration))
+				qctx := macroCtx.get()
+				result, err := prometheusClient.Query(qctx, query, time.Now().Add(-duration))
+				if ctxErr := qctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+					return types.NewErr("prometheus query cancelled: %w", ctxErr)
+				}
 				if err != nil {
 					if _, isNoOp := prometheusClient.(*NoOpPrometheusClient); !isNoOp {
 						klog.Warningf("prometheusMetrics query failed: query=%q timeRange=%q: %v", query, timeRange, err)
