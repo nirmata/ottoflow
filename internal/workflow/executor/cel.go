@@ -469,16 +469,13 @@ func (e *CELEvaluator) EvaluateExpression(ctx context.Context, expr string, vars
 	vars["image"] = kyvernoimagedata.Context{ContextInterface: imageDataCtx}
 
 	// Add resource context with controller-runtime client implementation (for CEL expressions that use resource.Get/List).
-	// If vars["resource"] or vars["items"] are already set (e.g. by resourceQuery step output evaluation), do not overwrite.
-	if _, set := vars["resource"]; !set {
-		resCtx := &resourceContext{
-			client:    e.client,
-			namespace: namespace,
-			pageSize:  e.resourceListPageSize,
-			ctx:       ctx,
-		}
-		vars["resource"] = kyvernoresource.Context{ContextInterface: resCtx}
+	resCtx := &resourceContext{
+		client:    e.client,
+		namespace: namespace,
+		pageSize:  e.resourceListPageSize,
+		ctx:       ctx,
 	}
+	vars["resource"] = kyvernoresource.Context{ContextInterface: resCtx}
 
 	// Evaluate with variables. When macro functions are registered (resourceLogs, resourceEvents,
 	// etc.), their closures read context from the shared macroContextHolder. Serialise the
