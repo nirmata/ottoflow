@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -148,13 +149,23 @@ func (s *WebhookServer) Start(ctx context.Context) error {
 		IdleTimeout:       60 * time.Second, // prevent keep-alive connection accumulation
 		MaxHeaderBytes:    1 << 16,          // 64 KiB headers max
 	}
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("webhook trigger server listen on %s: %w", s.addr, err)
+	}
+	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.logger.Error(err, "webhook trigger server error")
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 	s.logger.Info("webhook trigger server started", "addr", s.addr)
-	<-ctx.Done()
+	select {
+	case err := <-errCh:
+		_ = srv.Close()
+		return fmt.Errorf("webhook trigger server error: %w", err)
+	case <-ctx.Done():
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
