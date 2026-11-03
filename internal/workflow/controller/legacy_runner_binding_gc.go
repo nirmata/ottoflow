@@ -160,7 +160,7 @@ func (g *LegacyRunnerBindingGC) pinningJobs(ctx context.Context, crb *rbacv1.Clu
 func (g *LegacyRunnerBindingGC) liveRun(ctx context.Context, job *batchv1.Job) (string, error) {
 	var wr ottoflowv1alpha1.WorkflowRun
 	found, err := g.controllerOwner(ctx, job, "WorkflowRun", &wr)
-	if err != nil || !found || runIsTerminal(&wr) {
+	if err != nil || !found || wr.Status.Phase.IsTerminal() {
 		return "", err
 	}
 	return wr.Name, nil
