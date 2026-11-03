@@ -3686,3 +3686,17 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 		t.Fatal("re-registering a stopped the watcher of a-event-0-x")
 	}
 }
+
+func TestWebhookServer_StartListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s := NewWebhookServer(ln.Addr().String(), logr.Discard(), nil, nil)
+	if err := s.Start(ctx); err == nil {
+		t.Fatal("Start on a bound address should return an error")
+	}
+}
