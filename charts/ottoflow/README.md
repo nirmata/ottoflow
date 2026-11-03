@@ -106,7 +106,7 @@ The following table lists the configurable parameters and their default values:
 
 Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role` and (for internal TLS) `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
 
-**Runner Job secrets**: If the runner Job references Secret-backed volumes (e.g. `ottoflow-agent-executor.*.svc.tls-ca` for agent-executor TLS) that exist in another namespace, the controller copies those secrets into the WorkflowRun's namespace before creating the Job. By default the source namespace is the Workflow's namespace. To copy from a fixed namespace (e.g. the OttoFlow install namespace) instead, pass `--secret-source-namespace=<namespace>` in `controller.args`.
+**Runner Job secrets**: If the runner Job references Secret-backed volumes that exist in another namespace, the controller copies those secrets into the WorkflowRun's namespace before creating the Job. By default the source namespace is the Workflow's namespace. To copy from a fixed namespace instead, pass `--secret-source-namespace=<namespace>` in `controller.args`. Secrets of type `kubernetes.io/tls` in the namespaces set by `--namespace` and `--agent-executor-namespace` (both the install namespace by default) are never copied; the run fails, so create that Secret in the run's namespace instead.
 
 ### Workflow Runner Parameters
 
@@ -489,6 +489,15 @@ after upgrading:
 
 If a custom role's rules are missing from the output, it is not labeled for this
 release.
+
+### Runner Secret copies of TLS Secrets
+
+A run whose Secret volume names a `kubernetes.io/tls` Secret that is only found in
+a namespace set by `--namespace` or `--agent-executor-namespace` now fails with
+`Failed to prepare runner secrets`. Either create your own Secret in the run's
+namespace, or remove the volume if it names one of OttoFlow's certificate Secrets.
+For copies left in run namespaces by earlier releases, see
+[the agent-executor CA reaches tenant namespaces as a ConfigMap, not a Secret](../../docs/user/rbac-secret-access.md#the-agent-executor-ca-reaches-tenant-namespaces-as-a-configmap-not-a-secret).
 
 ## CRD Management
 
