@@ -3692,7 +3692,7 @@ func TestWebhookServer_StartListenError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	s := NewWebhookServer(ln.Addr().String(), logr.Discard(), nil, nil)
