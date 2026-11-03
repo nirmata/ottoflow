@@ -227,7 +227,7 @@ The `http` global is bound into **every** CEL evaluation — there is no dedicat
 | `http.Get(url)` | GET request, no custom headers |
 | `http.Get(url, headers)` | GET request with a `map[string]string` of headers |
 | `http.Post(url, body, headers)` | POST request; `body` is any CEL value, JSON-encoded before sending |
-| `http.Client(caBundle)` | Returns a new `http` context that trusts an additional CA bundle (PEM string) for subsequent calls |
+| `http.Client(caBundle)` | Returns an `http` context that trusts only the given CA bundle (PEM string), not the system roots, for subsequent calls; an empty `caBundle` keeps the default trust (system roots) |
 
 camelCase aliases (`http.get`, `http.post`, `http.client`) are also registered and behave identically to the PascalCase names above.
 
