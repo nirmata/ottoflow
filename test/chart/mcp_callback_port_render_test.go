@@ -42,9 +42,10 @@ func TestControllerListenPortClashFails(t *testing.T) {
 		"single-dash probe arg and callback": "controller:\n  args:\n    - -health-probe-bind-address=:8084\n",
 		"single-dash probe split arg and callback": "controller:\n  args:\n    - -health-probe-bind-address\n" +
 			"    - \":8084\"\n",
+		"probe command and callback": "controller:\n  command:\n    - /ko-app/controller\n" +
+			"    - --health-probe-bind-address=:8084\n",
 		"mcp arg while disabled":       "controller:\n  args:\n    - --leader-elect\n    - --mcp-addr=:8084\n",
 		"mcp command while disabled":   "controller:\n  command:\n    - /ko-app/controller\n    - --mcp-addr=:8084\n",
-		"probe command and callback":   "controller:\n  command:\n    - /ko-app/controller\n    - --health-probe-bind-address=:8084\n",
 		"mcp split arg while disabled": "controller:\n  args:\n    - --mcp-addr\n    - \":8084\"\n",
 		"webhook trigger arg while disabled": "controller:\n  webhookTrigger:\n    enabled: false\n" +
 			"  args:\n    - -webhook-trigger-addr=:8084\n",
@@ -91,7 +92,8 @@ func TestControllerArgsAddrOverriddenByChart(t *testing.T) {
 }
 
 func TestControllerArgsOverrideCommandAddr(t *testing.T) { // args follow command, so :9100 wins
-	values := "controller:\n  command:\n    - /ko-app/controller\n    - --mcp-addr=:8084\n  args:\n    - --leader-elect\n    - --mcp-addr=:9100\n"
+	values := "controller:\n  command:\n    - /ko-app/controller\n    - --mcp-addr=:8084\n" +
+		"  args:\n    - --leader-elect\n    - --mcp-addr=:9100\n"
 	if _, err := renderWithValuesFile(t, writeSecretAccessValues(t, values)); err != nil {
 		t.Fatal(err)
 	}
