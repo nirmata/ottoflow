@@ -3,7 +3,7 @@
 {{- if and $c.callback $c.callback.addr }}{{- $callback = $c.callback.addr }}{{- end }}
 {{- $argAddr := dict "health-probe-bind-address" ":8081" }}
 {{- $pending := "" }}
-{{- range $c.args }}
+{{- range concat ($c.command | default list) ($c.args | default list) }}
 {{- $a := toString . }}
 {{- $m := regexFind "^--?(health-probe-bind-address|mcp-addr|webhook-trigger-addr)(=|$)" $a }}
 {{- if $pending }}{{- $_ := set $argAddr $pending $a }}{{- $pending = "" }}
@@ -18,7 +18,7 @@
 {{- with index $argAddr "webhook-trigger-addr" }}{{- $_ := set $ports "webhookTrigger" (splitList ":" . | last) }}{{- end }}
 {{- with index $argAddr "mcp-addr" }}{{- $_ := set $ports "mcp" (splitList ":" . | last) }}{{- end }}
 {{- if ne (len (values $ports | uniq)) (len $ports) }}
-{{- fail (printf "controller listeners must bind distinct ports, got %v; change controller.callback.addr, controller.webhookTrigger.addr, controller.mcp.addr, controller.metrics.port or the listener flags in controller.args" $ports) }}
+{{- fail (printf "controller listeners must bind distinct ports, got %v; change controller.callback.addr, controller.webhookTrigger.addr, controller.mcp.addr, controller.metrics.port or the listener flags in controller.command or controller.args" $ports) }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment
