@@ -159,11 +159,12 @@ func (c *celHTTPContext) executeRequest(req *http.Request) (any, error) {
 // the SDK — which hands back a bare *http.Client with no timeout and no body
 // normalization — the derived client keeps celHTTPTimeout and the jsonNormalizingHTTPClient
 // wrapper, so a CA-pinned endpoint behaves consistently with the default context.
-// An empty caBundle returns the receiver unchanged; a non-empty bundle that fails to
+// An empty caBundle reuses the receiver; a non-empty bundle that fails to
 // parse returns an error rather than silently falling back to the system trust store.
+// Results are wrapped in kyvernohttp.Context: CEL cannot convert a bare *celHTTPContext.
 func (c *celHTTPContext) Client(caBundle string) (kyvernohttp.ContextInterface, error) {
 	if caBundle == "" {
-		return c, nil
+		return kyvernohttp.Context{ContextInterface: c}, nil
 	}
 	caCertPool := x509.NewCertPool()
 	if ok := caCertPool.AppendCertsFromPEM([]byte(caBundle)); !ok {
@@ -183,5 +184,5 @@ func (c *celHTTPContext) Client(caBundle string) (kyvernohttp.ContextInterface, 
 	if transport.TLSClientConfig.MinVersion < tls.VersionTLS12 {
 		transport.TLSClientConfig.MinVersion = tls.VersionTLS12
 	}
-	return newCELHTTPContext(transport), nil
+	return kyvernohttp.Context{ContextInterface: newCELHTTPContext(transport)}, nil
 }
