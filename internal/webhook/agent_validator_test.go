@@ -51,7 +51,7 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			name:         "endpoint is reported as allowlist-gated",
 			config:       map[string]string{"endpoint": "https://llm.example.com"},
 			wantCount:    1,
-			wantContains: []string{"endpoint", "AGENT_LLM_ENDPOINT_ALLOWLIST", "origin-only", "FAIL"},
+			wantContains: []string{"endpoint", "AGENT_LLM_ENDPOINT_ALLOWLIST", "origin-only", "FAIL", "google, gemini"},
 		},
 		{
 			// The CRD doc-comment advertises apiKey/baseURL, but no executor in this build

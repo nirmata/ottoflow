@@ -98,10 +98,13 @@ type AgentSpec struct {
 	// Otherwise any non-empty value fails the agent run, for every provider: the
 	// agent-executor's LLM API keys are process-wide, so an endpoint the operator has not
 	// approved must not receive them. Once accepted, it is passed to gollm as
-	// ClientOptions.URL; with the pinned gollm it is honored ONLY by modelProvider
+	// ClientOptions.URL; with the pinned gollm it is honored by modelProvider
 	// "azure-openai" (overrides AZURE_OPENAI_ENDPOINT; the endpoint must be https://);
+	// "anthropic" honors it unless ANTHROPIC_BASE_URL is set on the process;
 	// "openai" reads OPENAI_ENDPOINT/OPENAI_API_BASE from the process environment instead;
-	// "google", "gemini" and "anthropic" ignore it; "local" uses LLAMACPP_HOST.
+	// "local" uses LLAMACPP_HOST. "google" and "gemini" reject any endpoint, allowlisted or
+	// not, because their client ignores it; set GOOGLE_GEMINI_BASE_URL on the agent-executor
+	// process instead.
 	// - skipVerifySSL: "true" is REJECTED for every provider and fails the agent run; "false"
 	// is accepted. To reach an endpoint with a private CA, set SSL_CERT_FILE or SSL_CERT_DIR on
 	// the agent-executor process (keeps TLS verification on); as a last resort, set
