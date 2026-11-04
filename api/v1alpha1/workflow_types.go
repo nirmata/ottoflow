@@ -126,12 +126,13 @@ type KagentExposeSpec struct {
 
 // ExecutionLimits configures per-workflow concurrency and rate limits.
 type ExecutionLimits struct {
-	// MaxConcurrentSteps is the maximum number of steps that may run concurrently in a single WorkflowRun.
-	// When multiple steps are ready (DAG), only this many are started at once. Zero or nil means no limit.
+	// MaxConcurrentSteps caps how many ready steps are taken per DAG pass in a single WorkflowRun.
+	// Steps in a pass run one at a time. Zero or nil means no limit.
 	// +optional
 	MaxConcurrentSteps *int32 `json:"maxConcurrentSteps,omitempty"`
 
-	// OutboundRequestsPerMinute limits the rate of outbound calls (MCP, agent executor) per WorkflowRun.
+	// OutboundRequestsPerMinute limits the rate of outbound calls (MCP, agent executor, external A2A) per WorkflowRun.
+	// A workflowRef sub-workflow uses its own Workflow's limit, not the parent's.
 	// When set, the executor waits as needed before each call. Zero or nil means no rate limit.
 	// +optional
 	OutboundRequestsPerMinute *int32 `json:"outboundRequestsPerMinute,omitempty"`
@@ -265,8 +266,8 @@ type Step struct {
 	Outputs []Output `json:"outputs,omitempty"`
 
 	// DependsOn explicitly declares step dependencies
-	// Steps listed here must complete successfully before this step executes
-	// If not specified, dependencies are inferred from output references in expressions
+	// Steps listed here must finish (succeed, be skipped, or fail with failurePolicy: Continue) before this step executes
+	// Dependencies are not inferred from CEL expressions
 	// +optional
 	DependsOn []string `json:"dependsOn,omitempty"`
 
@@ -298,14 +299,14 @@ type Step struct {
 	// WorkflowRef references another workflow to execute as a sub-workflow
 	// When specified, this step executes the referenced workflow
 	// Input values can be CEL expressions that reference parent workflow context
-	// Sub-workflow outputs are accessible via outputs.<stepNameCamelCase>.<outputName>
+	// Sub-workflow outputs are accessible via variables.<outputName>
 	// +optional
 	WorkflowRef *StepWorkflowRef `json:"workflowRef,omitempty"`
 
 	// AgentRef references an Agent CRD for AI-powered step execution
 	// When specified, this step uses an LLM agent to execute the task
 	// The agent's prompt can reference workflow context (inputs, previous step outputs)
-	// Agent outputs are accessible via outputs.<stepNameCamelCase>.<outputName>
+	// Agent outputs are accessible via variables.<outputName>
 	// +optional
 	AgentRef *StepAgentRef `json:"agentRef,omitempty"`
 
@@ -509,8 +510,9 @@ type StepAgentRef struct {
 	Namespace string `json:"namespace,omitempty"`
 
 	// AdditionalPrompts is an optional list of prompts that are appended to the agent's system prompt
-	// Each prompt can contain CEL expressions that are evaluated in the workflow context
-	// The prompts are evaluated and concatenated with the agent's base prompt
+	// Each prompt is evaluated as a single CEL expression in the workflow context, so a plain
+	// string must be a quoted CEL string literal (use + to concatenate values)
+	// The results are concatenated with the agent's base prompt
 	// Useful for adding step-specific context or instructions to the agent
 	// +optional
 	AdditionalPrompts []string `json:"additionalPrompts,omitempty"`
@@ -565,7 +567,7 @@ type StepExternalAgentRef struct {
 	Protocol string `json:"protocol,omitempty"`
 
 	// Prompt is a CEL expression evaluated in the workflow context; the result is sent as the task message.
-	// Can reference inputs, variables, and previous step outputs (e.g. '"Analyze: " + steps.prev.report').
+	// Can reference inputs, variables, and previous step outputs (e.g. '"Analyze: " + variables.report').
 	// +kubebuilder:validation:Required
 	Prompt string `json:"prompt"`
 

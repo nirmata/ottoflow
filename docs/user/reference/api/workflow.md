@@ -124,7 +124,7 @@ No additional fields. Use `expressions` and `outputs` to compute and publish val
 |-------|------|----------|-------------|
 | `agentRef.name` | string | Yes | Name of the Agent CRD. |
 | `agentRef.namespace` | string | No | Namespace of the Agent (default: workflow namespace). |
-| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; can contain CEL. |
+| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; each entry is evaluated as one CEL expression (quote plain text as a CEL string). |
 
 #### mcpToolCall
 
