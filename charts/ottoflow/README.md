@@ -281,13 +281,6 @@ helm upgrade ottoflow ./charts/ottoflow -n ottoflow --set webhook.enabled=false
 | `networkPolicy.create` | Create NetworkPolicy | `true` |
 | `networkPolicy.egress` | Egress rules (Helm replaces this list; see [Network Policy egress](#network-policy-egress)) | See values.yaml |
 
-### CRD Parameters
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `crds.install` | Install CRDs | `true` |
-| `crds.mode` | CRD installation mode | `install` |
-
 ### Namespace Parameters
 
 | Parameter | Description | Default |
@@ -393,23 +386,17 @@ networkPolicy:
           port: 6443
 ```
 
-### Skip CRD Installation
-
-```yaml
-crds:
-  install: false
-  mode: skip
-```
-
 ## Upgrading
 
 ```bash
-# Upgrade with default values
+# Upgrade, keeping the release's stored values
 helm upgrade ottoflow ottoflow/ottoflow --namespace ottoflow
 
 # Upgrade with custom values
 helm upgrade ottoflow ./charts/ottoflow -f my-values.yaml --namespace ottoflow
 ```
+
+Upgrading from an earlier chart version? See [Upgrading: stricter chart values schema](../../docs/user/tasks/installation.md#upgrading-stricter-chart-values-schema).
 
 ### Runner RBAC change (least-privilege runner role)
 
@@ -527,17 +514,7 @@ make sync-crds
 
 ### Skip CRD Installation
 
-If CRDs are managed separately (e.g., via GitOps or another tool), you can skip CRD installation:
-
-```yaml
-crds:
-  install: false
-  mode: skip
-```
-
-### Manual CRD Installation
-
-If you prefer to install CRDs manually:
+Helm installs everything in `crds/` by default, and there is no chart value to turn that off. If CRDs are managed separately (e.g., via GitOps or by hand), apply them yourself and pass Helm's own flag:
 
 ```bash
 # Install CRDs manually from source
@@ -546,9 +523,9 @@ kubectl apply -f config/crd/bases/
 # Or from chart (after syncing)
 kubectl apply -f charts/ottoflow/crds/
 
-# Then install chart with CRDs disabled
+# Then install chart, skipping the crds/ directory
 helm install ottoflow ./charts/ottoflow --namespace ottoflow --create-namespace \
-  --set crds.install=false
+  --skip-crds
 ```
 
 ## Uninstallation
