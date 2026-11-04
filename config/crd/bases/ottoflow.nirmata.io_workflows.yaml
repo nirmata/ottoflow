@@ -5073,7 +5073,7 @@ spec:
                           description: |-
                             InputValuesFrom injects input values from Secrets when the scheduler creates a WorkflowRun.
                             Each entry maps one workflow input name to a secret key. Secret is read in the workflow's
-                            namespace (or the specified namespace). Use for e.g. slackWebhookUrl from a Secret.
+                            namespace; a secretRef.namespace naming another namespace is refused when the cron fires. Use for e.g. slackWebhookUrl from a Secret.
                           items:
                             description: CronInputFromSecret maps a workflow input
                               name to a secret key.
@@ -5093,7 +5093,7 @@ spec:
                                     type: string
                                   namespace:
                                     description: Namespace is the Secret namespace.
-                                      If empty, the workflow's namespace is used.
+                                      Must be empty or the Workflow's namespace.
                                     type: string
                                 required:
                                 - key
@@ -5238,8 +5238,11 @@ spec:
                                   "Deployment")
                                 type: string
                               namespace:
-                                description: Namespace is the namespace to watch (empty
-                                  string for cluster-scoped resources)
+                                description: |-
+                                  Namespace is the namespace to watch. Empty means all namespaces or a cluster-scoped kind.
+                                  Anything other than the Workflow's own namespace needs the Workflow's namespace in the
+                                  controller's --event-trigger-allowed-source-namespaces list, as does a cluster-scoped kind or a kind the
+                                  API server cannot resolve.
                                 type: string
                             required:
                             - apiVersion

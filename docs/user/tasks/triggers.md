@@ -133,6 +133,8 @@ Any WorkflowRuns already created will remain until they complete or are manually
 
 Event triggers execute workflows when Kubernetes resources are created, updated, or deleted.
 
+An event trigger watches only its Workflow's namespace, and only namespaced kinds the API server can resolve, unless the Workflow's namespace is in `controller.eventTriggerAllowedSourceNamespaces`; see [Upgrading: event-trigger watch scope](installation.md#upgrading-event-trigger-watch-scope).
+
 ### Basic event trigger
 
 Watch for new Pods in the `default` namespace:
@@ -375,7 +377,9 @@ spec:
           in namespace {{ inputs.appNamespace }}.
 ```
 
-**RBAC:** The OttoFlow controller needs `get`/`list`/`watch` on `argoproj.io/applications` in the ArgoCD namespace. Use `ottoflow generate rbac` to generate the required ClusterRole.
+**RBAC:** The OttoFlow controller needs `watch` on `argoproj.io/applications` in the ArgoCD namespace: a Role in that namespace bound to the controller ServiceAccount, or `rbac.clusterRole.extraResources` for a controller-only cluster-wide grant. `ottoflow validate --generate-rbac` covers the runner's step permissions, not this trigger watch.
+
+**Watch scope:** An event trigger may watch only its Workflow's own namespace. This Workflow is in `ottoflow` and watches `argocd`, so list `ottoflow` in `controller.eventTriggerAllowedSourceNamespaces` (Helm value, passed as `--event-trigger-allowed-source-namespaces`). Otherwise admission rejects the Workflow. A Workflow stored before the upgrade, or applied with the admission webhook disabled, has that resource skipped and logged in the controller log. An empty `namespace` (all namespaces), a cluster-scoped kind, or a kind the API server cannot resolve needs the same opt-in. Listing a namespace lets every Workflow in it watch any resource the controller can watch, in any namespace. List only namespaces whose Workflow authors you would trust with that read access. See [Upgrading: event-trigger watch scope](installation.md#upgrading-event-trigger-watch-scope).
 
 ### FluxCD: trigger on Kustomization reconciliation
 
@@ -404,6 +408,8 @@ spec:
           appliedRevision: "object.status.lastAppliedRevision"
         # Deduplication by status.lastAppliedRevision is automatic.
 ```
+
+The Workflow above is in `ottoflow` and watches `flux-system`, so it needs the same opt-in.
 
 For `HelmRelease`, use `apiVersion: helm.toolkit.fluxcd.io/v2` and change the `celFilter` condition accordingly. Deduplication is automatic via `status.lastAttemptedRevision`.
 

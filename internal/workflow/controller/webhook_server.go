@@ -371,16 +371,15 @@ func verifyHMAC(secret []byte, timestamp, path string, body []byte, sigHeader st
 }
 
 // fetchSecret reads the HMAC signing key from a Kubernetes Secret.
-// Namespace defaults to workflowNamespace when SecretRef.Namespace is empty.
+// The Secret is read only in workflowNamespace; a ref naming another namespace is refused.
 // All errors map to 401 in the caller — callers must not distinguish not-found
 // from wrong-secret to avoid secret existence leakage.
 func (s *WebhookServer) fetchSecret(ctx context.Context, ref ottoflowv1alpha1.WebhookSecretRef, workflowNamespace string) ([]byte, error) {
-	ns := ref.Namespace
-	if ns == "" {
-		ns = workflowNamespace
+	if ns := ref.Namespace; ns != "" && ns != workflowNamespace {
+		return nil, fmt.Errorf("webhook secretRef %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, ref.Name, workflowNamespace)
 	}
 	var secret corev1.Secret
-	if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, &secret); err != nil {
+	if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: workflowNamespace, Name: ref.Name}, &secret); err != nil {
 		return nil, err
 	}
 	keyName := ref.Key

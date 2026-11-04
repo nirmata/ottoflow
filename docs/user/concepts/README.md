@@ -147,7 +147,7 @@ triggers:
           kind: Pod
           namespace: default
         - apiVersion: apps/v1
-          kind: Deployment
+          kind: Deployment  # no namespace: all namespaces, which needs the event-trigger allowlist
       operations:
         - CREATE
         - UPDATE
@@ -161,7 +161,7 @@ triggers:
 ```
 
 **Features:**
-- **Resources**: List of resource types to watch (apiVersion, kind, namespace)
+- **Resources**: List of resource types to watch (apiVersion, kind, namespace); a namespace other than the Workflow's, an empty one (all namespaces), a cluster-scoped kind or a kind the API server cannot resolve needs the controller allowlist; see [Upgrading: event-trigger watch scope](../tasks/installation.md#upgrading-event-trigger-watch-scope)
 - **Operations**: Filter by operation type (CREATE, UPDATE, DELETE). If empty, all operations trigger
 - **Label Selector**: Filter resources by labels
 - **Field Selector**: Filter resources by field values
@@ -182,7 +182,7 @@ triggers:
   - event:
       resources:
         - apiVersion: v1
-          kind: ConfigMap
+          kind: ConfigMap  # no namespace: all namespaces, which needs the event-trigger allowlist
       operations:
         - CREATE
         - UPDATE

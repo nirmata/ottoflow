@@ -83,11 +83,13 @@ type fakeWatcherFactory struct {
 	mu       sync.Mutex
 	watchers []*fakeWatch
 	lastOpts metav1.ListOptions
+	nss      []string // namespace of every Watch call
 }
 
-func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, _ string, opts metav1.ListOptions) (watch.Interface, error) {
+func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.nss = append(f.nss, ns)
 	w := &fakeWatch{ch: make(chan watch.Event)}
 	f.watchers = append(f.watchers, w)
 	f.lastOpts = opts
@@ -644,6 +646,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_WithWatcherFactory(t *test
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -667,6 +670,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_InvalidAPIVersion(t *testi
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	err := tm.RegisterWorkflow(ctx, wf)
 	if err == nil {
 		t.Fatal("expected error for invalid APIVersion")
@@ -3515,6 +3519,7 @@ func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3568,6 +3573,7 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &stallingWatcherFactory{blocked: make(chan struct{}), released: make(chan struct{})}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3587,6 +3593,8 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	}
 }
 
+// eventTestWorkflow builds a Workflow in "default". Tests that register it against the fake client's default (empty)
+// REST mapper allowlist "default", since every kind would otherwise be refused as unresolvable.
 func eventTestWorkflow(name string, triggers ...ottoflowv1alpha1.Trigger) *ottoflowv1alpha1.Workflow {
 	return &ottoflowv1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -3618,6 +3626,7 @@ func TestWorkflowReconciler_Reconcile_NotFound_StopsEventWatchers(t *testing.T) 
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3639,6 +3648,7 @@ func TestTriggerManager_RegisterWorkflow_ShrunkTriggers_StopsRemovedIndex(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger(), podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3657,6 +3667,7 @@ func TestTriggerManager_RegisterWorkflow_EventReplacedByCron_StopsWatcher(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3673,6 +3684,7 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}

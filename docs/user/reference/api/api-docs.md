@@ -233,7 +233,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the Secret name. |  | Required: \{\} <br /> |
-| `namespace` _string_ | Namespace is the Secret namespace. If empty, the workflow's namespace is used. |  | Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the Secret namespace. Must be empty or the Workflow's namespace. |  | Optional: \{\} <br /> |
 | `key` _string_ | Key is the secret data key. |  | Required: \{\} <br /> |
 
 
@@ -254,7 +254,7 @@ _Appears in:_
 | `timezone` _string_ | Timezone is the timezone for the cron schedule (e.g., "America/New_York")<br />Defaults to UTC if not specified |  | Optional: \{\} <br /> |
 | `concurrencyPolicy` _string_ | ConcurrencyPolicy determines how to handle concurrent executions<br />Allow: Allow concurrent runs<br />Forbid: Skip if previous run is active (default)<br />Replace: Cancel previous run and start new one | Forbid | Enum: [Allow Forbid Replace] <br />Optional: \{\} <br /> |
 | `startingDeadlineSeconds` _integer_ | StartingDeadlineSeconds is an optional deadline in seconds for starting the workflow<br />if it misses its scheduled time |  | Optional: \{\} <br /> |
-| `inputValuesFrom` _[CronInputFromSecret](#croninputfromsecret) array_ | InputValuesFrom injects input values from Secrets when the scheduler creates a WorkflowRun.<br />Each entry maps one workflow input name to a secret key. Secret is read in the workflow's<br />namespace (or the specified namespace). Use for e.g. slackWebhookUrl from a Secret. |  | Optional: \{\} <br /> |
+| `inputValuesFrom` _[CronInputFromSecret](#croninputfromsecret) array_ | InputValuesFrom injects input values from Secrets when the scheduler creates a WorkflowRun.<br />Each entry maps one workflow input name to a secret key. Secret is read in the workflow's<br />namespace; a secretRef.namespace naming another namespace is refused when the cron fires. Use for e.g. slackWebhookUrl from a Secret. |  | Optional: \{\} <br /> |
 
 
 #### EventConfig
@@ -290,7 +290,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `apiVersion` _string_ | APIVersion is the API version of the resource (e.g., "apps/v1") |  | Required: \{\} <br /> |
 | `kind` _string_ | Kind is the kind of the resource (e.g., "Deployment") |  | Required: \{\} <br /> |
-| `namespace` _string_ | Namespace is the namespace to watch (empty string for cluster-scoped resources) |  | Optional: \{\} <br /> |
+| `namespace` _string_ | Namespace is the namespace to watch. Empty means all namespaces or a cluster-scoped kind.<br />Anything other than the Workflow's own namespace needs the Workflow's namespace in the<br />controller's --event-trigger-allowed-source-namespaces list, as does a cluster-scoped kind or a kind the<br />API server cannot resolve. |  | Optional: \{\} <br /> |
 
 
 #### EventResourceInfo
