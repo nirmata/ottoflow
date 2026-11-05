@@ -103,6 +103,7 @@ The following table lists the configurable parameters and their default values:
 | `controller.metrics.port` | Port the controller serves `/metrics` on | `8080` |
 | `controller.metrics.serviceMonitor.enabled` | Enable ServiceMonitor | `false` |
 | `controller.prometheusURL` | Prometheus URL for CEL `prometheusMetrics()`; passed to workflow runner Jobs | `""` |
+| `controller.eventTriggerAllowedSourceNamespaces` | Workflow namespaces whose event triggers may watch other or all namespaces (Workflows there get the controller's watch access in every namespace); passed as `--event-trigger-allowed-source-namespaces` | `[]` |
 
 Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role` and (for internal TLS) `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
 

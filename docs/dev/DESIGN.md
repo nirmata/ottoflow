@@ -1299,7 +1299,7 @@ spec:
         resources:
           - apiVersion: "v1"
             kind: "Pod"
-            namespace: ""  # Watch all namespaces
+            namespace: ""  # Watch all namespaces (needs the Workflow namespace in --event-trigger-allowed-source-namespaces)
             operations: [UPDATE]
             fieldSelector:
               status.phase: "Running"

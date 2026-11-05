@@ -95,6 +95,10 @@ controller:
   args:
     - --leader-elect
 
+  # Workflow namespaces whose event triggers may watch other or all namespaces (empty: own namespace only).
+  # Each listed namespace's Workflows get the controller's watch access in every namespace.
+  eventTriggerAllowedSourceNamespaces: []
+
   # Callback server for waitForCallback steps (POST /api/v1/workflow-runs/.../callback/...).
   callback:
     # addr is the listen address for the callback server. Always on.

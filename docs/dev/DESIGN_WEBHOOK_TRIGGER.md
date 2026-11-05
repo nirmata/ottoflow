@@ -476,15 +476,14 @@ func verifyTimestamp(ts string, window time.Duration) error {
 }
 
 // fetchSecret reads the HMAC signing key from a Kubernetes Secret.
-// Namespace defaults to the Workflow's namespace when SecretRef.Namespace is empty.
+// The Secret is read only in workflowNamespace; a ref naming another namespace is refused.
 // In v1, secretRef.namespace must equal the Workflow's namespace (enforced by admission webhook).
 func (s *WebhookServer) fetchSecret(ctx context.Context, ref WebhookSecretRef, workflowNamespace string) ([]byte, error) {
-    ns := ref.Namespace
-    if ns == "" {
-        ns = workflowNamespace
+    if ns := ref.Namespace; ns != "" && ns != workflowNamespace {
+        return nil, fmt.Errorf("webhook secretRef %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, ref.Name, workflowNamespace)
     }
     var secret corev1.Secret
-    if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, &secret); err != nil {
+    if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: workflowNamespace, Name: ref.Name}, &secret); err != nil {
         return nil, err  // not-found → caller returns 401, not 500
     }
     keyName := ref.Key

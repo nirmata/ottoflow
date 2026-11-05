@@ -86,6 +86,9 @@ spec:
         - {{ . }}
         {{- end }}
         - --namespace={{ .Values.controller.namespace | default (include "ottoflow.namespace" .) }}
+        {{- if .Values.controller.eventTriggerAllowedSourceNamespaces }}
+        - --event-trigger-allowed-source-namespaces={{ join "," .Values.controller.eventTriggerAllowedSourceNamespaces }}
+        {{- end }}
         - --workflow-runner-image={{ include "ottoflow.workflowRunnerImage" . }}
         - --workflow-runner-service-account={{ .Values.workflowRunner.serviceAccountName }}
         - --workflow-runner-cluster-role={{ include "ottoflow.workflowRunnerClusterRole" . }}

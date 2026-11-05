@@ -913,7 +913,7 @@ type CronTrigger struct {
 
 	// InputValuesFrom injects input values from Secrets when the scheduler creates a WorkflowRun.
 	// Each entry maps one workflow input name to a secret key. Secret is read in the workflow's
-	// namespace (or the specified namespace). Use for e.g. slackWebhookUrl from a Secret.
+	// namespace; a secretRef.namespace naming another namespace is refused when the cron fires. Use for e.g. slackWebhookUrl from a Secret.
 	// +optional
 	InputValuesFrom []CronInputFromSecret `json:"inputValuesFrom,omitempty"`
 }
@@ -933,7 +933,7 @@ type CronSecretKeyRef struct {
 	// Name is the Secret name.
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
-	// Namespace is the Secret namespace. If empty, the workflow's namespace is used.
+	// Namespace is the Secret namespace. Must be empty or the Workflow's namespace.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 	// Key is the secret data key.
@@ -1008,7 +1008,10 @@ type EventResource struct {
 	// +kubebuilder:validation:Required
 	Kind string `json:"kind"`
 
-	// Namespace is the namespace to watch (empty string for cluster-scoped resources)
+	// Namespace is the namespace to watch. Empty means all namespaces or a cluster-scoped kind.
+	// Anything other than the Workflow's own namespace needs the Workflow's namespace in the
+	// controller's --event-trigger-allowed-source-namespaces list, as does a cluster-scoped kind or a kind the
+	// API server cannot resolve.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 }
