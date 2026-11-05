@@ -41,7 +41,7 @@ make test
 To run tests for a specific package:
 
 ```bash
-go test ./internal/executor/... -v
+go test ./internal/workflow/executor/... -v
 go test ./internal/workflow/controller/... -v
 ```
 

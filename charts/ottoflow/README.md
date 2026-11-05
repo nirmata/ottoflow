@@ -72,7 +72,7 @@ The following table lists the configurable parameters and their default values:
 |-----------|-------------|---------|
 | `controller.image.registry` | Controller image registry | `ghcr.io/nirmata/ottoflow` |
 | `controller.image.repository` | Controller image repository | `controller` |
-| `controller.image.tag` | Controller image tag | `latest` |
+| `controller.image.tag` | Controller image tag | `""` (defaults to `v<appVersion>`) |
 | `controller.image.fullOverride` | Override full image name | `""` |
 | `controller.replicaCount` | Number of controller replicas | `1` |
 | `controller.nameOverride` | Override controller name | `""` |
@@ -105,7 +105,7 @@ The following table lists the configurable parameters and their default values:
 | `controller.prometheusURL` | Prometheus URL for CEL `prometheusMetrics()`; passed to workflow runner Jobs | `""` |
 | `controller.eventTriggerAllowedSourceNamespaces` | Workflow namespaces whose event triggers may watch other or all namespaces (Workflows there get the controller's watch access in every namespace); passed as `--event-trigger-allowed-source-namespaces` | `[]` |
 
-Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role` and (for internal TLS) `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
+Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role`, `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
 
 **Runner Job secrets**: If the runner Job references Secret-backed volumes that exist in another namespace, the controller copies those secrets into the WorkflowRun's namespace before creating the Job. By default the source namespace is the Workflow's namespace. To copy from a fixed namespace instead, pass `--secret-source-namespace=<namespace>` in `controller.args`. Secrets of type `kubernetes.io/tls` in the namespaces set by `--namespace` and `--agent-executor-namespace` (both the install namespace by default) are never copied; the run fails, so create that Secret in the run's namespace instead.
 
@@ -116,6 +116,14 @@ Controller configuration is passed via **command-line flags** (args). The chart 
 | `workflowRunner.serviceAccountName` | ServiceAccount for runner Jobs. When empty, the controller derives a per-workflow `{workflow-name}-runner` ServiceAccount bound to the narrowed `ottoflow-runner-role` | `""` |
 | `workflowRunner.clusterRole` | ClusterRole bound to runner ServiceAccounts | `""` (defaults to `<fullname>-runner-role`) |
 | `workflowRunner.imagePullSecrets` | Image pull secrets for the runner Job pod | `[]` (falls back to `global.imagePullSecrets`) |
+| `workflowRunner.image.registry` | Runner image registry | `ghcr.io/nirmata/ottoflow` |
+| `workflowRunner.image.repository` | Runner image repository | `workflow-runner` |
+| `workflowRunner.image.tag` | Runner image tag | `""` (defaults to `v<appVersion>`) |
+| `workflowRunner.image.fullOverride` | Override the full runner image name | `""` |
+| `workflowRunner.podLabelsPartOf` | Override the `app.kubernetes.io/part-of` label on runner pods (e.g. for a policy exemption) | `""` (controller default) |
+| `workflowRunner.ttlSecondsAfterFinished` | Seconds after a runner Job completes before it is deleted. Lower it for high-frequency cron to avoid pod buildup | `0` (controller default, 3600) |
+| `workflowRunner.llmCredentialsSecret` | Name of a Secret looked up in each WorkflowRun's namespace; only allowlisted `NIRMATA_*` keys are injected. See [Multi-Tenant LLM Credentials](../../docs/dev/DESIGN.md#multi-tenant-llm-credentials). A run can override it with `spec.execution.llmCredentialsSecret` | `""` (no injection) |
+| `workflowRunner.agentExecutorCASecret` | Agent-executor CA Secret whose `tls.crt` is mounted into runner Jobs that have an agent step. Used only with internal TLS (`agentExecutor.tls.internal.enabled` and no `agentExecutor.tls.secretName`); see [rbac-secret-access.md](../../docs/user/rbac-secret-access.md) | `""` (`<agent-executor>.<install-namespace>.svc.tls-ca`) |
 
 Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, separate from the controller's own `ottoflow-role`, so a workflow step cannot escalate to controller-level privileges (writing ServiceAccounts, ClusterRoleBindings, or ValidatingWebhookConfigurations). See [RBAC Customization](#rbac-customization) below to add resources to the runner role, and [RBAC-GENERATION.md](../../docs/dev/RBAC-GENERATION.md) for the full runner RBAC model.
 
@@ -129,7 +137,7 @@ Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, sepa
 | `agentExecutor.replicaCount` | Number of agent-executor replicas | `1` |
 | `agentExecutor.image.registry` | Agent executor image registry | `ghcr.io/nirmata/ottoflow` |
 | `agentExecutor.image.repository` | Agent executor image repository | `agent-executor` |
-| `agentExecutor.image.tag` | Agent executor image tag | `latest` |
+| `agentExecutor.image.tag` | Agent executor image tag | `""` (defaults to `v<appVersion>`) |
 | `agentExecutor.image.fullOverride` | Override full image name | `""` |
 | `agentExecutor.serviceAccount.create` | Create service account | `true` |
 | `agentExecutor.serviceAccount.name` | Service account name | `""` (auto-generated) |
@@ -138,6 +146,7 @@ Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, sepa
 | `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks get configmaps/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
 | `agentExecutor.tls.internal.enabled` | Use internal cert controller (kyverno/pkg) to provision self-signed TLS | `true` |
 | `agentExecutor.tls.secretName` | Use existing TLS Secret instead of internal cert generation | `""` |
+| `agentExecutor.llmCredentialsSecret` | Secret injected into the agent-executor pod via `envFrom` (LLM provider keys) for steps using `agentRef` | `""` (no injection) |
 | `agentExecutor.resources` | Resource limits and requests | `{}` (defaults provided) |
 
 **Note**: The agent-executor serves HTTPS and requires TLS certs. By default, the internal certificate controller (kyverno/pkg) provisions self-signed CA and TLS certs—no cert-manager required.
@@ -577,4 +586,4 @@ For issues and questions:
 
 ## License
 
-Apache License 2.0
+BUSL-1.1, see [LICENSE.md](../../LICENSE.md) and [LICENSING-FAQ.md](../../LICENSING-FAQ.md).

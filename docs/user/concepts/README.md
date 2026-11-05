@@ -356,7 +356,7 @@ steps:
     agentRef:
       name: diagnostic-agent
       additionalPrompts:
-        - "Analyze these logs: {{ variables.podLogs }}"
+        - "'Analyze these logs: ' + string(variables.podLogs)"
     outputs:
       - name: diagnosis
         expression: 'agentOutputs.diagnosis'

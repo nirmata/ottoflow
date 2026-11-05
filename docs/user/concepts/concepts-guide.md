@@ -270,7 +270,7 @@ Stdio MCP servers (e.g. `uvx`-backed tools) spawn child processes on first use. 
 spec:
   executionLimits:
     maxConcurrentSteps: 3          # cap ready-steps batch per DAG iteration
-    outboundRequestsPerMinute: 60  # token bucket on MCP/agent calls
+    outboundRequestsPerMinute: 60  # token bucket on MCP/agent/A2A calls
 ```
 
 The rate limiter is constructed fresh per `ExecuteWorkflow()` call (and torn down with `defer`). Burst capacity is `rpm/6 + 1` to allow short bursts while protecting downstream services.

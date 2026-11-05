@@ -47,7 +47,7 @@ This separation provides:
 - **Workflow Reference**: A step type that executes another workflow as a sub-workflow
 - **Inputs**: Parameters defined by a workflow template that can be provided when creating a WorkflowRun
 - **Shared Context**: A key-value store that accumulates outputs from all completed steps and includes workflow inputs
-- **DAG**: Directed Acyclic Graph representing step dependencies based on output references
+- **DAG**: Directed Acyclic Graph representing step dependencies, built only from explicit `dependsOn` declarations
 - **Workflow Executor**: Component that builds the dependency graph and orchestrates step execution
 - **Execution modes**: **Cluster** – the controller creates a Job per WorkflowRun; the runner pod executes the workflow. **Local** – the CLI runs the workflow in-process when `--workflow-dir` is set, using a fake client populated from local YAML for control-plane objects and the current kubeconfig for target-cluster operations; supports WorkflowRef (inline) and in-process agent steps.
 - **CEL Expressions**: Common Expression Language expressions that can query Kubernetes resources and perform computations using Kyverno CEL libraries
@@ -59,7 +59,7 @@ This separation provides:
 ### Primary Goals
 
 1. **Declarative Workflow Definition**: Enable users to define workflows declaratively using Kubernetes Custom Resources
-2. **Dependency Resolution**: Automatically resolve and execute steps based on output dependencies
+2. **Dependency Resolution**: Resolve and execute steps in dependency order, based on explicit `dependsOn` declarations
 3. **Concurrent Execution**: Execute independent steps concurrently to maximize efficiency
 4. **Output Sharing**: Provide a mechanism for steps to share data through a shared context
 5. **Kubernetes Native**: Leverage kubebuilder and controller-runtime for Kubernetes-native implementation
@@ -128,7 +128,7 @@ This separation provides:
 - **FR2A.1**: Steps must support an `agentRef` field that references an Agent CRD for LLM-powered execution
 - **FR2A.2**: Agent steps must reference Agent CRDs by name (and optionally namespace)
 - **FR2A.3**: Agent steps must support an optional `additionalPrompts` field (array) to append prompts to the agent's system prompt
-- **FR2A.4**: Additional prompts in steps can contain CEL expressions that have access to workflow context (inputs, previous step outputs, expressions)
+- **FR2A.4**: Each additional prompt in a step is evaluated as a single CEL expression with access to workflow context (see [Variable Access](../user/reference/cel-reference.md#variable-access)), so plain text must be a quoted CEL string
 - **FR2A.5**: Agent steps execute via AgentExecutor Service using A2A protocol (internal subset)
 - **FR2A.6**: Agent execution uses execution settings exclusively from Agent CRD (executionMode, serviceName, serviceNamespace, resources, serviceAccount)
 - **FR2A.7**: No step-level overrides - all execution configuration must be defined in Agent CRD
@@ -172,10 +172,10 @@ This separation provides:
 - **FR2D.10**: Report steps must handle report failures gracefully with configurable failure policies
 
 #### FR3: Dependency Resolution
-- **FR3.1**: The controller must automatically build a DAG from step output references
+- **FR3.1**: The controller must build a DAG from explicit `dependsOn` declarations (dependencies are not inferred from CEL expressions)
 - **FR3.2**: The controller must detect circular dependencies and reject invalid workflows
 - **FR3.3**: Steps without dependencies must be executable immediately
-- **FR3.4**: Steps with dependencies must wait for all dependencies to complete successfully
+- **FR3.4**: Steps with dependencies must wait for all dependencies to finish (succeed, be skipped, or fail with `failurePolicy: Continue`)
 
 #### FR4: Execution Model
 - **FR4.1**: Steps must execute concurrently when dependencies are satisfied
@@ -242,9 +242,9 @@ This separation provides:
 - **FR9.1**: Steps must be able to reference other workflows as a step type using `workflowRef`
 - **FR9.2**: When referencing a workflow, input values must be provided for each input parameter
 - **FR9.3**: Input values can be CEL expressions that reference parent workflow context
-- **FR9.4**: Referenced workflows execute as sub-workflows (new workflow instances) and produce outputs
-- **FR9.5**: Sub-workflow instances are created with owner references to the parent workflow
-- **FR9.6**: Sub-workflow outputs must be accessible to parent workflow steps via `steps.<stepName>.outputs.<key>`
+- **FR9.4**: Referenced workflows execute as sub-workflows, inline in the parent's runner process and produce outputs
+- **FR9.5**: No separate WorkflowRun or Job is created for a sub-workflow, so there is no owner reference to the parent
+- **FR9.6**: Sub-workflow outputs must be accessible to parent workflow steps via `variables.<key>`
 - **FR9.7**: Sub-workflow execution must be tracked in the parent workflow's status
 - **FR9.8**: Failed sub-workflows must cause the parent workflow step to fail
 - **FR9.9**: Sub-workflows execute in the same namespace as the referenced workflow (or specified namespace)
@@ -1646,7 +1646,7 @@ CEL expressions have access to the **complete suite of Kyverno CEL libraries** (
 
 16. **Step Context Variables**:
     - `inputs.<name>` - Access workflow input parameters
-    - `steps.<stepName>.outputs.<key>` - Access outputs from previous steps
+    - `variables.<key>` - Access outputs from previous steps
     - `expressions.<name>` - Access results from CEL expressions evaluated in the current step
       - **Important**: Expressions are evaluated sequentially, so later expressions can reference earlier ones
       - This allows extracting common sub-expressions (e.g., `resource.Get()`) and reusing them
@@ -1660,13 +1660,8 @@ CEL expressions have access to the **complete suite of Kyverno CEL libraries** (
       - This variable contains the result returned by the A2A agent
       - Can be parsed using CEL JSON functions if the agent returns JSON (e.g., `json.unmarshal(a2aResult)`)
     - `reportResult` - For openReport steps, the OpenReports.io report result is available in output expressions
-      - `reportResult.status`: Report generation status (Pending, Running, Succeeded, Failed)
-      - `reportResult.url`: URL to access the generated report (if available)
-      - `reportResult.data`: Report data/content (if available, structure depends on report template)
-      - `reportResult.metadata`: Additional report metadata (reportId, generatedAt, etc.)
-    - `workflow.metadata.name` - Workflow name
-    - `workflow.metadata.namespace` - Workflow namespace
-    - `workflow.metadata.uid` - Workflow UID
+      - Keys: `mode`, `name`, `namespace`, `summary`, `data`
+    - `steps` and `stepStatus` - Agent and forEach step results, and per-step status; see [Variable Access](../user/reference/cel-reference.md#variable-access) for the full list of variables
 
 17. **In-Memory Shared Context**:
     - Shared context is stored in-memory during workflow execution for performance
@@ -1697,14 +1692,14 @@ Summary of where and how the controller is implemented. For full code, see the r
 
 ### DAG and execution model
 
-- **DAG** ([`internal/workflow/executor/dag.go`](../../internal/workflow/executor/dag.go)): Nodes = steps; edges from CEL output references and `matchConditions`; cycle detection; ready-step and completion queries.
-- **Step states**: Pending → Ready → Running → Succeeded | Failed | Retrying. Steps with `failurePolicy: Continue` can fail without blocking dependents.
-- **Execution flow** ([`internal/workflow/executor/executor.go`](../../internal/workflow/executor/executor.go) – `ExecuteWorkflow()`): (1) Validate inputs and init shared context; (2) Build DAG and validate (no cycles); (3) For each step: wait for dependencies, evaluate `matchConditions` (skip if any false), apply retry/timeout, run step via StepExecutor, update context; (4) Mark workflow complete when all steps finish. Concurrent steps share in-memory context safely.
+- **DAG** ([`internal/workflow/executor/dag.go`](../../internal/workflow/executor/dag.go)): Nodes = steps; edges only from explicit `dependsOn` (no inference from CEL references or `matchConditions`); cycle detection; the ready-step query (`GetReadySteps`). Run completion is decided in `executor.go`.
+- **Step states**: Pending, Running, Succeeded, Failed, Skipped, and Waiting (paused for a callback). A step whose `matchConditions` are false goes straight from Pending to Skipped. Steps with `failurePolicy: Continue` can fail without blocking dependents.
+- **Execution flow** ([`internal/workflow/executor/executor.go`](../../internal/workflow/executor/executor.go) – `ExecuteWorkflow()`): (1) Validate inputs and init shared context; (2) Build DAG and validate (no cycles); (3) For each step: wait for dependencies, evaluate `matchConditions` (skip if any false), run it with `executeStep()`, update context; (4) Mark workflow complete when all steps finish. Ready steps run one at a time; only forEach children run in parallel, up to `forEach.maxConcurrency`.
 
 ### CEL and context
 
-- **CEL** ([`internal/workflow/executor/cel.go`](../../internal/workflow/executor/cel.go), [`cel_libraries.go`](../../internal/workflow/executor/cel_libraries.go)): Kyverno CEL libraries via [kyverno/sdk/extensions/cel](https://github.com/kyverno/sdk/tree/main/extensions/cel) + Kubernetes CEL libraries; OttoFlow macros (`resource.Get`/`List`, `resourceLogs`, `resourceEvents`, `resourceMetrics`, `prometheusMetrics`); variable map from inputs/steps/expressions. **Important**: Use `EnvSet` (from `k8s.io/apiserver/pkg/cel/environment`) with a single `Extend()` so all options are registered together; do not extend `cel.Env` in multiple steps.
-- **Shared context** ([`internal/workflow/executor/context.go`](../../internal/workflow/executor/context.go)): In-memory during execution; structure `inputs`, `steps.<name>.outputs`, `expressions`; workflow-level outputs written to WorkflowRun status at completion. Key methods: `initializeSharedContext()`, `getSharedContext()`, `updateSharedContext()`.
+- **CEL** ([`internal/workflow/executor/cel.go`](../../internal/workflow/executor/cel.go), [`cel_libraries.go`](../../internal/workflow/executor/cel_libraries.go), [`resource_macros.go`](../../internal/workflow/executor/resource_macros.go)): Kyverno CEL libraries via [kyverno/sdk/extensions/cel](https://github.com/kyverno/sdk/tree/main/extensions/cel) + Kubernetes CEL libraries; OttoFlow macros (`resource.Get`/`List`, `resourceLogs`, `resourceEvents`, `resourceMetrics`, `prometheusMetrics`); variable map (see [Variable Access](../user/reference/cel-reference.md#variable-access)). **Important**: Use `EnvSet` (from `k8s.io/apiserver/pkg/cel/environment`) with a single `Extend()` so all options are registered together; do not extend `cel.Env` in multiple steps.
+- **Shared context** ([`internal/workflow/executor/context.go`](../../internal/workflow/executor/context.go)): In-memory during execution; structure `inputs`, `variables` (step outputs, flat), `steps` (agentRef and forEach results only), `expressions`; workflow-level outputs written to WorkflowRun status at completion. Key methods: `InitializeContext()`, `ReadContext()`, `WriteStepOutputs()`, `GetContext()`.
 
 ### Controllers and triggers
 
@@ -1716,7 +1711,7 @@ Summary of where and how the controller is implemented. For full code, see the r
 
 ### Recovery, resilience, and production considerations
 
-- **Executor / runner restart recovery** ([`executor.go`](../../internal/workflow/executor/executor.go), [`workflowrun_controller.go`](../../internal/workflow/controller/workflowrun_controller.go)): Workflow execution context (inputs, variables, step outputs) is in-memory only within a runner process. If a runner pod dies, that in-memory state is lost. Recovery is owned by the runner Job rather than by controller-inline execution: OttoFlow step retries still happen inside the runner, while infrastructure-level pod or Job failures are surfaced back into `WorkflowRun.status` as run failures. Checkpoint/resume is not implemented.
+- **Executor / runner restart recovery** ([`executor.go`](../../internal/workflow/executor/executor.go), [`workflowrun_controller.go`](../../internal/workflow/controller/workflowrun_controller.go)): By default, workflow execution context (inputs, variables, step outputs) is in-memory only within a runner process. If a runner pod dies, that in-memory state is lost and the controller marks the run Failed in `WorkflowRun.status`. Checkpointing is opt-in per WorkflowRun (`spec.execution.checkpointing.enabled`, see [`checkpoint.go`](../../internal/workflow/executor/checkpoint.go)): after each step the executor persists a snapshot to a ConfigMap.
 - **WorkflowRun cleanup and run policy** ([`workflowrun_controller.go`](../../internal/workflow/controller/workflowrun_controller.go), [`workflow_types.go`](../../api/v1alpha1/workflow_types.go)): Workflow `spec.run` supports **retentionMinutes** (delete completed runs older than N minutes) and **maxAllowed** (keep at most N completed runs per workflow; oldest deleted first). Applied when reconciling completed WorkflowRuns. Omitted fields default to 10080 minutes (7 days) and 50 runs (CRD defaults); an explicit `0` disables the respective deletion or limit.
 - **Leader election**: Default is **on** (`--leader-elect` defaults to true in [`cmd/controller/main.go`](../../cmd/controller/main.go)). With a single replica, that instance becomes leader; with multiple replicas, only the leader reconciles. Event triggers run only on the leader.
 - **Scalability and hardening**: Retries for step execution use `spec.retry` (backoff, RetryOn). Kubernetes API calls use controller-runtime’s client. Agent exec calls reuse a per-`WorkflowExecutor` HTTP client and retry transient network failures and 5xx responses up to three attempts. External A2A calls build a client per step and rely on step-level retry for transient failures. **Metrics**: Workflow failures are recorded via `ottoflow_workflow_runs_total{..., phase="failed"}` and step failures via `ottoflow_workflow_steps_total{..., phase="failed"}` ([`internal/metrics/workflow_metrics.go`](../../internal/metrics/workflow_metrics.go)).
@@ -1728,14 +1723,12 @@ Summary of where and how the controller is implemented. For full code, see the r
 | Expression / default step | [`executor.go`](../../internal/workflow/executor/executor.go) – expression evaluation, outputs |
 | WorkflowRef (sub-workflow) | `executor.go` – `executeWorkflowReference()`; runs referenced workflow inline in the same Job/process (collapsed at runtime for code reuse); CEL inputs, cross-namespace, output extraction; works in cluster and local execution |
 | Agent | [`agent_executor.go`](../../internal/workflow/executor/agent_executor.go), [`a2a_client.go`](../../internal/workflow/executor/a2a_client.go); prompts, LLM providers, A2A, output extraction |
-| Resource query | [`resource_query_executor.go`](../../internal/workflow/executor/resource_query_executor.go), [`resource.go`](../../internal/workflow/executor/resource.go); single/list, selectors, CEL outputs, CRDs |
+| Resource query | [`resource_query_executor.go`](../../internal/workflow/executor/resource_query_executor.go); single/list, selectors, CEL outputs, CRDs |
 | Prometheus query | [`prometheus_query_executor.go`](../../internal/workflow/executor/prometheus_query_executor.go); PromQL with `{{.var}}` substitution, Variables (CEL), Outputs over result |
 | StepTemplate | [`steptemplate_executor.go`](../../internal/workflow/executor/steptemplate_executor.go); CRD lookup, Go template args, CEL for args |
 | MCP tool call | [`mcp_executor.go`](../../internal/workflow/executor/mcp_executor.go); CEL args, MCPServer CRD, stdio/HTTP/SSE, auth |
-| A2A agent call | [`a2a_executor.go`](../../internal/workflow/executor/a2a_executor.go), [`a2a_client.go`](../../internal/workflow/executor/a2a_client.go); sync/async, agent card, timeout, auth |
-| OpenReports.io report | Not implemented |
-
-Step execution supports retries (backoff), timeouts, `failurePolicy`, and `matchConditions`; entry point is `executeStep()` in `executor.go`.
+| A2A agent call | [`external_agent_executor.go`](../../internal/workflow/executor/external_agent_executor.go), [`a2a_client.go`](../../internal/workflow/executor/a2a_client.go); sync/async, agent card, timeout, auth |
+| OpenReports.io report | [`openreport_executor.go`](../../internal/workflow/executor/openreport_executor.go) – `executeOpenReportStep()`; falls back to `reportResult.data` when the OpenReports CRD is absent |
 
 ### Agent executor: OSS/enterprise split
 
@@ -2151,7 +2144,7 @@ steps:
       # Uses executionMode, serviceName, serviceNamespace, serviceAccount from Agent CRD
       # No overrides allowed - all execution config comes from Agent CRD
       additionalPrompts:
-        - "Analyze this code: {{ variables.code }}"
+        - "'Analyze this code: ' + string(variables.code)"
 ```
 
 **Execution Configuration**:
@@ -2309,16 +2302,20 @@ spec:
 
 #### 3. Performance Controls and Rate Limiting
 
-**Current State**: No concurrency limits or rate limiting mechanisms.
+**Current State**: Partly implemented. Shipped (see the [Workflow API reference](../user/reference/api/workflow.md#spec-workflowspec), [forEach](../user/reference/api/workflow.md#foreach), [cron triggers](../user/reference/api/workflow.md#cron-trigger) and [webhook triggers](../user/reference/api/workflow.md#webhook-trigger)):
+- `spec.executionLimits.maxConcurrentSteps` caps how many ready steps start per DAG pass (they still run one at a time).
+- `spec.executionLimits.outboundRequestsPerMinute` is one token bucket shared by a run's MCP, agent and A2A calls. Each `workflowRef` call builds a new, full bucket from the sub-workflow's own limit (unlimited if unset), not the parent's.
+- `forEach.maxConcurrency` sets forEach fan-out per step.
+- `spec.run.maxConcurrentRuns` skips creating a cron, event, webhook, MCP or A2A run while that many runs of the Workflow are unfinished (default 10). WorkflowRuns created directly are not gated.
+- `triggers[].webhook.rateLimit` limits inbound webhook requests (default 60 per minute, burst 10).
+- `ConcurrencyPolicy` is set per cron trigger (`triggers[].cron.concurrencyPolicy`).
 
-**Enhancement**: Add performance controls and rate limiting to prevent overwhelming Kubernetes API server and external services.
+**Enhancement**: Add a controller-wide cap across Workflows (a controller flag, not a Workflow field) and separate per-target rate limits (Kubernetes API, MCP, A2A) to prevent overwhelming Kubernetes API server and external services.
 
 **Implementation Approach**:
 ```yaml
 spec:
-  execution:
-    maxConcurrentSteps: 10
-    maxConcurrentWorkflows: 100
+  executionLimits:
     rateLimits:
       kubernetesAPI: "100 req/s"
       mcpCalls: "50 req/s"
@@ -2335,15 +2332,9 @@ spec:
 
 #### 4. Enhanced Observability
 
-**Current State**: Basic status tracking and Kubernetes events.
+**Current State**: Implemented: Prometheus run and step counters, duration histograms and an active-runs gauge, plus custom output metrics ([metrics reference](../user/reference/metrics.md)); OpenTelemetry tracing with a span per step ([DESIGN_OTEL_GENAI.md](DESIGN_OTEL_GENAI.md)); structured logging ([logging reference](../user/reference/logging.md)); status tracking and Kubernetes events. Not implemented: resource-usage metrics, JSON log output, and a UI.
 
-**Enhancement**: Add comprehensive observability including metrics, tracing, structured logging, and UI.
-
-**Components**:
-- **Metrics**: Prometheus metrics for workflow/step execution times, success rates, resource usage (see [Prometheus Metrics (Design)](#prometheus-metrics-design) above for detailed design)
-- **Tracing**: OpenTelemetry spans for step execution and workflow flow
-- **Structured Logging**: JSON logs with workflow/step context for better searchability
-- **UI**: Web interface for workflow visualization, monitoring, and debugging
+**Enhancement**: Add resource-usage metrics, JSON log output, and a web UI for workflow visualization, monitoring, and debugging.
 
 **Benefits**:
 - Better operational visibility
