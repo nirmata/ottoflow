@@ -19,8 +19,6 @@ controller:
     repository: controller
     # When empty, chart uses .Chart.AppVersion (fixed tag for released charts)
     tag: ""
-    # Override image name if needed
-    nameOverride: ""
     # Override full image if needed
     fullOverride: ""
 
@@ -624,14 +622,6 @@ networkPolicy:
       - protocol: TCP
         port: 4317
 
-# CRD installation
-crds:
-  # Specifies whether CRDs should be installed
-  install: true
-  # CRD installation mode: "install" (default) or "skip"
-  # Use "skip" if CRDs are managed outside of Helm
-  mode: install
-
 # Namespace configuration
 namespace:
   # Namespace name (if not set, uses Release.Namespace from helm -n)
@@ -640,6 +630,3 @@ namespace:
 # Labels and annotations
 commonLabels: {}
 commonAnnotations: {}
-
-# Additional resources (for advanced users)
-additionalResources: []
