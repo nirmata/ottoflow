@@ -128,6 +128,18 @@ func TestHandleCronFire_RecordsWarningPerFailureClass(t *testing.T) {
 			wantInNote: "read timed out",
 		},
 		{
+			// Refused before any read: a Get would fail with a different note.
+			name:  "secret in another namespace",
+			funcs: failSecretGet(errors.New("unexpected Secret read")),
+			cronSpec: func() *ottoflowv1alpha1.CronTrigger {
+				c := cronWithSecretInput()
+				c.InputValuesFrom[0].SecretRef.Namespace = "other-ns"
+				return c
+			}(),
+			wantReason: "CronInputSecretInvalid",
+			wantInNote: "cron inputValuesFrom: secret other-ns/" + cronEventSecretName + ": Secret references are resolved only in the Workflow's namespace",
+		},
+		{
 			// A Forbidden on the WorkflowRun create is a create failure, not a Secret failure.
 			name: "workflowrun create rejected",
 			funcs: interceptor.Funcs{

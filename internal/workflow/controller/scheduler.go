@@ -273,22 +273,21 @@ func deepCopyExecution(in *ottoflowv1alpha1.WorkflowRunExecutionSpec) *ottoflowv
 }
 
 // cronInputValuesFromSecrets reads the given InputValuesFrom entries and returns a map of input name to value.
-// Secrets are read in workflowNamespace when ref.Namespace is empty.
+// Secrets are read only in workflowNamespace; a ref naming another namespace is refused.
 func (s *Scheduler) cronInputValuesFromSecrets(ctx context.Context, workflowNamespace string, from []ottoflowv1alpha1.CronInputFromSecret) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, entry := range from {
-		ns := entry.SecretRef.Namespace
-		if ns == "" {
-			ns = workflowNamespace
+		if ns := entry.SecretRef.Namespace; ns != "" && ns != workflowNamespace {
+			return nil, fmt.Errorf("secret %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, entry.SecretRef.Name, workflowNamespace)
 		}
 		secret := &corev1.Secret{}
-		key := client.ObjectKey{Namespace: ns, Name: entry.SecretRef.Name}
+		key := client.ObjectKey{Namespace: workflowNamespace, Name: entry.SecretRef.Name}
 		if err := s.client.Get(ctx, key, secret); err != nil {
-			return nil, fmt.Errorf("secret %s/%s: %w", ns, entry.SecretRef.Name, err)
+			return nil, fmt.Errorf("secret %s/%s: %w", workflowNamespace, entry.SecretRef.Name, err)
 		}
 		data, ok := secret.Data[entry.SecretRef.Key]
 		if !ok {
-			return nil, fmt.Errorf("secret %s/%s: key %q %w", ns, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
+			return nil, fmt.Errorf("secret %s/%s: key %q %w", workflowNamespace, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
 		}
 		out[entry.InputName] = string(data)
 	}

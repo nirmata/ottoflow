@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,12 +24,14 @@ import (
 	celgo "github.com/google/cel-go/cel"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -154,6 +157,35 @@ type TriggerManager struct {
 	// The nested structure lets unregisterEventTrigger prune all entries for a trigger in O(1).
 	dedupMu    sync.Mutex
 	dedupState map[string]map[string]dedupEntry
+	// Workflow namespaces allowed to watch other or all namespaces.
+	eventTriggerAllowedNamespaces []string
+}
+
+// SetEventTriggerAllowedNamespaces sets the Workflow namespaces exempt from the event-trigger watch scope.
+func (tm *TriggerManager) SetEventTriggerAllowedNamespaces(ns []string) {
+	tm.eventTriggerAllowedNamespaces = ns
+}
+
+// EventResourceInScope reports whether an event trigger of a Workflow in workflowNS may watch r: always when
+// workflowNS is allowed, otherwise only in workflowNS and for a well-formed kind that c's REST mapper resolves as
+// namespaced (a nil c skips the mapper check). The kind is resolved only when that can change the answer.
+func EventResourceInScope(c client.Client, workflowNS string, r ottoflowv1alpha1.EventResource, allowed []string) bool {
+	if slices.Contains(allowed, workflowNS) {
+		return true
+	}
+	if r.Namespace == "" || r.Namespace != workflowNS {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(r.APIVersion)
+	if err != nil || len(validation.IsDNS1035Label(strings.ToLower(r.Kind))) > 0 || len(validation.IsDNS1035Label(gv.Version)) > 0 ||
+		(gv.Group != "" && len(validation.IsDNS1123Subdomain(gv.Group)) > 0) {
+		return false
+	}
+	if c == nil {
+		return true
+	}
+	m, err := c.RESTMapper().RESTMapping(gv.WithKind(r.Kind).GroupKind(), gv.Version)
+	return err == nil && m.Scope.Name() != meta.RESTScopeNameRoot
 }
 
 // NewTriggerManager creates a new trigger manager without dynamic client
@@ -323,15 +355,24 @@ func (tm *TriggerManager) registerEventTrigger(ctx context.Context, key string, 
 	// Set up watchers for each resource type.
 	// Pass key (the event key) separately so watchEvents can use it as the dedup scope —
 	// dedup state is keyed by event key, not the resource-specific key.
+	var watchErr error
 	for i, resource := range eventSpec.Resources {
+		if !EventResourceInScope(tm.client, workflow.Namespace, resource, tm.eventTriggerAllowedNamespaces) {
+			logger.Info("event trigger resource not watched: another namespace, all namespaces, or a cluster-scoped or unresolvable kind; list the Workflow namespace in --event-trigger-allowed-source-namespaces to opt in",
+				logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "resource", resource)
+			continue
+		}
+		if watchErr != nil {
+			continue // keep classifying so a watch failure does not hide a refusal
+		}
 		resourceKey := fmt.Sprintf("%s-resource-%d", key, i)
 		if err := tm.watchResource(ctx, resourceKey, key, workflow, resource, eventSpec); err != nil {
 			logger.Error(err, "failed to watch resource", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "resource", resource)
-			return err
+			watchErr = err
 		}
 	}
 
-	return nil
+	return watchErr
 }
 
 // watchResource sets up a watch for a specific resource type.
@@ -383,6 +424,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 
 	// Resolve the plural resource name via the REST mapper (authoritative, handles CRDs correctly).
 	// Fall back to lowercase Kind + "s" only if the mapper is unavailable or returns an error.
+	// Outside the event-trigger allowlist, EventResourceInScope has already resolved this kind, so only allowlisted Workflow namespaces reach the fallback.
 	var gvr schema.GroupVersionResource
 	if mapping, err := tm.client.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version); err == nil {
 		gvr = mapping.Resource
