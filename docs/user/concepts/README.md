@@ -60,7 +60,7 @@ By combining deterministic workflow orchestration, sandboxed agent execution, an
 A **Workflow** is an immutable template that defines:
 - Steps to execute
 - Input parameters
-- Optional triggers (cron or event-based)
+- Optional triggers (cron, event or webhook)
 - Output definitions
 
 Think of it as a blueprint that can be executed multiple times.
@@ -90,7 +90,7 @@ Steps resolve dependencies based on:
 
 Dependencies must be explicitly declared using the `dependsOn` field. The controller does not automatically infer dependencies from CEL expression references. If a step uses `variables.*` from another step, you must declare the dependency explicitly.
 
-Independent steps (those without dependencies) execute in parallel for efficiency.
+Independent steps (those without dependencies) become ready together but run one at a time; `forEach` items run concurrently.
 
 ### Shared Context
 
@@ -211,11 +211,11 @@ Note: trigger metadata is **not** available as a CEL variable inside workflow st
 
 1. **WorkflowRun Created**: A WorkflowRun is created either:
    - **Manually**: User creates a WorkflowRun referencing a Workflow template
-   - **Automatically**: A trigger (cron or event) defined in the Workflow template automatically creates a WorkflowRun when its conditions are met
+   - **Automatically**: A trigger (cron, event or webhook) defined in the Workflow template automatically creates a WorkflowRun when its conditions are met
 2. **Input Validation**: Controller validates that all required inputs are provided
 3. **Context Initialization**: Input values populate the initial shared context (for triggered workflows, inputs may be mapped from trigger data)
-4. **DAG Construction**: Controller builds a dependency graph from step references
-5. **Step Execution**: Steps execute when dependencies are satisfied (in parallel when possible)
+4. **DAG Construction**: Controller builds a dependency graph from explicit `dependsOn` declarations
+5. **Step Execution**: Steps execute when dependencies are satisfied, one ready step at a time (`forEach` items run concurrently)
 6. **Output Collection**: Completed step outputs are stored in shared context
 7. **Completion**: WorkflowRun completes when all steps finish
 
@@ -225,7 +225,7 @@ Dependencies must be explicitly declared using the `dependsOn` field in each ste
 - Builds a Directed Acyclic Graph (DAG) from explicit `dependsOn` declarations
 - Validates that there are no circular dependencies
 - Executes steps in the correct order based on the DAG
-- Runs independent steps concurrently
+- Runs ready steps one at a time (`forEach` items run concurrently)
 
 **Important**: Dependencies are NOT automatically inferred from CEL expression references. If a step references `variables.*` from another step, you must explicitly declare the dependency using `dependsOn`.
 

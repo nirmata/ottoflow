@@ -29,10 +29,11 @@
 
 ### Step
 
-The `step` field has the same structure as a workflow [Step](workflow.md#step) (expressions, outputs, dependsOn, agentRef, mcpToolCall, workflowRef, forEach, resourceQuery, mutate, etc.). Within the template:
+The `step` field has the same structure as a workflow [Step](workflow.md#step) (expressions, outputs, dependsOn, resourceQuery, prometheusQuery, agentRef, mcpToolCall, workflowRef, externalAgentRef). Within the template:
 
 - **Parameter placeholders:** Use `{{.parameterName}}` in expression strings, output expressions, and other string fields.
 - **Step name:** The template's step name is replaced with the actual step name when instantiated.
+- **Ignored fields:** On `spec.step`, `dependsOn`, `matchConditions`, `failurePolicy`, `retry` and `timeout` have no effect. Set `dependsOn`, `matchConditions` and `failurePolicy` on the workflow step that references the template.
 
 ---
 

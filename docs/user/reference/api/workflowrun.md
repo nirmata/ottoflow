@@ -103,9 +103,9 @@ Exactly one cluster source should be set when `clusterRef` is present.
 | `error` | string | Error information if the step failed. |
 | `startTime` | string (date-time) | When the step started. |
 | `completionTime` | string (date-time) | When the step completed. |
-| `retryCount` | integer | Number of retry attempts (0 = initial, 1+ = retries). |
-| `lastRetryTime` | string (date-time) | Timestamp of last retry. |
-| `nextRetryTime` | string (date-time) | When the next retry will be attempted (if retrying). |
+| `retryCount` | integer | Not written: step-level retry is not applied. Number of retry attempts (0 = initial, 1+ = retries). |
+| `lastRetryTime` | string (date-time) | Not written. Timestamp of last retry. |
+| `nextRetryTime` | string (date-time) | Not written. When the next retry will be attempted (if retrying). |
 
 ### Trigger
 
