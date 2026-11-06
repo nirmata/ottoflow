@@ -88,63 +88,9 @@ kubectl apply -f config/generated/install.yaml
 
 See the [Helm Chart README](../../../charts/ottoflow/README.md) for chart options and the [Configuration Reference](../reference/configuration.md) for all flags and environment variables.
 
-## Upgrading: default run-history cleanup
+## Upgrading
 
-`Workflow.spec.run` now defaults `retentionMinutes` to `10080` (7 days) and `maxAllowed` to `50` completed runs. Previously, a Workflow that left these fields unset never had its completed WorkflowRuns deleted.
-
-**Once the new CRD is applied, the controller deletes run history beyond 7 days / 50 runs for each Workflow that leaves these fields unset.** Existing Workflows that have no `spec.run`, or `spec.run: {}`, read back the defaults without being rewritten; a Workflow that sets only one of the two fields gets the default for the other. Reconciling a completed run of that Workflow after the CRD is applied deletes, per Workflow, completed runs older than 7 days, then the oldest completed runs beyond 50. It stops early if it deletes the run being reconciled, so full pruning can take several reconciles. Each deleted run's audit-snapshot ConfigMap is garbage-collected with it through owner references. Cleanup runs when a completed run of the Workflow is reconciled, for example when a run completes, on a controller restart, or on the controller's periodic resync (about every 10 hours).
-
-`helm upgrade` does not update CRDs. Apply the CRDs separately (see [Skip CRD Installation](../../../charts/ottoflow/README.md#skip-crd-installation)). Until you do, the controller treats an unset field as `0` and keeps today's behavior.
-
-**To keep the old behavior,** set `retentionMinutes: 0` (no age limit) and `maxAllowed: 0` (no count limit) explicitly on the Workflow. Setting one of them to `0` disables only that limit. See the [`spec.run` reference](../reference/api/workflow.md).
-
-**Workflows that already set both to `0`.** Before this change, a typed controller write (for example the A2A exposure finalizer on a Workflow with `spec.expose.kagent`) dropped an explicit `0`, so such a Workflow can be stored without the two fields and would get the defaults once the new CRD is applied. Before applying the new CRD, in this order:
-
-1. Find affected Workflows. For Workflows applied with client-side `kubectl apply`, this lists those whose last-applied manifest sets either field to `0` while the stored `spec.run` lacks either field:
-
-   ```bash
-   kubectl get workflows.ottoflow.nirmata.io -A -o json | jq -r '.items[] | select((.metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"] // "{}" | fromjson | .spec.run // {}) as $l | ($l.retentionMinutes == 0 or $l.maxAllowed == 0) and ((.spec.run.retentionMinutes // null) == null or (.spec.run.maxAllowed // null) == null)) | "\(.metadata.namespace)/\(.metadata.name)"'
-   ```
-
-   This cannot see Workflows without the last-applied annotation, such as those applied with `kubectl apply --server-side`. For those, and for Helm- and Argo CD-applied Workflows, compare the source manifests that set `retentionMinutes: 0` / `maxAllowed: 0` with the stored `spec.run`:
-
-   ```bash
-   kubectl get workflows.ottoflow.nirmata.io -A -o json | jq -r '.items[] | "\(.metadata.namespace)/\(.metadata.name) \(.spec.run // {} | tojson)"'
-   ```
-
-2. Re-apply each affected Workflow's manifest, unchanged, while the old CRD is still installed.
-3. Check that the second command in step 1 shows `{"maxAllowed":0,"retentionMinutes":0}` for each of them. Until the upgrade, do not edit these Workflows (in particular `spec.expose` or `spec.inputs`): the old controller rewrites a Workflow when it adds or removes its finalizer, which drops the `0`s again.
-4. Then upgrade the controller first, and the new CRD second. With the old controller and the new CRD, a typed write turns an explicit `0` back into the default.
-
-## Upgrading: default concurrency cap
-
-A Workflow that leaves `spec.run.maxConcurrentRuns` unset is now capped at 10 active (Pending, Running, or not yet picked up) WorkflowRuns. Previously cron, event, webhook and MCP runs had no limit unless the field was set. At 10 active runs, cron and event triggers skip creating a run, MCP calls return an error and webhooks answer `429`. The cap is in the controller, so it applies without re-applying CRDs.
-
-**To keep the old behavior,** set `maxConcurrentRuns: 0` (no limit) on the Workflow.
-
-## Upgrading: stricter chart values schema
-
-`values.schema.json` now rejects unknown keys at the top level and under `webhook`, `namespace` and `controller.image`, so a typo or a misnested key fails `helm install` and `helm upgrade` instead of being ignored (for example, `webhook.metrics` belongs under `controller.metrics`). It also type-checks `webhook` values: `failurePolicy` must be `Fail` or `Ignore` and `timeoutSeconds` an integer. Other subtrees, such as the rest of `controller`, still accept unknown keys.
-
-The values `crds.install`, `crds.mode`, `additionalResources`, `namespace.create` and `controller.image.nameOverride` are removed. They never had any effect: Helm installs everything in `crds/` regardless. Setting any of them now fails validation. To skip CRDs, see [Skip CRD Installation](../../../charts/ottoflow/README.md#skip-crd-installation).
-
-`helm upgrade --reuse-values` from an earlier chart version always fails validation: it re-applies the earlier chart's defaults, which include the removed `crds`, `additionalResources` and `controller.image.nameOverride`. A plain `helm upgrade` with no `-f` or `--set` re-applies the release's stored values (what `helm get values` prints), so it also fails if those values contain a removed or misnested key. Upgrade once with an explicit file instead:
-
-```bash
-helm get values <release> -n <namespace> -o yaml > my-values.yaml
-# delete the stale keys, and any parent key left empty, from my-values.yaml, then:
-helm upgrade <release> <chart> -n <namespace> --reset-values -f my-values.yaml
-```
-
-## Upgrading: event-trigger watch scope
-
-After the controller restarts, an event trigger watches only its Workflow's namespace. A resource in another namespace, with an empty namespace (all namespaces), of a cluster-scoped kind, or of a kind the API server cannot resolve at that moment is skipped unless the Workflow's namespace is in `controller.eventTriggerAllowedSourceNamespaces`. With the admission webhook enabled, such triggers are rejected on create, and on update when the triggers change. A skipped resource is reported once when the Workflow is registered and is not retried until the Workflow is next reconciled: make any change to the Workflow, or restart the controller, once the kind exists (for example a CRD installed later); the periodic resync (10 hours by default) also picks it up. With the admission webhook disabled, a Workflow applied before its CRD is stored and then skipped in the same way. Cron `inputValuesFrom` and webhook `secretRef` entries whose `namespace` differs from the Workflow's stop resolving. Nothing is deleted, and existing WorkflowRuns keep their values.
-
-The runtime signals are a controller log line for a skipped event resource, a `CronInputSecretInvalid` Warning Event on the Workflow for a cron trigger, and a 401 with an `hmac_failure` count for a webhook trigger, so list affected Workflows before upgrading:
-
-```bash
-kubectl get workflows.ottoflow.nirmata.io -A -o json | jq -r '.items[] | .metadata as $m | (.spec.triggers // [])[] | ((.event.resources // [])[] | select((.namespace // "") != $m.namespace) | "event-resource"), ((.cron.inputValuesFrom // [])[] | select((.secretRef.namespace // "") != "" and .secretRef.namespace != $m.namespace) | "cron-secret"), (select((.webhook.secretRef.namespace // "") != "" and .webhook.secretRef.namespace != $m.namespace) | "webhook-secret") | "Workflow \($m.namespace)/\($m.name): \(.)"'
-```
+Read the [upgrade notes](../upgrades/) before you upgrade. Chart-specific steps are in the chart README's [Upgrading](../../../charts/ottoflow/README.md#upgrading) section, and A2A caller authentication is in [Securing A2A callers](workflows-as-a2a-agents.md#securing-a2a-callers).
 
 ## Nirmata LLM credentials (optional)
 
