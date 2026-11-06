@@ -217,7 +217,7 @@ func TestCreateWorkflowRunFromEvent_RetryStopsAfterFourAttempts(t *testing.T) {
 	}
 }
 
-// Mutant: the ctx.Err() == nil part removed -> 4 calls
+// Mutant: the ctx.Err() == nil part of retryWindowOpen removed -> 4 calls
 // (utilnet.IsTimeout matches context.DeadlineExceeded).
 func TestCreateWorkflowRunFromEvent_NoRetryAfterCallerDeadline(t *testing.T) {
 	env := newCreateRetryEnv(func(ctx context.Context, _ int, _ func() error) error {
@@ -248,7 +248,7 @@ func TestCreateWorkflowRunFromEvent_NoRetryOnNonTransientError(t *testing.T) {
 	}
 }
 
-// Mutant: the time.Since(start) < createRetryBudget part removed -> 4 calls.
+// Mutant: the time.Since(start) < createRetryBudget part of retryWindowOpen removed -> 4 calls.
 // A first failure that outlasts the budget is not repeated.
 func TestCreateWorkflowRunFromEvent_NoRetryAfterBudget(t *testing.T) {
 	old := createRetryBudget
@@ -259,6 +259,23 @@ func TestCreateWorkflowRunFromEvent_NoRetryAfterBudget(t *testing.T) {
 		return apierrors.NewInternalError(errors.New("webhook timed out"))
 	})
 	assertCreateCalls(t, env, context.Background())
+}
+
+// Mutant: the budget and ctx recheck before each retried Create removed -> 2 calls.
+// The budget runs out during the backoff sleep (first sleep is about 10ms), after the predicate
+// passed; no Create may start after it, and the transient error is returned.
+func TestCreateWorkflowRunFromEvent_NoCreateAfterBudgetExpiresInBackoff(t *testing.T) {
+	old := createRetryBudget
+	createRetryBudget = 8 * time.Millisecond
+	t.Cleanup(func() { createRetryBudget = old })
+	transient := apierrors.NewInternalError(errors.New("webhook down"))
+	env := newCreateRetryEnv(alwaysFail(transient))
+	if err := env.create(context.Background()); !errors.Is(err, transient) {
+		t.Fatalf("err = %v, want the transient error", err)
+	}
+	if env.calls != 1 {
+		t.Fatalf("Create calls = %d, want 1", env.calls)
+	}
 }
 
 // runWatchOnce feeds one event through watchEvents and waits for it to finish.

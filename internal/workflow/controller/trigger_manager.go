@@ -816,11 +816,17 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	// return value would record dedup and write status for a run that does not exist.
 	attempt := 0
 	start := time.Now()
+	retryWindowOpen := func() bool { return ctx.Err() == nil && time.Since(start) < createRetryBudget }
 	var createErr error
 	_ = retry.OnError(retry.DefaultBackoff, func(err error) bool {
-		return ctx.Err() == nil && isTransientCreateErr(err) && time.Since(start) < createRetryBudget
+		return retryWindowOpen() && isTransientCreateErr(err)
 	}, func() error {
 		attempt++
+		// The predicate ran before the backoff sleep; recheck now so no Create starts after the
+		// budget or the caller's context ran out, keeping the previous attempt's error.
+		if attempt > 1 && !retryWindowOpen() {
+			return createErr
+		}
 		createErr = tm.client.Create(ctx, workflowRun.DeepCopy())
 		if attempt > 1 && apierrors.IsAlreadyExists(createErr) {
 			createErr = nil
