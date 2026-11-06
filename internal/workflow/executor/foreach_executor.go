@@ -117,6 +117,10 @@ func (e *WorkflowExecutor) executeForEach(ctx context.Context, workflowRun *otto
 
 	// Process items concurrently with worker pool
 	results := e.processItemsConcurrently(ctx, workflowRun, step, contextData, itemsList, itemVariable, maxConcurrency, itemFailurePolicy)
+	// Workers return silently on ctx.Done(), so a cancelled loop can look like a partial success.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("forEach: cancelled with %d/%d item(s) completed: %w", len(results.Results), len(itemsList), err)
+	}
 
 	// Write results to context first (so outputs can reference them)
 	if err := e.writeForEachResults(ctx, step.Name, results); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/go-logr/logr"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -174,7 +175,7 @@ func setPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv
 		return fmt.Errorf("marshal CallbackState: %w", err)
 	}
 	patch := fmt.Sprintf(`{"status":{"pendingCallback":%s}}`, string(cbJSON))
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retryOnConflictKeepErr(retry.DefaultRetry, func() error {
 		current := &ottoflowv1alpha1.WorkflowRun{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(wr), current); err != nil {
 			return err
@@ -187,13 +188,27 @@ func setPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv
 // Refetches the object on each conflict retry to get a fresh resourceVersion.
 func clearPendingCallbackPatch(ctx context.Context, c client.Client, wr *ottoflowv1alpha1.WorkflowRun) error {
 	patch := `{"status":{"pendingCallback":null}}`
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	return retryOnConflictKeepErr(retry.DefaultRetry, func() error {
 		current := &ottoflowv1alpha1.WorkflowRun{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(wr), current); err != nil {
 			return err
 		}
 		return c.Status().Patch(ctx, current, client.RawPatch(types.MergePatchType, []byte(patch)))
 	})
+}
+
+// retryOnConflictKeepErr preserves errors wrapping context cancellation or expiry, which
+// RetryOnConflict replaces with the last conflict error (nil if none), even when nothing was written.
+func retryOnConflictKeepErr(backoff wait.Backoff, fn func() error) error {
+	var last error
+	err := retry.RetryOnConflict(backoff, func() error {
+		last = fn()
+		return last
+	})
+	if err == nil {
+		return last
+	}
+	return err
 }
 
 // SchemaProperties returns the "properties" object of a parsed JSON schema.

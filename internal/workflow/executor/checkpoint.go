@@ -269,7 +269,7 @@ func (cm *CheckpointManager) SaveAuditSnapshot(ctx context.Context, snapshot Che
 	writeCtx, cancel := context.WithTimeout(ctx, auditSnapshotWriteTimeout)
 	defer cancel()
 
-	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+	err = retryOnConflictKeepErr(retry.DefaultBackoff, func() error {
 		existing := &corev1.ConfigMap{}
 		getErr := cm.controlClient.Get(writeCtx, cm.auditCmKey, existing)
 		if apierrors.IsNotFound(getErr) {
