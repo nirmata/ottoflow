@@ -1785,14 +1785,15 @@ This section describes the design for two complementary Prometheus metrics featu
 | Metric Name | Type | Labels | Description |
 |-------------|------|--------|-------------|
 | `ottoflow_workflow_runs_total` | Counter | `workflow`, `namespace`, `phase` | Total WorkflowRuns by phase (succeeded, failed) |
+| `ottoflow_workflow_trigger_events_dropped_total` | Counter | `workflow`, `namespace`, `reason` | Event-trigger events dropped on a WorkflowRun create-path error (reason: api_error) |
 | `ottoflow_workflow_run_duration_seconds` | Histogram | `workflow`, `namespace` | Duration from start to completion |
 | `ottoflow_workflow_steps_total` | Counter | `workflow`, `namespace`, `step`, `phase` | Total step executions by phase (succeeded, failed, skipped) |
 | `ottoflow_workflow_step_duration_seconds` | Histogram | `workflow`, `namespace`, `step` | Step execution duration |
 | `ottoflow_workflow_runs_active` | Gauge | `workflow`, `namespace` | Currently running WorkflowRuns (Running phase) |
 
-**Label conventions**: `workflow` = Workflow name (from `workflowRun.Spec.WorkflowRef.Name`); `namespace` = WorkflowRun namespace; `step` = step name; `phase` = `succeeded`, `failed`, or `skipped`.
+**Label conventions**: `workflow` = Workflow name (from `workflowRun.Spec.WorkflowRef.Name`); `namespace` = WorkflowRun namespace; `step` = step name; `phase` = `succeeded`, `failed`, or `skipped`; `reason` = why an event-trigger event was dropped (`api_error`: the WorkflowRun create path returned an error).
 
-**Instrumentation**: (1) Workflow start – increment `ottoflow_workflow_runs_active` when phase → Running; (2) Workflow completion – decrement gauge, increment `ottoflow_workflow_runs_total{phase}`, observe `ottoflow_workflow_run_duration_seconds`; (3) Step completion – increment `ottoflow_workflow_steps_total{phase}`, observe `ottoflow_workflow_step_duration_seconds`.
+**Instrumentation**: (1) Workflow start – increment `ottoflow_workflow_runs_active` when phase → Running; (2) Workflow completion – decrement gauge, increment `ottoflow_workflow_runs_total{phase}`, observe `ottoflow_workflow_run_duration_seconds`; (3) Step completion – increment `ottoflow_workflow_steps_total{phase}`, observe `ottoflow_workflow_step_duration_seconds`; (4) Event-trigger watch loop – increment `ottoflow_workflow_trigger_events_dropped_total{reason}` when the create path returns an error other than a status-update failure.
 
 **Implementation**: Create `internal/metrics/workflow_metrics.go` with metric definitions using `github.com/prometheus/client_golang`; use `prometheus.DefaultRegisterer`; inject a `MetricsRecorder` interface into the executor; record in `ExecuteWorkflow()` and step loop in `executor.go`. Suggested histogram buckets (seconds): `[]float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300}`.
 
