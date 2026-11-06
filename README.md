@@ -42,13 +42,13 @@ want free-form agents, use one of those instead.
 ## ✨ Key Features
 
 - ✅ **Declarative Kubernetes-native workflows** — define workflows as CRDs in YAML.
-- ✅ **Fast DAG execution** — explicit dependency resolution with parallel step batches.
+- ✅ **Fast DAG execution** — explicit dependency resolution, with concurrent `forEach` fan-out.
 - ✅ **Multi-provider LLM support** — use OpenAI, Anthropic, etc. or local models with vLLM.
 - ✅ **Kubernetes and CNCF integrations** — query API resources, PromQL, Kagent using A2A, otel, and more.
 - ✅ **Compiled CEL expressions** — sandboxed execution with full K8s and [Kyverno CEL](https://github.com/kyverno/sdk) library support
 - ✅ **Multiple step types** — ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
 - ✅ **Context optimization** — agent steps receive aggregated computed summaries, never raw data dumps.
-- ✅ **Retry & conditional execution** — retry policies and `matchConditions` gating per step.
+- ✅ **Conditional execution** — `matchConditions` gating per step.
 - ✅ **CLI with local mode** — execute workflows locally against your kubecontext.
 - ✅ **Extensive samples** — ready-to-run workflows under [`samples/`](samples/).
 

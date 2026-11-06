@@ -8,6 +8,7 @@ This document explains how to build OttoFlow, run unit tests, and test against a
 - **Docker** (for container images and kind)
 - **kind** – [install kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation)
 - **kubectl** – [install kubectl](https://kubernetes.io/docs/tasks/tools/)
+- **ko** – [install ko](https://ko.build/install/) and put it on `PATH`. `make ko` installs `bin/ko-v0.17.1`, which the e2e suite's fallback path (`bin/ko-latest`) does not pick up
 - **make**
 
 ## Build the controller binary
@@ -131,7 +132,7 @@ make build-cli
 
 ## End-to-end tests (e2e) with kind
 
-The e2e tests expect a kind cluster and will build the manager image, load it into kind, install CRDs, deploy the controller, and verify it runs.
+The e2e tests build the controller, workflow-runner and agent-executor images, load them into kind, install CRDs, deploy the controller, and verify it runs.
 
 1. **Create a kind cluster** (name must be `kind` unless you set `KIND_CLUSTER`):
 
@@ -145,12 +146,15 @@ The e2e tests expect a kind cluster and will build the manager image, load it in
    make test-e2e
    ```
 
-The test will:
+`make test-e2e` uses the current kube-context and skips the hardening specs. `make test-e2e-hardening` runs only those. `make test-e2e-kind` creates the kind cluster if it is missing, then runs `make test-e2e`.
 
-- Build the manager image (via `make docker-build`, which uses ko with `KO_DOCKER_REPO`; the test uses an image name like `example.com/ottoflow:v0.0.1` and expects it to be loadable into kind)
-- Load the image into the kind cluster
-- Install CRDs and deploy the controller with that image
-- Install the Prometheus operator (for metrics tests) and validate the controller pod
+The suite (`test/e2e/e2e_suite_test.go`, `test/e2e/e2e_test.go`) will:
+
+- Start the Prometheus operator in the background (skip with `SKIP_PROMETHEUS_OPERATOR=1`)
+- Run `make install` to install the CRDs
+- Build the controller, workflow-runner and agent-executor images with `ko build --local`, and `kind load` them into `$KIND_CLUSTER` (default `kind`)
+- Render the manifests with `make generate-manifests` and `test/e2e/helm-values-e2e.yaml`, and apply them with `kubectl apply`
+- Wait for the controller pod and the agent-executor rollout
 
 If your kind cluster has a different name, set `KIND_CLUSTER`:
 
@@ -166,4 +170,4 @@ KIND_CLUSTER=mycluster make test-e2e
 | Unit tests              | `make test` |
 | Run controller locally  | `make install` then `make run` (kubeconfig = cluster) |
 | Kind: run in cluster    | Create kind cluster → build image (ko) → `kind load` → `make install` → `make deploy IMG=<image>` |
-| E2E tests               | Create kind cluster (`kind create cluster --name kind`) → `make test-e2e` |
+| E2E tests               | Create kind cluster (`kind create cluster --name kind`) → `make test-e2e` (or `make test-e2e-kind` to create the cluster if missing) |
