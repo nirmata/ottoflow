@@ -436,7 +436,7 @@ helm upgrade ottoflow ottoflow/ottoflow --namespace ottoflow
 helm upgrade ottoflow ./charts/ottoflow -f my-values.yaml --namespace ottoflow
 ```
 
-Upgrading from an earlier chart version? See [Upgrading: stricter chart values schema](../../docs/user/tasks/installation.md#upgrading-stricter-chart-values-schema).
+Upgrading from an earlier chart version? Read the [upgrade notes](../../docs/user/upgrades/), starting with [stricter chart values schema](../../docs/user/upgrades/stricter-chart-values-schema.md).
 
 ### Runner RBAC change (least-privilege runner role)
 
