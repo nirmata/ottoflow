@@ -31,15 +31,18 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/logging"
+	"github.com/nirmata/ottoflow/internal/metrics"
 )
 
 // getObjectKind extracts the Kind from an object, handling cases where TypeMeta might not be set
@@ -247,6 +250,35 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 		triggerCELEnv:    celEnv,
 		dedupState:       make(map[string]map[string]dedupEntry),
 	}, nil
+}
+
+// errStatusUpdateAfterCreate marks a WorkflowRun (event or cron trigger) that was created but
+// whose initial status could not be written. The run exists, so the trigger was not dropped.
+var errStatusUpdateAfterCreate = errors.New("WorkflowRun created but status update failed")
+
+// dropReasonAPIError is the `reason` label of WorkflowTriggerEventsDroppedTotal: the create
+// path returned an error.
+const dropReasonAPIError = "api_error"
+
+// createRetryBudget stops retrying once this long has passed since the first Create attempt, so
+// a slow failure (a hung admission webhook, 10s per call) is not repeated on the serial watch
+// goroutine. It is checked between attempts only; it never cancels an in-flight Create.
+// ponytail: var, not const, so a test can shrink it.
+var createRetryBudget = 2 * time.Second
+
+// isTransientCreateErr reports whether a WorkflowRun create failure is worth retrying:
+// transport errors client-go never retries for a POST, plus apiserver 500 and ServerTimeout.
+// Errors that carry a retry delay were already retried by client-go and are excluded.
+func isTransientCreateErr(err error) bool {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		if d := status.Status().Details; d != nil && d.RetryAfterSeconds > 0 {
+			return false
+		}
+		return apierrors.IsInternalError(err) || apierrors.IsServerTimeout(err)
+	}
+	return utilnet.IsConnectionRefused(err) ||
+		utilnet.IsHTTP2ConnectionLost(err) || utilnet.IsProbableEOF(err) || utilnet.IsTimeout(err)
 }
 
 // RegisterWorkflow registers triggers for a workflow
@@ -537,7 +569,12 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			// Create WorkflowRun from event — use eventKey (not the resource-specific key)
 			// so dedup state is scoped to the trigger and cleaned up by unregisterEventTrigger.
 			if err := tm.CreateWorkflowRunFromEvent(ctx, eventKey, workflow, eventSpec, unstruct, event.Type); err != nil {
-				logger.Error(err, "failed to create WorkflowRun from event", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "event", event.Type, "object", client.ObjectKeyFromObject(unstruct))
+				msg := "WorkflowRun created but its status update failed"
+				if !errors.Is(err, errStatusUpdateAfterCreate) {
+					msg = "failed to create WorkflowRun from event"
+					metrics.WorkflowTriggerEventsDroppedTotal.WithLabelValues(workflow.Name, workflow.Namespace, dropReasonAPIError).Inc()
+				}
+				logger.Error(err, msg, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "event", event.Type, "object", client.ObjectKeyFromObject(unstruct))
 			}
 		}
 	}
@@ -772,8 +809,32 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 
 	statusToSet := workflowRun.Status.DeepCopy()
 
-	if err := tm.client.Create(ctx, workflowRun); err != nil {
-		return err
+	// Retry only the Create, with the run name fixed so a Create that landed but lost its
+	// response is found as AlreadyExists on the next attempt and treated as success.
+	// createErr is kept outside OnError: for a context error (Canceled or DeadlineExceeded)
+	// OnError returns the last retriable error instead, or nil if there was none. Using its
+	// return value would record dedup and write status for a run that does not exist.
+	attempt := 0
+	start := time.Now()
+	retryWindowOpen := func() bool { return ctx.Err() == nil && time.Since(start) < createRetryBudget }
+	var createErr error
+	_ = retry.OnError(retry.DefaultBackoff, func(err error) bool {
+		return retryWindowOpen() && isTransientCreateErr(err)
+	}, func() error {
+		attempt++
+		// The predicate ran before the backoff sleep; recheck now so no Create starts after the
+		// budget or the caller's context ran out, keeping the previous attempt's error.
+		if attempt > 1 && !retryWindowOpen() {
+			return createErr
+		}
+		createErr = tm.client.Create(ctx, workflowRun.DeepCopy())
+		if attempt > 1 && apierrors.IsAlreadyExists(createErr) {
+			createErr = nil
+		}
+		return createErr
+	})
+	if createErr != nil {
+		return createErr
 	}
 
 	// Record dedup state only after a successful create so a failed create doesn't block the next event.
@@ -784,26 +845,36 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	tm.dedupState[triggerKey][objKey] = dedupEntry{key: currentDedupKey, createdAt: time.Now()}
 	tm.dedupMu.Unlock()
 
-	// The cached client may not see the object immediately after Create.
-	// Retry the Get+Status.Update with a short backoff.
-	wrKey := client.ObjectKeyFromObject(workflowRun)
+	return setStatusAfterCreate(ctx, tm.client, workflowRun, statusToSet)
+}
+
+// setStatusAfterCreate writes the trigger info of a just-created WorkflowRun, and its initial
+// phase if it has none. The reconciler may already have started the run (a retried Create that
+// found it as AlreadyExists, or a fast first reconcile), so the rest of the fetched status is kept.
+// The cached client may not see the object immediately after Create, so it retries
+// Get+Status.Update with a short backoff. A final failure wraps errStatusUpdateAfterCreate.
+func setStatusAfterCreate(ctx context.Context, c client.Client, workflowRun *ottoflowv1alpha1.WorkflowRun, statusToSet *ottoflowv1alpha1.WorkflowRunStatus) error {
+	key := client.ObjectKeyFromObject(workflowRun)
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
 			time.Sleep(200 * time.Millisecond)
 		}
-		if err := tm.client.Get(ctx, wrKey, workflowRun); err != nil {
+		if err := c.Get(ctx, key, workflowRun); err != nil {
 			lastErr = err
 			continue
 		}
-		workflowRun.Status = *statusToSet
-		if err := tm.client.Status().Update(ctx, workflowRun); err != nil {
+		workflowRun.Status.Trigger = statusToSet.Trigger
+		if workflowRun.Status.Phase == "" {
+			workflowRun.Status.Phase = statusToSet.Phase
+		}
+		if err := c.Status().Update(ctx, workflowRun); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
 	}
-	return fmt.Errorf("failed to set WorkflowRun status after create: %w", lastErr)
+	return fmt.Errorf("%w: %s: %w", errStatusUpdateAfterCreate, key, lastErr)
 }
 
 // newTriggerCELEnv creates a minimal CEL environment for trigger-level expressions.
@@ -990,7 +1061,8 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 		tm.dedupMu.Unlock()
 	}
 
-	// Status update retry loop — mirrors CreateWorkflowRunFromEvent.
+	// Like setStatusAfterCreate, but stops on NotFound, ignores a final failure and replaces the
+	// whole status.
 	wrKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Name}
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {

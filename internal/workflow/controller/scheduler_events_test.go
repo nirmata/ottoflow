@@ -87,6 +87,7 @@ func failSecretGet(err error) interceptor.Funcs {
 // A cron fire whose createWorkflowRun fails records one Warning on the Workflow, with a
 // reason per failure class, so a failure in one class is never hidden under another class's reason.
 func TestHandleCronFire_RecordsWarningPerFailureClass(t *testing.T) {
+	t.Parallel() // the status row spends ~0.8s in setStatusAfterCreate's sleeps
 	secretsGR := schema.GroupResource{Resource: "secrets"}
 	otherKeySecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: cronEventSecretName, Namespace: defaultNamespace},
@@ -153,6 +154,19 @@ func TestHandleCronFire_RecordsWarningPerFailureClass(t *testing.T) {
 			cronSpec:   &ottoflowv1alpha1.CronTrigger{Schedule: "*/5 * * * *"},
 			wantReason: "CronWorkflowRunCreateFailed",
 			wantInNote: "workflowruns",
+		},
+		{
+			// The run is created; only its status write fails. Mutant: errStatusUpdateAfterCreate
+			// not wrapped in setStatusAfterCreate.
+			name: "workflowrun status update fails after create",
+			funcs: interceptor.Funcs{
+				SubResourceUpdate: func(context.Context, client.Client, string, client.Object, ...client.SubResourceUpdateOption) error {
+					return errors.New("status write failed")
+				},
+			},
+			cronSpec:   &ottoflowv1alpha1.CronTrigger{Schedule: "*/5 * * * *"},
+			wantReason: "CronWorkflowRunStatusUpdateFailed",
+			wantInNote: "status write failed",
 		},
 	}
 	for _, tc := range cases {

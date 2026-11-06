@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -193,7 +194,11 @@ func (s *Scheduler) handleCronFire(key string) {
 	}
 
 	if err := s.createWorkflowRun(ctx, workflow, cronSpec); err != nil {
-		logger.Error(err, "Failed to create WorkflowRun from cron trigger")
+		msg := "Failed to create WorkflowRun from cron trigger"
+		if errors.Is(err, errStatusUpdateAfterCreate) {
+			msg = "WorkflowRun created from cron trigger but its status update failed"
+		}
+		logger.Error(err, msg)
 		s.recordCronFireFailure(workflow, err)
 		return
 	}
@@ -351,24 +356,5 @@ func (s *Scheduler) createWorkflowRun(ctx context.Context, workflow *ottoflowv1a
 		return err
 	}
 
-	// The cached client may not see the object immediately after Create.
-	// Retry the Get+Status.Update with a short backoff.
-	key := client.ObjectKeyFromObject(workflowRun)
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		if err := s.client.Get(ctx, key, workflowRun); err != nil {
-			lastErr = err
-			continue
-		}
-		workflowRun.Status = *statusToSet
-		if err := s.client.Status().Update(ctx, workflowRun); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-	return fmt.Errorf("failed to set WorkflowRun status after create: %w", lastErr)
+	return setStatusAfterCreate(ctx, s.client, workflowRun, statusToSet)
 }
