@@ -77,6 +77,7 @@ func main() {
 	var workflowRunnerImage string
 	var workflowRunnerServiceAccount string
 	var workflowRunnerClusterRole string
+	var legacyRunnerClusterRole, legacyRunnerServiceAccount string
 	var agentExecutorCallerClusterRole string
 	var runnerConfigMapWriterClusterRole string
 	var workflowRunnerAgentExecutorCASecret string
@@ -87,8 +88,10 @@ func main() {
 	var workflowRunnerTTLSecondsAfterFinished int
 	var workflowRunnerLLMCredentialsSecret string
 	var secretRefAllowedNamespacesFlag string
+	var eventTriggerAllowedNamespacesFlag string
 	var webhookTriggerAddr string
 	var mcpAddr string
+	var callbackAddr string
 	var mcpCallerNamespace string
 	var serveA2AImage string
 	var serveA2AServiceAccount string
@@ -122,6 +125,12 @@ func main() {
 		"Service account name for the workflow runner Job. If empty, derived from Workflow name as {workflow-name}-runner.")
 	flag.StringVar(&workflowRunnerClusterRole, "workflow-runner-cluster-role", os.Getenv("WORKFLOW_RUNNER_CLUSTER_ROLE"),
 		"ClusterRole name for runner Job RBAC (required; the Helm chart sets this to <release>-runner-role).")
+	flag.StringVar(&legacyRunnerClusterRole, "legacy-runner-cluster-role", os.Getenv("LEGACY_RUNNER_CLUSTER_ROLE"),
+		"This release's controller ClusterRole (<release>-role). At startup the leader deletes runner "+
+			"ClusterRoleBindings bound to it that predate the per-workflow runner ServiceAccount; empty disables (optional).")
+	flag.StringVar(&legacyRunnerServiceAccount, "legacy-runner-service-account",
+		os.Getenv("LEGACY_RUNNER_SERVICE_ACCOUNT"),
+		"This release's controller ServiceAccount; only its legacy runner bindings are deleted; empty disables (optional).")
 	flag.StringVar(&runnerConfigMapWriterClusterRole, "runner-configmap-writer-cluster-role",
 		os.Getenv("RUNNER_CONFIGMAP_WRITER_CLUSTER_ROLE"),
 		"ClusterRole bound per run namespace to give runners ConfigMap write access there; empty disables (optional).")
@@ -151,6 +160,12 @@ func main() {
 		llmCredSecret,
 		"Secret name in the WorkflowRun namespace for LLM credential injection. "+
 			"Empty (default) disables injection. Override per run via spec.execution.llmCredentialsSecret.")
+	flag.StringVar(&eventTriggerAllowedNamespacesFlag, "event-trigger-allowed-source-namespaces",
+		os.Getenv("EVENT_TRIGGER_ALLOWED_SOURCE_NAMESPACES"),
+		"Comma-separated Workflow namespaces whose event triggers may watch other namespaces, all "+
+			"namespaces, a cluster-scoped kind, or a kind the API server cannot resolve. Empty (default) "+
+			"limits every event trigger to its Workflow's own namespace. Each listed namespace's Workflows "+
+			"get the controller's watch access in every namespace.")
 	flag.StringVar(&secretRefAllowedNamespacesFlag, "secret-ref-allowed-namespaces",
 		os.Getenv("SECRET_REF_ALLOWED_NAMESPACES"),
 		"Comma-separated namespaces the cross-namespace-secret-reference POLICY check allows in "+
@@ -189,6 +204,8 @@ func main() {
 	logConfig := textlogger.NewConfig()
 	flag.StringVar(&mcpAddr, "mcp-addr", "",
 		"The address the MCP server binds to, serving Workflows as MCP tools. Empty disables it.")
+	flag.StringVar(&callbackAddr, "callback-addr", ":8084",
+		"The address the workflow callback server binds to.")
 	flag.StringVar(&mcpCallerNamespace, "mcp-caller-namespace", "",
 		"Namespace holding the mcp-caller ConfigMap that SubjectAccessReview checks for MCP callers. "+
 			"Defaults to --namespace.")
@@ -306,7 +323,7 @@ func main() {
 
 	// Create and register the callback server (handles POST /api/v1/workflow-runs/.../callback/...)
 	// The callback server is leader-elected — only the active leader opens the port.
-	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, ":8084")
+	callbackServer := workflowcontroller.NewCallbackServer(mgr.GetClient(), eventRecorder, callbackAddr)
 	callbackServer.ControllerNamespace = namespace
 	if err := mgr.Add(callbackServer); err != nil {
 		setupLog.Error(err, "unable to add callback server to manager")
@@ -358,6 +375,13 @@ func main() {
 		}
 	}
 
+	if err := mgr.Add(workflowcontroller.NewLegacyRunnerBindingGC(
+		mgr.GetClient(), mgr.GetAPIReader(),
+		legacyRunnerClusterRole, legacyRunnerServiceAccount, workflowRunnerServiceAccount)); err != nil {
+		setupLog.Error(err, "unable to add legacy runner binding GC to manager")
+		os.Exit(1)
+	}
+
 	runMetrics := workflowcontroller.NewRunMetrics(mgr.GetCache(), mgr.GetClient())
 	if err := mgr.Add(runMetrics); err != nil {
 		setupLog.Error(err, "unable to add run metrics recorder to manager")
@@ -402,6 +426,14 @@ func main() {
 			secretRefAllowedNamespaces[ns] = struct{}{}
 		}
 	}
+
+	var eventTriggerAllowedNS []string
+	for _, ns := range strings.Split(eventTriggerAllowedNamespacesFlag, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			eventTriggerAllowedNS = append(eventTriggerAllowedNS, ns)
+		}
+	}
+	triggerManager.SetEventTriggerAllowedNamespaces(eventTriggerAllowedNS)
 
 	runnerConfig := workflowcontroller.RunnerConfig{
 		RunnerImage:                workflowRunnerImage,
@@ -483,7 +515,10 @@ func main() {
 	hookPathAgent := "/validate-ottoflow-nirmata-io-v1alpha1-agent"
 	hookPathMCPServer := "/validate-ottoflow-nirmata-io-v1alpha1-mcpserver"
 	mgr.GetWebhookServer().Register(hookPathWorkflow, &ctrlwebhook.Admission{
-		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{Client: mgr.GetClient()}),
+		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{
+			Client:                        mgr.GetClient(),
+			EventTriggerAllowedNamespaces: eventTriggerAllowedNS,
+		}),
 	})
 	mgr.GetWebhookServer().Register(hookPathWorkflowRun, &ctrlwebhook.Admission{
 		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowRunValidator{}),

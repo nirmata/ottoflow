@@ -288,6 +288,10 @@ is required — no `create` grant needed. Use the cross-namespace copy only when
 genuinely has to be sourced from elsewhere (e.g. it's centrally managed) and you've accepted the
 broader `create` grant that entails.
 
+The copy never takes a `kubernetes.io/tls` Secret out of the namespaces set by `--namespace` and
+`--agent-executor-namespace` (both the install namespace by default); a run that asks for one fails,
+and the Secret must be created in the run's namespace.
+
 ## The Helm shortcut
 
 If you install with the chart, you don't have to hand-write the manifest above. Each component

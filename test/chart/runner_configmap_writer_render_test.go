@@ -72,7 +72,11 @@ func TestRunnerConfigMapWriter_NotRenderedWithoutRBAC(t *testing.T) {
 	if _, ok := renderedClusterRoles(t, docs)[writerRole]; ok {
 		t.Error("writer ClusterRole rendered with rbac.create=false")
 	}
-	if strings.Contains(controllerDeployment(t, docs), writerFlag) {
+	dep := controllerDeployment(t, docs)
+	if strings.Contains(dep, writerFlag) {
 		t.Errorf("controller Deployment passes %s with rbac.create=false", writerFlag)
+	}
+	if strings.Contains(dep, "--legacy-runner-") {
+		t.Error("controller Deployment passes --legacy-runner-* flags with rbac.create=false")
 	}
 }

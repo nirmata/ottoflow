@@ -19,8 +19,6 @@ controller:
     repository: controller
     # When empty, chart uses .Chart.AppVersion (fixed tag for released charts)
     tag: ""
-    # Override image name if needed
-    nameOverride: ""
     # Override full image if needed
     fullOverride: ""
 
@@ -96,6 +94,15 @@ controller:
   # Command arguments
   args:
     - --leader-elect
+
+  # Workflow namespaces whose event triggers may watch other or all namespaces (empty: own namespace only).
+  # Each listed namespace's Workflows get the controller's watch access in every namespace.
+  eventTriggerAllowedSourceNamespaces: []
+
+  # Callback server for waitForCallback steps (POST /api/v1/workflow-runs/.../callback/...).
+  callback:
+    # addr is the listen address for the callback server. Always on.
+    addr: ":8084"
 
   # Webhook trigger HTTP server configuration.
   # The server receives signed POST requests and creates WorkflowRuns.
@@ -615,14 +622,6 @@ networkPolicy:
       - protocol: TCP
         port: 4317
 
-# CRD installation
-crds:
-  # Specifies whether CRDs should be installed
-  install: true
-  # CRD installation mode: "install" (default) or "skip"
-  # Use "skip" if CRDs are managed outside of Helm
-  mode: install
-
 # Namespace configuration
 namespace:
   # Namespace name (if not set, uses Release.Namespace from helm -n)
@@ -631,6 +630,3 @@ namespace:
 # Labels and annotations
 commonLabels: {}
 commonAnnotations: {}
-
-# Additional resources (for advanced users)
-additionalResources: []

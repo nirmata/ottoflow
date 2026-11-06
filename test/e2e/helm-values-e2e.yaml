@@ -8,8 +8,7 @@ controller:
   # Serve Workflows as MCP tools on <release>-mcp.<namespace>.svc:8084/mcp. The hardening
   # suite points an MCPServer at this endpoint with a bearer token read from a Secret, so a
   # mcpToolCall step can be exercised end-to-end against a real, authenticating server.
-  # The container listens on 8085, not the chart default 8090; the Service keeps port 8084 and
+  # The container listens on the chart default 8090; the Service keeps port 8084 and
   # targets the named container port, so the endpoint above is unchanged.
   mcp:
     enabled: true
-    addr: ":8085"

@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,6 +35,13 @@ type WorkflowReconciler struct {
 	WebhookServer *WebhookServer
 }
 
+func (r *WorkflowReconciler) forgetWebhookState(workflowKey string) {
+	r.TriggerManager.CleanupWebhookDedup(workflowKey)
+	if r.WebhookServer != nil {
+		r.WebhookServer.RemoveLimiter(workflowKey)
+	}
+}
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // It manages workflow triggers (cron and event) by registering/unregistering them.
@@ -43,6 +51,10 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Fetch the Workflow instance
 	workflow := &ottoflowv1alpha1.Workflow{}
 	if err := r.Get(ctx, req.NamespacedName, workflow); err != nil {
+		if apierrors.IsNotFound(err) && r.TriggerManager != nil {
+			r.TriggerManager.pruneTriggers(req.String(), nil)
+			r.forgetWebhookState(req.String())
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -54,11 +66,7 @@ func (r *WorkflowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return ctrl.Result{}, err
 			}
 			// Clean up webhook dedup state and rate limiter for this workflow.
-			workflowKey := req.Namespace + "/" + req.Name
-			r.TriggerManager.CleanupWebhookDedup(workflowKey)
-			if r.WebhookServer != nil {
-				r.WebhookServer.RemoveLimiter(workflowKey)
-			}
+			r.forgetWebhookState(req.String())
 		}
 		return ctrl.Result{}, nil
 	}

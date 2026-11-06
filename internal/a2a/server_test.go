@@ -340,6 +340,17 @@ func TestStillRunningEventsAreNotFailed(t *testing.T) {
 	}
 }
 
+func TestStillRunningReportsWorking(t *testing.T) {
+	task := buildStillRunningTask("run-9", "ctx-9", "default", defaultRunTimeout)
+	if task.Status.State != stateWorking {
+		t.Errorf("message/send still-running state = %q, want %q", task.Status.State, stateWorking)
+	}
+	_, statusEvt := buildStillRunningEvents("run-9", "ctx-9", "default", defaultRunTimeout)
+	if statusEvt.Status.State != stateWorking || !statusEvt.Final {
+		t.Errorf("stream still-running status = %+v, want state working with final true", statusEvt)
+	}
+}
+
 // --- SSE envelope -----------------------------------------------------------------------
 
 func TestWriteSSEEnvelope(t *testing.T) {

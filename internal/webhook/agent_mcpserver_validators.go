@@ -65,9 +65,11 @@ func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 			warnings = append(warnings, fmt.Sprintf(
 				"spec.config.skipVerifySSL must be \"true\" or \"false\"; got %q, which is treated as false", val))
 		case k == "endpoint" && val != "":
-			warnings = append(warnings, "spec.config.endpoint is honored only if it is origin-only "+
-				"(scheme://host[:port]) and the agent-executor operator has allowlisted that origin "+
-				"(AGENT_LLM_ENDPOINT_ALLOWLIST / Helm agentExecutor.llmEndpointAllowlist); otherwise the agent run will FAIL.")
+			warnings = append(warnings, "spec.config.endpoint is honored only for providers that read it (anthropic, azure-openai), "+
+				"and only if it is origin-only (no path, query or fragment) and the agent-executor operator "+
+				"has allowlisted its origin (AGENT_LLM_ENDPOINT_ALLOWLIST / Helm "+
+				"agentExecutor.llmEndpointAllowlist). Otherwise the agent run will FAIL. "+
+				"google, gemini and nirmata always FAIL when it is set; openai and local ignore it.")
 		}
 	}
 

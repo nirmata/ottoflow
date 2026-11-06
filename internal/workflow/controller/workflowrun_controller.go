@@ -8,11 +8,14 @@ that can be found in the LICENSE.md file.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"net"
 	"slices"
 	"sort"
 	"strings"
@@ -25,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/klog/v2"
 	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
@@ -89,6 +93,24 @@ type transientBuildError struct{ err error }
 func (e *transientBuildError) Error() string { return e.err.Error() }
 func (e *transientBuildError) Unwrap() error { return e.err }
 
+func transientUnless(terminal bool, err error) error {
+	if terminal || !retryable(err) {
+		return err
+	}
+	return &transientBuildError{err: err}
+}
+
+func retryable(err error) bool {
+	var st apierrors.APIStatus
+	if errors.As(err, &st) {
+		code := st.Status().Code
+		return code == 429 || code >= 500
+	}
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		utilnet.IsProbableEOF(err) || utilnet.IsHTTP2ConnectionLost(err) || utilnet.IsTimeout(err) ||
+		errors.As(err, new(*net.OpError)) // includes fatal remote TLS alerts; retried on purpose
+}
+
 func (r *RunnerConfig) imagePullPolicy() corev1.PullPolicy {
 	switch corev1.PullPolicy(r.ImagePullPolicy) {
 	case corev1.PullAlways, corev1.PullNever:
@@ -129,8 +151,7 @@ func (r *WorkflowRunReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	// If already completed, apply run policy (retention / maxAllowed) then skip
-	if workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-		workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+	if workflowRun.Status.Phase.IsTerminal() {
 		workflow := &ottoflowv1alpha1.Workflow{}
 		workflowNamespace := workflowRun.Spec.WorkflowRef.Namespace
 		if workflowNamespace == "" {
@@ -236,6 +257,14 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 		sourceNamespace := runnerSecretSourceNamespace(r.RunnerConfig, workflowNamespace)
 		if err := r.ensureRunnerSecrets(ctx, workflowRun, createdJob, sourceNamespace); err != nil {
+			var te *transientBuildError
+			if errors.As(err, &te) {
+				logger.Error(te.err, "transient error ensuring runner secrets, will requeue",
+					logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name,
+					logging.KeyWorkflowRun, req.Name,
+					logging.KeyNamespace, req.Namespace)
+				return ctrl.Result{}, te.err
+			}
 			logger.Error(err, "failed to ensure runner secrets", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace)
 			setRunFailed(workflowRun, fmt.Sprintf("Failed to prepare runner secrets: %v", err), secretAccessDeniedReason(err))
 			if err := r.Status().Update(ctx, workflowRun); err != nil {
@@ -255,6 +284,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 				}
 			} else {
 				logger.Error(err, "failed to create runner Job", logging.KeyWorkflow, workflowRun.Spec.WorkflowRef.Name, logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "job", jobKey)
+				if retryable(err) {
+					return ctrl.Result{}, err
+				}
 				setRunFailed(workflowRun, fmt.Sprintf("Failed to create runner Job %s: %v", jobName, err), "")
 				if err := r.Status().Update(ctx, workflowRun); err != nil {
 					return ctrl.Result{}, err
@@ -321,7 +353,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		}
 	}
 
-	if job.Status.Failed > 0 && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && workflowRun.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+	if job.Status.Failed > 0 && !workflowRun.Status.Phase.IsTerminal() {
 		result, handled, err := r.handleFailedJob(ctx, workflowRun, workflow, job, jobName)
 		if handled {
 			return result, err
@@ -878,12 +910,15 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 // This allows Workflow podTemplates or WorkflowRun execution.job.volumes to reference
 // secrets that exist only in the ottoflow namespace. The agent-executor CA is not one of
 // them: its volume is ConfigMap-backed (vol.Secret == nil, skipped below), and
-// ensureAgentExecutorCA publishes that ConfigMap.
+// ensureAgentExecutorCA publishes that ConfigMap. A kubernetes.io/tls Secret is never
+// copied out of ControllerNamespace or the agent-executor namespace.
 func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, job *batchv1.Job, sourceNamespace string) error {
 	runnerNamespace := workflowRun.Namespace
 	if sourceNamespace == "" {
 		sourceNamespace = runnerNamespace
 	}
+	agentExecutorNamespace := cmp.Or(r.RunnerConfig.AgentExecutorNamespace, defaultAgentExecutorNamespace) // same fallback as ensureAgentExecutorCA
+	fenceTLS := sourceNamespace == r.ControllerNamespace || sourceNamespace == agentExecutorNamespace
 	for _, vol := range job.Spec.Template.Spec.Volumes {
 		if vol.Secret == nil {
 			continue
@@ -917,7 +952,7 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			return r.forbiddenSecretRoleError(ctx, runnerKey, workflowRun.Namespace, err)
 		}
 		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err)
+			return transientUnless(apierrors.IsInvalid(err), fmt.Errorf("get secret %s in runner namespace: %w", runnerKey, err))
 		}
 		sourceSecret := &corev1.Secret{}
 		sourceKey := types.NamespacedName{Namespace: sourceNamespace, Name: secretName}
@@ -928,7 +963,10 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			if apierrors.IsForbidden(err) {
 				return r.forbiddenSecretRoleError(ctx, sourceKey, workflowRun.Namespace, err)
 			}
-			return fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err)
+			return transientUnless(apierrors.IsInvalid(err), fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err))
+		}
+		if fenceTLS && sourceSecret.Type == corev1.SecretTypeTLS {
+			return fmt.Errorf("secret %q in namespace %q is of type kubernetes.io/tls and is not copied out of OttoFlow's own namespaces; create it in namespace %q, then re-run", secretName, sourceNamespace, runnerNamespace)
 		}
 		copySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -952,7 +990,7 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 			if apierrors.IsForbidden(err) {
 				return forbiddenSecretCopyError(sourceKey, runnerKey, err)
 			}
-			return fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err)
+			return transientUnless(apierrors.IsInvalid(err) || apierrors.IsBadRequest(err), fmt.Errorf("create secret %s in runner namespace: %w", runnerKey, err))
 		}
 	}
 	return nil
@@ -1354,9 +1392,9 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 			Name:      jobName,
 			Namespace: workflowRun.Namespace,
 			Labels: map[string]string{
-				"app.kubernetes.io/part-of":    partOf, // same as pod template so Kyverno restrict-automount-sa-token skips this Job
-				runnerManagedLabel:             workflowRun.Name,
-				"ottoflow.nirmata.io/workflow": workflowName, // for cleanup: delete job -l ottoflow.nirmata.io/workflow=cloud-cost-daily
+				"app.kubernetes.io/part-of":       partOf, // same as pod template so Kyverno restrict-automount-sa-token skips this Job
+				runnerManagedLabel:                workflowRun.Name,
+				ottoflowv1alpha1.WorkflowLabelKey: workflowName, // for cleanup: delete job -l ottoflow.nirmata.io/workflow=cloud-cost-daily
 			},
 		},
 		Spec: batchv1.JobSpec{
@@ -1509,7 +1547,7 @@ func (r *WorkflowRunReconciler) listCompletedRunsForWorkflow(ctx context.Context
 		if wrRefNs != refNamespace {
 			continue
 		}
-		if wr.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseSucceeded && wr.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		if !wr.Status.Phase.IsTerminal() {
 			continue
 		}
 		completed = append(completed, wr)

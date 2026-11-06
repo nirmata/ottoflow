@@ -11,11 +11,18 @@ import (
 	"context"
 	cryptohmac "crypto/hmac"
 	cryptosha256 "crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -73,14 +80,29 @@ func (f *fakeWatch) ResultChan() <-chan watch.Event {
 // lastOpts records the ListOptions passed to the most recent Watch call, so tests can
 // inspect the computed label selector without a real dynamic client or envtest.
 type fakeWatcherFactory struct {
-	watcher  *fakeWatch
+	mu       sync.Mutex
+	watchers []*fakeWatch
 	lastOpts metav1.ListOptions
+	nss      []string // namespace of every Watch call
 }
 
-func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, _ string, opts metav1.ListOptions) (watch.Interface, error) {
-	f.watcher = &fakeWatch{ch: make(chan watch.Event)}
+func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nss = append(f.nss, ns)
+	w := &fakeWatch{ch: make(chan watch.Event)}
+	f.watchers = append(f.watchers, w)
 	f.lastOpts = opts
-	return f.watcher, nil
+	return w, nil
+}
+
+func (f *fakeWatcherFactory) get(i int) *fakeWatch {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i < len(f.watchers) {
+		return f.watchers[i]
+	}
+	return nil
 }
 
 func TestWorkflowRunnerJobName(t *testing.T) {
@@ -280,7 +302,7 @@ func TestScheduler_CancelActiveWorkflowRuns(t *testing.T) {
 	wr.Labels = map[string]string{"ottoflow.nirmata.io/workflow": "wf", "ottoflow.nirmata.io/trigger": "cron"}
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr).Build()
 	s := NewScheduler(fakeClient, logr.Discard())
-	if err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
+	if _, err := s.cancelActiveWorkflowRuns(ctx, wf, logr.Discard()); err != nil {
 		t.Fatal(err)
 	}
 	updated := &ottoflowv1alpha1.WorkflowRun{}
@@ -624,6 +646,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_WithWatcherFactory(t *test
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -647,6 +670,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_InvalidAPIVersion(t *testi
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	err := tm.RegisterWorkflow(ctx, wf)
 	if err == nil {
 		t.Fatal("expected error for invalid APIVersion")
@@ -681,7 +705,7 @@ func TestTriggerManager_WatchEvents_ReceivesEvent_CreatesWorkflowRun(t *testing.
 	fw := &fakeWatch{ch: ch}
 
 	stopChan := make(chan struct{})
-	go tm.watchEvents(ctx, "test-key", wf, eventSpec, fw, stopChan)
+	go tm.watchEvents(ctx, "test-key", wf, eventSpec, fw, stopChan, nil)
 
 	// Give watchEvents time to process the event
 	time.Sleep(400 * time.Millisecond)
@@ -1242,6 +1266,58 @@ func TestScheduler_HandleCronFire_ReplacePolicy_CancelsAndCreates(t *testing.T) 
 	}
 }
 
+func replaceCap1Fixture() (*ottoflowv1alpha1.Workflow, *ottoflowv1alpha1.WorkflowRun, *ottoflowv1alpha1.CronTrigger) {
+	wf := cronEventWorkflow()
+	wf.Spec.Run = &ottoflowv1alpha1.RunPolicy{MaxConcurrentRuns: ptr.To(int32(1))}
+	return wf, cronRun("wf-old", ottoflowv1alpha1.WorkflowRunPhaseRunning), &ottoflowv1alpha1.CronTrigger{Schedule: "0 * * * *", ConcurrencyPolicy: "Replace"}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_LaggingCacheStillCreates(t *testing.T) {
+	ctx := context.Background()
+	wf, old, cronSpec := replaceCap1Fixture()
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old).Build()
+	lagging := interceptor.NewClient(base, interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if err := cl.List(ctx, list, opts...); err != nil {
+				return err
+			}
+			if runs, ok := list.(*ottoflowv1alpha1.WorkflowRunList); ok {
+				for i := range runs.Items {
+					runs.Items[i].Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+				}
+			}
+			return nil
+		},
+	})
+	fireCron(t, lagging, wf, cronSpec)
+	var list ottoflowv1alpha1.WorkflowRunList
+	if err := base.List(ctx, &list, client.InNamespace(defaultNamespace)); err != nil {
+		t.Fatal(err)
+	}
+	var failedOld, pending int
+	for _, r := range list.Items {
+		switch {
+		case r.Name == "wf-old" && r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed:
+			failedOld++
+		case r.Status.Phase == ottoflowv1alpha1.WorkflowRunPhasePending:
+			pending++
+		}
+	}
+	if failedOld != 1 || pending != 1 {
+		t.Errorf("failed old runs = %d, new pending runs = %d; want 1 and 1", failedOld, pending)
+	}
+}
+
+func TestScheduler_HandleCronFire_ReplacePolicy_NonCronRunStillCapsFire(t *testing.T) {
+	wf, old, cronSpec := replaceCap1Fixture()
+	manual := defaultCapRun("wf-manual", ottoflowv1alpha1.WorkflowRunPhaseRunning)
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(old).WithObjects(wf, old, manual).Build()
+	fireCron(t, c, wf, cronSpec)
+	if n := countRuns(t, c); n != 2 {
+		t.Errorf("got %d runs, want 2 (no new run while a non-cron run holds the cap)", n)
+	}
+}
+
 func TestWorkflowRunReconciler_EnsureRunnerAccess_UpdatesExistingCRB(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
@@ -1479,6 +1555,212 @@ func TestWorkflowRunReconciler_EnsureRunnerSecrets_SecretNotFoundInSource_Return
 	}
 	if !strings.Contains(err.Error(), "missing-secret") {
 		t.Errorf("error should mention secret: %v", err)
+	}
+}
+
+func TestWorkflowRunReconciler_Reconcile_TransientRunnerSecretError_Requeues(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1"}}},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+		Spec: ottoflowv1alpha1.WorkflowRunSpec{
+			WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns},
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+				Job: &ottoflowv1alpha1.WorkflowRunJobSpec{
+					Volumes: []corev1.Volume{{Name: "ext", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "ext-secret"}}}},
+				},
+			},
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr).Build()
+	c := secretGetErrorReader(base,
+		func(key client.ObjectKey) bool { return key.Name == "ext-secret" },
+		func(client.ObjectKey) error { return apierrors.NewInternalError(errors.New("etcd unavailable")) })
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerClusterRole: "runner-role"}}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected Reconcile to return the transient error for requeue")
+	}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := base.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Errorf("a transient error must not fail the run: %+v", updated.Status)
+	}
+	if err := base.Get(ctx, types.NamespacedName{Namespace: ns, Name: workflowRunnerJobName(wr.Name)}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Errorf("no runner Job must be created, got err=%v", err)
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerSecrets_ErrorClassification(t *testing.T) {
+	const runNS, srcNS = "tenant", "source"
+	internal := apierrors.NewInternalError(errors.New("etcd unavailable"))
+	invalid := apierrors.NewInvalid(schema.GroupKind{Kind: "Secret"}, "ext-secret", nil)
+	webhookDenied := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 400, Message: "admission webhook denied the request"}}
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "ext-secret", errors.New("no Role"))
+	clientSide := errors.New("invalid secret name")
+	badGateway := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 502, Message: "bad gateway"}}
+	bodyEOF := fmt.Errorf("reading response body: %w", io.ErrUnexpectedEOF)
+	connRefused := &url.Error{Op: "Get", URL: "https://apiserver", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}
+	urlParseErr := &url.Error{Op: "parse", URL: "http://[::1", Err: errors.New("missing ']' in host")}
+	x509Err := &url.Error{Op: "Get", URL: "https://apiserver", Err: x509.UnknownAuthorityError{}}
+	goaway := &url.Error{Op: "Get", URL: "https://apiserver", Err: errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=3, ErrCode=NO_ERROR, debug=\"\"")}
+	urlEOF := &url.Error{Op: "Get", URL: "https://apiserver", Err: io.EOF}
+	tlsAlert := &url.Error{Op: "Get", URL: "https://apiserver", Err: &net.OpError{Op: "remote error", Err: errors.New("remote error: tls: bad certificate")}}
+	urlTimeout := &url.Error{Op: "Get", URL: "https://apiserver", Err: context.DeadlineExceeded}
+	runnerKey := func(k client.ObjectKey) bool { return k.Namespace == runNS }
+	sourceKey := func(k client.ObjectKey) bool { return k.Namespace == srcNS }
+	getErr := func(match func(client.ObjectKey) bool, err error) func(client.WithWatch) client.WithWatch {
+		return func(b client.WithWatch) client.WithWatch {
+			return secretGetErrorReader(b, match, func(client.ObjectKey) error { return err })
+		}
+	}
+	createErr := func(err error) func(client.WithWatch) client.WithWatch {
+		return func(b client.WithWatch) client.WithWatch {
+			return interceptor.NewClient(b, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*corev1.Secret); ok {
+						return err
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+		}
+	}
+	tests := []struct {
+		name          string
+		wrap          func(client.WithWatch) client.WithWatch
+		wantTransient bool
+		wantDenied    bool
+	}{
+		{"runner Get 5xx", getErr(runnerKey, internal), true, false},
+		{"runner Get Forbidden", getErr(runnerKey, forbidden), false, true},
+		{"source Get 5xx", getErr(sourceKey, internal), true, false},
+		{"Create 5xx", createErr(internal), true, false},
+		{"Create Invalid", createErr(invalid), false, false},
+		{"Create 400 empty reason", createErr(webhookDenied), false, false},
+		{"Create Forbidden", createErr(forbidden), false, true},
+		{"runner Get non-API error", getErr(runnerKey, clientSide), false, false},
+		{"source Get non-API error", getErr(sourceKey, clientSide), false, false},
+		{"Create non-API error", createErr(clientSide), false, false},
+		{"runner Get connection refused", getErr(runnerKey, connRefused), true, false},
+		{"source Get connection refused", getErr(sourceKey, connRefused), true, false},
+		{"Create connection refused", createErr(connRefused), true, false},
+		{"runner Get 502 empty reason", getErr(runnerKey, badGateway), true, false},
+		{"Create 502 empty reason", createErr(badGateway), true, false},
+		{"runner Get body unexpected EOF", getErr(runnerKey, bodyEOF), true, false},
+		{"Create body unexpected EOF", createErr(bodyEOF), true, false},
+		{"runner Get url.Parse", getErr(runnerKey, urlParseErr), false, false},
+		{"runner Get x509", getErr(runnerKey, x509Err), false, false},
+		{"Create x509", createErr(x509Err), false, false},
+		{"runner Get GOAWAY", getErr(runnerKey, goaway), true, false},
+		{"runner Get EOF", getErr(runnerKey, urlEOF), true, false},
+		{"runner Get timeout", getErr(runnerKey, urlTimeout), true, false},
+		{"runner Get fatal TLS alert", getErr(runnerKey, tlsAlert), true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: runNS, UID: "run-uid"}}
+			job := &batchv1.Job{Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Volumes: []corev1.Volume{{Name: "ext", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "ext-secret"}}}},
+			}}}}
+			src := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ext-secret", Namespace: srcNS}, Data: map[string][]byte{"k": []byte("v")}}
+			base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr, src).Build()
+			r := &WorkflowRunReconciler{Client: tc.wrap(base), Scheme: unitTestScheme}
+			err := r.ensureRunnerSecrets(context.Background(), wr, job, srcNS)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := isTransient(err); got != tc.wantTransient {
+				t.Errorf("transient = %v, want %v (err: %v)", got, tc.wantTransient, err)
+			}
+			if got := errors.Is(err, errSecretAccessDenied); got != tc.wantDenied {
+				t.Errorf("SecretAccessDenied = %v, want %v (err: %v)", got, tc.wantDenied, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunReconciler_Reconcile_RunnerJobCreateErrorClassification(t *testing.T) {
+	ns := defaultNamespace
+	connRefused := &url.Error{Op: "Post", URL: "https://apiserver", Err: &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}}
+	goaway := &url.Error{Op: "Post", URL: "https://apiserver", Err: errors.New("http2: server sent GOAWAY and closed the connection; LastStreamID=3, ErrCode=NO_ERROR, debug=\"\"")}
+	urlEOF := &url.Error{Op: "Post", URL: "https://apiserver", Err: io.EOF}
+	urlParseErr := &url.Error{Op: "parse", URL: "http://[::1", Err: errors.New("missing ']' in host")}
+	x509Err := &url.Error{Op: "Post", URL: "https://apiserver", Err: x509.UnknownAuthorityError{}}
+	badGateway := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 502, Message: "bad gateway"}}
+	badRequest := &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: 400, Message: "admission webhook denied the request"}}
+	tests := []struct {
+		name          string
+		err           error
+		wantTransient bool
+	}{
+		{"500", apierrors.NewInternalError(errors.New("etcd unavailable")), true},
+		{"502 empty reason", badGateway, true},
+		{"429", apierrors.NewTooManyRequests("slow down", 1), true},
+		{"503", apierrors.NewServiceUnavailable("overloaded"), true},
+		{"body unexpected EOF", fmt.Errorf("reading response body: %w", io.ErrUnexpectedEOF), true},
+		{"connection refused", connRefused, true},
+		{"GOAWAY", goaway, true},
+		{"EOF", urlEOF, true},
+		{"Invalid", apierrors.NewInvalid(schema.GroupKind{Kind: "Job"}, "job", nil), false},
+		{"400 empty reason", badRequest, false},
+		{"Forbidden", apierrors.NewForbidden(schema.GroupResource{Resource: "jobs"}, "job", errors.New("no Role")), false},
+		{"non-API error", errors.New("invalid job"), false},
+		{"url.Parse", urlParseErr, false},
+		{"x509", x509Err, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1"}}},
+			}
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+			}
+			clusterRole := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}}
+			base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wf, wr, clusterRole).Build()
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+					if _, ok := obj.(*batchv1.Job); ok {
+						return tc.err
+					}
+					return c.Create(ctx, obj, opts...)
+				},
+			})
+			r := &WorkflowRunReconciler{
+				Client:       c,
+				Scheme:       unitTestScheme,
+				RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
+			}
+			if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: wr.Name, Namespace: ns}}); err == nil {
+				t.Fatal("expected an error")
+			}
+			updated := &ottoflowv1alpha1.WorkflowRun{}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+				t.Fatal(err)
+			}
+			failed := updated.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed
+			if tc.wantTransient {
+				if failed {
+					t.Errorf("transient Job Create error must not fail the run: %v", tc.err)
+				}
+				if err := base.Get(ctx, types.NamespacedName{Name: workflowRunnerJobName(wr.Name), Namespace: ns}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+					t.Errorf("expected no runner Job, got: %v", err)
+				}
+				return
+			}
+			if !failed || !strings.Contains(updated.Status.Message, "Failed to create runner Job") {
+				t.Errorf("terminal Job Create error must fail the run: phase=%q message=%q", updated.Status.Phase, updated.Status.Message)
+			}
+		})
 	}
 }
 
@@ -3262,4 +3544,212 @@ func TestWorkflowRunReconciler_EnsureRunnerConfigMapWriter_StaleCacheKeepsReplac
 		t.Fatalf("err = %v, want requeue sentinel", err)
 	}
 	assertNotRecreated(t, base, live)
+}
+
+func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
+	ctx := context.Background()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: []ottoflowv1alpha1.Trigger{{Event: &ottoflowv1alpha1.EventTrigger{
+				Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+			}}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(0).Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for factory.get(1) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if factory.get(1) == nil {
+		t.Fatal("watch was not re-opened after its result channel closed")
+	}
+
+	if err := tm.UnregisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(1).Stop()
+	time.Sleep(1500 * time.Millisecond)
+	if factory.get(2) != nil {
+		t.Fatal("watch was re-opened after the trigger was unregistered")
+	}
+}
+
+type stallingWatcherFactory struct {
+	fakeWatcherFactory
+	blocked  chan struct{}
+	released chan struct{}
+}
+
+func (f *stallingWatcherFactory) Watch(ctx context.Context, gvr schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
+	if f.get(0) == nil {
+		return f.fakeWatcherFactory.Watch(ctx, gvr, ns, opts)
+	}
+	close(f.blocked)
+	defer close(f.released)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
+	ctx := context.Background()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: []ottoflowv1alpha1.Trigger{{Event: &ottoflowv1alpha1.EventTrigger{
+				Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+			}}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
+	factory := &stallingWatcherFactory{blocked: make(chan struct{}), released: make(chan struct{})}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	factory.get(0).Stop()
+	select {
+	case <-factory.blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("watch was not re-opened")
+	}
+	if err := tm.UnregisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-factory.released:
+	case <-time.After(3 * time.Second):
+		t.Fatal("stalled re-open was not cancelled by unregistration")
+	}
+}
+
+// eventTestWorkflow builds a Workflow in "default". Tests that register it against the fake client's default (empty)
+// REST mapper allowlist "default", since every kind would otherwise be refused as unresolvable.
+func eventTestWorkflow(name string, triggers ...ottoflowv1alpha1.Trigger) *ottoflowv1alpha1.Workflow {
+	return &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps:    []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}},
+			Triggers: triggers,
+		},
+	}
+}
+
+func podEventTrigger() ottoflowv1alpha1.Trigger {
+	return ottoflowv1alpha1.Trigger{Event: &ottoflowv1alpha1.EventTrigger{
+		Resources: []ottoflowv1alpha1.EventResource{{APIVersion: "v1", Kind: "Pod", Namespace: "default"}},
+	}}
+}
+
+func watchClosed(w *fakeWatch) bool {
+	select {
+	case _, ok := <-w.ch:
+		return !ok
+	default:
+		return false
+	}
+}
+
+func TestWorkflowReconciler_Reconcile_NotFound_StopsEventWatchers(t *testing.T) {
+	ctx := context.Background()
+	wf := eventTestWorkflow("wf", podEventTrigger())
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
+		t.Fatal(err)
+	}
+	r := &WorkflowReconciler{Client: fakeClient, Scheme: unitTestScheme, TriggerManager: tm}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "wf"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tm.eventWatchers) != 0 || len(tm.eventSpecMap) != 0 {
+		t.Fatalf("event state left after NotFound: watchers=%v specs=%v", tm.eventWatchers, tm.eventSpecMap)
+	}
+	factory.get(0).Stop()
+	time.Sleep(watchReopenDelay + 500*time.Millisecond)
+	if factory.get(1) != nil {
+		t.Fatal("watch was re-opened for a deleted Workflow")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_ShrunkTriggers_StopsRemovedIndex(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger(), podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if !watchClosed(factory.get(1)) {
+		t.Fatal("watcher for removed trigger index 1 was not stopped")
+	}
+	if _, ok := tm.eventSpecMap["default/wf-event-1"]; ok {
+		t.Fatal("eventSpecMap still holds removed trigger index 1")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_EventReplacedByCron_StopsWatcher(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	cron := ottoflowv1alpha1.Trigger{Cron: &ottoflowv1alpha1.CronTrigger{Schedule: "0 * * * *"}}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", cron)); err != nil {
+		t.Fatal(err)
+	}
+	if !watchClosed(factory.get(0)) {
+		t.Fatal("event watcher was not stopped after trigger 0 became cron")
+	}
+}
+
+func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *testing.T) {
+	ctx := context.Background()
+	factory := &fakeWatcherFactory{}
+	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a-event-0-x", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tm.eventWatchers["default/a-event-0-x-event-0-resource-0"]; !ok || watchClosed(factory.get(1)) {
+		t.Fatal("re-registering a stopped the watcher of a-event-0-x")
+	}
+}
+
+func TestWebhookServer_StartListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s := NewWebhookServer(ln.Addr().String(), logr.Discard(), nil, nil)
+	if err := s.Start(ctx); err == nil {
+		t.Fatal("Start on a bound address should return an error")
+	}
 }

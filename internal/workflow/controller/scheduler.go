@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -125,6 +126,17 @@ func (s *Scheduler) RemoveSchedule(key string) {
 	}
 }
 
+// scheduleKeys returns a snapshot of the registered schedule keys.
+func (s *Scheduler) scheduleKeys() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	keys := make([]string, 0, len(s.entries))
+	for k := range s.entries {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // HasSchedule returns true if a schedule is registered for the given key.
 func (s *Scheduler) HasSchedule(key string) bool {
 	s.mu.Lock()
@@ -147,6 +159,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 	logger := s.logger.WithValues("key", key, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace)
 
+	var cancelled []string
 	switch cronSpec.ConcurrencyPolicy {
 	case "Forbid":
 		hasActive, err := s.hasActiveWorkflowRun(ctx, workflow)
@@ -159,7 +172,8 @@ func (s *Scheduler) handleCronFire(key string) {
 			return
 		}
 	case "Replace":
-		if err := s.cancelActiveWorkflowRuns(ctx, workflow, logger); err != nil {
+		var err error
+		if cancelled, err = s.cancelActiveWorkflowRuns(ctx, workflow, logger); err != nil {
 			logger.Error(err, "Failed to cancel active WorkflowRuns for Replace policy")
 			return
 		}
@@ -167,7 +181,7 @@ func (s *Scheduler) handleCronFire(key string) {
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
 	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, s.client, workflow)
+		active, err := countActiveWorkflowRuns(ctx, s.client, workflow, cancelled...)
 		if err != nil {
 			logger.Error(err, "Failed to count active WorkflowRuns")
 			return
@@ -188,17 +202,17 @@ func (s *Scheduler) handleCronFire(key string) {
 
 // countActiveWorkflowRuns returns the number of WorkflowRuns (not yet picked up, Pending or Running) for the workflow.
 // Used to enforce spec.run.maxConcurrentRuns in scheduler and trigger manager.
-func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow) (int, error) {
+func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow, skip ...string) (int, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := c.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
-		client.MatchingLabels{"ottoflow.nirmata.io/workflow": workflow.Name},
+		client.MatchingLabels{ottoflowv1alpha1.WorkflowLabelKey: workflow.Name},
 	); err != nil {
 		return 0, err
 	}
 	count := 0
 	for _, wr := range list.Items {
-		if wr.Status.Phase.IsActive() {
+		if wr.Status.Phase.IsActive() && !slices.Contains(skip, wr.Name) {
 			count++
 		}
 	}
@@ -210,8 +224,8 @@ func (s *Scheduler) hasActiveWorkflowRun(ctx context.Context, workflow *ottoflow
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
 		client.MatchingLabels{
-			"ottoflow.nirmata.io/workflow": workflow.Name,
-			"ottoflow.nirmata.io/trigger":  "cron",
+			ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+			"ottoflow.nirmata.io/trigger":     "cron",
 		},
 	); err != nil {
 		return false, err
@@ -224,28 +238,30 @@ func (s *Scheduler) hasActiveWorkflowRun(ctx context.Context, workflow *ottoflow
 	return false, nil
 }
 
-func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, logger logr.Logger) error {
+func (s *Scheduler) cancelActiveWorkflowRuns(ctx context.Context, workflow *ottoflowv1alpha1.Workflow, logger logr.Logger) ([]string, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := s.client.List(ctx, &list,
 		client.InNamespace(workflow.Namespace),
 		client.MatchingLabels{
-			"ottoflow.nirmata.io/workflow": workflow.Name,
-			"ottoflow.nirmata.io/trigger":  "cron",
+			ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+			"ottoflow.nirmata.io/trigger":     "cron",
 		},
 	); err != nil {
-		return err
+		return nil, err
 	}
+	var cancelled []string
 	for i := range list.Items {
 		wr := &list.Items[i]
 		if wr.Status.Phase.IsActive() {
 			setRunFailed(wr, "Replaced by newer cron trigger execution", "")
 			if err := s.client.Status().Update(ctx, wr); err != nil {
-				return fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)
+				return nil, fmt.Errorf("failed to cancel WorkflowRun %s: %w", wr.Name, err)
 			}
+			cancelled = append(cancelled, wr.Name)
 			logger.Info("Cancelled active WorkflowRun for Replace policy", logging.KeyWorkflowRun, wr.Name, logging.KeyNamespace, wr.Namespace)
 		}
 	}
-	return nil
+	return cancelled, nil
 }
 
 // deepCopyExecution returns a deep copy of the execution spec, or nil if in is nil.
@@ -257,22 +273,21 @@ func deepCopyExecution(in *ottoflowv1alpha1.WorkflowRunExecutionSpec) *ottoflowv
 }
 
 // cronInputValuesFromSecrets reads the given InputValuesFrom entries and returns a map of input name to value.
-// Secrets are read in workflowNamespace when ref.Namespace is empty.
+// Secrets are read only in workflowNamespace; a ref naming another namespace is refused.
 func (s *Scheduler) cronInputValuesFromSecrets(ctx context.Context, workflowNamespace string, from []ottoflowv1alpha1.CronInputFromSecret) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, entry := range from {
-		ns := entry.SecretRef.Namespace
-		if ns == "" {
-			ns = workflowNamespace
+		if ns := entry.SecretRef.Namespace; ns != "" && ns != workflowNamespace {
+			return nil, fmt.Errorf("secret %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, entry.SecretRef.Name, workflowNamespace)
 		}
 		secret := &corev1.Secret{}
-		key := client.ObjectKey{Namespace: ns, Name: entry.SecretRef.Name}
+		key := client.ObjectKey{Namespace: workflowNamespace, Name: entry.SecretRef.Name}
 		if err := s.client.Get(ctx, key, secret); err != nil {
-			return nil, fmt.Errorf("secret %s/%s: %w", ns, entry.SecretRef.Name, err)
+			return nil, fmt.Errorf("secret %s/%s: %w", workflowNamespace, entry.SecretRef.Name, err)
 		}
 		data, ok := secret.Data[entry.SecretRef.Key]
 		if !ok {
-			return nil, fmt.Errorf("secret %s/%s: key %q %w", ns, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
+			return nil, fmt.Errorf("secret %s/%s: key %q %w", workflowNamespace, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
 		}
 		out[entry.InputName] = string(data)
 	}
@@ -307,9 +322,9 @@ func (s *Scheduler) createWorkflowRun(ctx context.Context, workflow *ottoflowv1a
 				},
 			},
 			Labels: map[string]string{
-				"ottoflow.nirmata.io/workflow":   workflow.Name,
-				"ottoflow.nirmata.io/trigger":    "cron",
-				"ottoflow.nirmata.io/managed-by": "ottoflow-scheduler",
+				ottoflowv1alpha1.WorkflowLabelKey: workflow.Name,
+				"ottoflow.nirmata.io/trigger":     "cron",
+				"ottoflow.nirmata.io/managed-by":  "ottoflow-scheduler",
 			},
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{

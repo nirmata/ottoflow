@@ -682,8 +682,7 @@ func watchWorkflowRunToCompletion(
 		if current.Status.Execution != nil && current.Status.Execution.JobName != "" {
 			fmt.Printf("Runner Job: %s\n", current.Status.Execution.JobName)
 		}
-		switch current.Status.Phase {
-		case ottoflowv1alpha1.WorkflowRunPhaseSucceeded, ottoflowv1alpha1.WorkflowRunPhaseFailed:
+		if current.Status.Phase.IsTerminal() {
 			display.PrintWorkflowStatus(current, outputFormat, includeInputs)
 			maybeSaveOutput(current)
 			if current.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {

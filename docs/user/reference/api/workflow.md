@@ -124,7 +124,7 @@ No additional fields. Use `expressions` and `outputs` to compute and publish val
 |-------|------|----------|-------------|
 | `agentRef.name` | string | Yes | Name of the Agent CRD. |
 | `agentRef.namespace` | string | No | Namespace of the Agent (default: workflow namespace). |
-| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; can contain CEL. |
+| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; each entry is evaluated as one CEL expression (quote plain text as a CEL string). |
 
 #### mcpToolCall
 
@@ -364,14 +364,14 @@ When defined, triggers automatically create WorkflowRun instances. Multiple trig
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Secret name. |
-| `namespace` | string | Secret namespace; if empty, the workflow's namespace is used. |
+| `namespace` | string | Secret namespace. Must be empty or the Workflow's namespace. |
 | `key` | string | Secret data key. |
 
 ### Event trigger
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. |
+| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. A namespace other than the Workflow's, an empty one, a cluster-scoped kind or an unresolvable kind needs the Workflow's namespace allowlisted; see [Upgrading: event-trigger watch scope](../../tasks/installation.md#upgrading-event-trigger-watch-scope). |
 | `event.operations` | []string | `CREATE`, `UPDATE`, `DELETE` (empty = all). |
 | `event.labelSelector` | object | Match labels (Kubernetes watch selector). |
 | `event.fieldSelector` | string | Match fields (Kubernetes watch selector; only API-server-indexed fields, e.g. `metadata.name`). |

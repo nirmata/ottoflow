@@ -950,24 +950,10 @@ func (e *WorkflowExecutor) executeWorkflowReference(ctx context.Context, workflo
 	// The child has its own context; the caller's forEach scope would shadow it (incl. stepStatus).
 	childCtx := context.WithValue(ctx, scopedContextKey, nil)
 	if err := childExec.ExecuteWorkflow(childCtx, subWorkflow, childRun); err != nil {
-		if workflowRun.Status.StepStatuses == nil {
-			workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
-		}
-		stepStatus := workflowRun.Status.StepStatuses[step.Name]
-		stepStatus.Phase = ottoflowv1alpha1.StepPhaseFailed
-		stepStatus.Error = err.Error()
-		workflowRun.Status.StepStatuses[step.Name] = stepStatus
 		return nil, fmt.Errorf("sub-workflow failed: %w", err)
 	}
 
-	// Sub-workflow succeeded; copy outputs to parent step and update step status
-	if workflowRun.Status.StepStatuses == nil {
-		workflowRun.Status.StepStatuses = make(map[string]ottoflowv1alpha1.StepStatus)
-	}
-	stepStatus := workflowRun.Status.StepStatuses[step.Name]
-	stepStatus.Phase = ottoflowv1alpha1.StepPhaseSucceeded
-	workflowRun.Status.StepStatuses[step.Name] = stepStatus
-
+	// Sub-workflow succeeded; copy outputs to parent step
 	var out map[string]interface{}
 	if childRun.Status.Outputs != nil {
 		out = make(map[string]interface{})
@@ -1134,9 +1120,7 @@ func (e *WorkflowExecutor) checkpointCleanup(ctx context.Context, workflow *otto
 	return func() {
 		_ = e.checkpointManager.Flush(ctx)
 
-		terminal := workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseSucceeded ||
-			workflowRun.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed
-		if !terminal {
+		if !workflowRun.Status.Phase.IsTerminal() {
 			return
 		}
 

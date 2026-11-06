@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package executor
 
 import (
+	"context"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"net/http/httptest"
 	"strings"
 
+	kyvernohttp "github.com/kyverno/sdk/extensions/cel/libs/http"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -125,11 +127,11 @@ var _ = Describe("celHTTPContext", func() {
 		Expect(err.Error()).To(ContainSubstring("failed to parse PEM CA bundle"))
 	})
 
-	It("Client returns the same context for an empty CA bundle", func() {
+	It("Client wraps the same context for an empty CA bundle", func() {
 		ctx := NewCELHTTPContext()
 		derived, err := ctx.Client("")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(derived).To(BeIdenticalTo(ctx))
+		Expect(derived).To(BeIdenticalTo(kyvernohttp.Context{ContextInterface: ctx}))
 	})
 
 	It("Client(validPEM) returns a context that still normalizes non-JSON bodies", func() {
@@ -151,5 +153,43 @@ var _ = Describe("celHTTPContext", func() {
 		result, err := derived.Get(server.URL, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(map[string]any{"ok": true, "body": "ok", "statusCode": 200}))
+	})
+})
+
+var _ = Describe("CEL http.Client(caBundle) member calls", func() {
+	var evaluator *CELEvaluator
+
+	BeforeEach(func() {
+		var err error
+		evaluator, err = NewCELEvaluator(nil, nil)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"job-1"}`))
+		}
+	})
+
+	It("Post with headers through a pinned client returns the JSON body", func() {
+		server := httptest.NewTLSServer(handler)
+		defer server.Close()
+		ca := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}))
+		vars := map[string]interface{}{"inputs": map[string]interface{}{"ca": ca, "url": server.URL}}
+
+		res, err := evaluator.EvaluateExpression(context.Background(),
+			`http.Client(inputs.ca).Post(inputs.url + "/scan", {"a": "b"}, {"Content-Type": "application/json"}).id`, vars)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(Equal("job-1"))
+	})
+
+	It("an empty caBundle falls back to the default client and supports member calls", func() {
+		server := httptest.NewServer(handler)
+		defer server.Close()
+		vars := map[string]interface{}{"inputs": map[string]interface{}{"url": server.URL}}
+
+		res, err := evaluator.EvaluateExpression(context.Background(), `http.Client("").Get(inputs.url).statusCode`, vars)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(res).To(BeEquivalentTo(200))
 	})
 })

@@ -462,7 +462,7 @@ kubectl get workflowruns -w
 - **Restart Detection**: Checks for restart counts and recently terminated containers
 - **Event Filtering**: Focuses on restart-related events (Started, Created, Killing, BackOff, CrashLoop)
 - **Root Cause Analysis**: Agent prompt specifically focuses on identifying restart root causes
-- **Namespace Flexibility**: Can watch all namespaces (empty namespace) or specific namespaces
+- **Namespace scope**: Watches the Workflow's own namespace; another namespace, or all namespaces (empty `namespace`), needs the Workflow's namespace in `controller.eventTriggerAllowedSourceNamespaces`
 - **Label Filtering**: Optional label selector to only monitor specific pods (commented out in example)
 
 **Note:** This workflow will trigger on ANY pod UPDATE event. To filter for only restarts, you can:

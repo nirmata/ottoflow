@@ -253,13 +253,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 
 	// Handle PrometheusQuery
 	if templateStep.PrometheusQuery != nil {
-		instantiated.PrometheusQuery = &ottoflowv1alpha1.StepPrometheusQuery{
-			Query:     templateStep.PrometheusQuery.Query,
-			TimeRange: templateStep.PrometheusQuery.TimeRange,
-			Step:      templateStep.PrometheusQuery.Step,
-			Variables: make(map[string]string),
-			Outputs:   make(map[string]string),
-		}
+		instantiated.PrometheusQuery = templateStep.PrometheusQuery.DeepCopy()
 		if substituted, err := substituteString(templateStep.PrometheusQuery.Query); err != nil {
 			return instantiated, fmt.Errorf("failed to substitute PrometheusQuery query: %w", err)
 		} else {
@@ -308,11 +302,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 
 	// Handle MCPToolCall
 	if templateStep.MCPToolCall != nil {
-		instantiated.MCPToolCall = &ottoflowv1alpha1.StepMCPToolCall{
-			Server:    templateStep.MCPToolCall.Server,
-			Tool:      templateStep.MCPToolCall.Tool,
-			Arguments: make(map[string]string),
-		}
+		instantiated.MCPToolCall = templateStep.MCPToolCall.DeepCopy()
 		// Substitute arguments
 		for k, v := range templateStep.MCPToolCall.Arguments {
 			substituted, err := substituteString(v)
@@ -325,11 +315,7 @@ func (e *WorkflowExecutor) instantiateStepTemplate(templateStep ottoflowv1alpha1
 
 	// Handle WorkflowRef
 	if templateStep.WorkflowRef != nil {
-		instantiated.WorkflowRef = &ottoflowv1alpha1.StepWorkflowRef{
-			Name:      templateStep.WorkflowRef.Name,
-			Namespace: templateStep.WorkflowRef.Namespace,
-			Inputs:    make(map[string]string),
-		}
+		instantiated.WorkflowRef = templateStep.WorkflowRef.DeepCopy()
 		// Substitute inputs
 		for k, v := range templateStep.WorkflowRef.Inputs {
 			substituted, err := substituteString(v)
