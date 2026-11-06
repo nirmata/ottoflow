@@ -227,11 +227,17 @@ Discussions are disabled.
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, style
 and the PR process, and [GOVERNANCE.md](GOVERNANCE.md) for how decisions get made.
 
+## 🏢 Enterprise support
+
+OttoFlow is built by [Nirmata](https://nirmata.com/?utm_source=github&utm_medium=readme&utm_campaign=ottoflow), the creators of Kyverno. Read more on the
+[OttoFlow page](https://nirmata.com/ottoflow-oss/?utm_source=github&utm_medium=readme&utm_campaign=ottoflow), or [talk to us](https://nirmata.com/request-a-demo/?utm_source=github&utm_medium=readme&utm_campaign=ottoflow)
+about support and production use with [Nirmata Control Hub](https://nirmata.com/nirmata-control-hub/?utm_source=github&utm_medium=readme&utm_campaign=ottoflow).
+
 ---
 
 <div align="center">
 
-Built with ❤️ by the Nirmata team
+Built with ❤️ by the [Nirmata](https://nirmata.com/?utm_source=github&utm_medium=readme&utm_campaign=ottoflow) team
 
 [Report Bug](https://github.com/nirmata/ottoflow/issues) · [Request Feature](https://github.com/nirmata/ottoflow/issues)
 
