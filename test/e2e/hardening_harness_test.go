@@ -103,9 +103,14 @@ func mustCreateSecret(ns, name string, data map[string]string) {
 // TokenRequest API. The token is what a tenant would hand a run through a Secret: a
 // credential that is NOT any OttoFlow identity, so anything done with it cannot have been
 // done with OttoFlow's own RBAC.
-func serviceAccountToken(ns, sa string) string {
+func serviceAccountToken(ns, sa string, audiences ...string) string {
 	GinkgoHelper()
-	token, err := kubectl("create", "token", sa, "-n", ns, "--duration=1h")
+	args := make([]string, 0, 5+len(audiences))
+	args = append(args, "create", "token", sa, "-n", ns, "--duration=1h")
+	for _, a := range audiences {
+		args = append(args, "--audience="+a)
+	}
+	token, err := kubectl(args...)
 	Expect(err).NotTo(HaveOccurred(), "minting a token for ServiceAccount %s/%s: %s", ns, sa, token)
 	Expect(token).NotTo(BeEmpty(), "kubectl create token returned an empty token for %s/%s", ns, sa)
 	return token

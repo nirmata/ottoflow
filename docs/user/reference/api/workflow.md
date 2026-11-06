@@ -22,7 +22,7 @@
 | `events` | [EventConfig](#eventconfig) | No | Kubernetes event emission (enabled, level). |
 | `celCostLimit` | integer | No | Max CEL evaluation cost budget per expression (default: 2,097,152 units). |
 | `executionLimits` | object | No | `maxConcurrentSteps` (cap on ready-steps batch) and `outboundRequestsPerMinute` (token bucket on MCP/agent/A2A calls). |
-| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../tasks/installation.md#upgrading-default-run-history-cleanup)), `maxConcurrentRuns` (skip trigger-created runs when this many are active; default 10, 0 = no limit). |
+| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../upgrades/default-run-history-cleanup.md)), `maxConcurrentRuns` (skip trigger-created runs when this many are active; default 10, 0 = no limit). |
 | `execution` | object | No | Default runner Job settings copied to trigger-created WorkflowRuns (see [WorkflowRun](workflowrun.md#workflowrunexecutionspec)). |
 
 ### Input
@@ -371,7 +371,7 @@ When defined, triggers automatically create WorkflowRun instances. Multiple trig
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. A namespace other than the Workflow's, an empty one, a cluster-scoped kind or an unresolvable kind needs the Workflow's namespace allowlisted; see [Upgrading: event-trigger watch scope](../../tasks/installation.md#upgrading-event-trigger-watch-scope). |
+| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. A namespace other than the Workflow's, an empty one, a cluster-scoped kind or an unresolvable kind needs the Workflow's namespace allowlisted; see [Upgrading: event-trigger watch scope](../../upgrades/event-trigger-watch-scope.md). |
 | `event.operations` | []string | `CREATE`, `UPDATE`, `DELETE` (empty = all). |
 | `event.labelSelector` | object | Match labels (Kubernetes watch selector). |
 | `event.fieldSelector` | string | Match fields (Kubernetes watch selector; only API-server-indexed fields, e.g. `metadata.name`). |

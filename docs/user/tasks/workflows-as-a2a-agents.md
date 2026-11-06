@@ -76,8 +76,8 @@ readiness probe fetches the card, so it stays public). A caller must present
 
 1. the token is a ServiceAccount token minted for the audience **`ottoflow-a2a`** (checked with
    a Kubernetes TokenReview; the audience is fixed and not configurable), and
-2. that ServiceAccount may `get` the ConfigMap named `a2a-caller` in the **Workflow's
-   namespace** (checked with a SubjectAccessReview; the ConfigMap does not need to exist).
+2. that ServiceAccount may `invoke` `callers.gate.ottoflow.nirmata.io/a2a-caller` in the **Workflow's
+   namespace** (checked with a SubjectAccessReview; nothing serves this resource).
 
 Any other request gets a bare `401 Unauthorized`; the reason is logged by serve-a2a at verbosity 4.
 A token minted with the default audience is rejected. On a cluster that issues legacy
@@ -91,7 +91,7 @@ the release name if it contains `ottoflow`, otherwise `<release>-ottoflow` (for 
 | ClusterRole | Grants | Bind it to | With |
 |---|---|---|---|
 | `<fullname>-a2a-token-reviewer` | `create` `tokenreviews` and `subjectaccessreviews` | the `serve-a2a` ServiceAccount (`serveA2A.serviceAccountName`) in **each namespace that exposes a Workflow** | a **ClusterRoleBinding** (both resources are cluster-scoped; a RoleBinding grants nothing) |
-| `<fullname>-a2a-caller` | `get` `configmaps/a2a-caller` | each caller's ServiceAccount | a **RoleBinding in the Workflow's namespace** |
+| `<fullname>-a2a-caller` | `invoke` `callers.gate.ottoflow.nirmata.io/a2a-caller` | each caller's ServiceAccount | a **RoleBinding in the Workflow's namespace** |
 
 ```bash
 # once per namespace that exposes a Workflow
@@ -107,6 +107,8 @@ kubectl -n <ns> create rolebinding a2a-caller-<caller> \
 # mint a token for the caller
 kubectl -n <caller-ns> create token <caller-sa> --audience=ottoflow-a2a --duration=<d>
 ```
+
+Creating the `a2a-caller-<caller>` RoleBinding above needs `bind` on `<fullname>-a2a-caller` (or `invoke` on `callers.gate.ottoflow.nirmata.io`). A namespace `admin` holds neither, so a cluster administrator creates the binding or grants that `bind` to the namespace admin.
 
 If the `serve-a2a` ServiceAccount lacks the token-reviewer binding, every call is refused with
 401. serve-a2a runs a SelfSubjectAccessReview at startup and logs an error naming the missing
