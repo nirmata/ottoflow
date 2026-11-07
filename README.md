@@ -148,7 +148,8 @@ set them on the agent-executor pod via `agentExecutor.env` in the Helm chart; in
 local mode they come from your shell. Because those keys are shared by every Agent,
 an Agent's `spec.config.endpoint` is accepted only for an origin the operator lists in
 `AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`; in local
-mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. See
+mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. List only origins you
+control that do not redirect to another origin. See
 `samples/workflows/features/agent-custom-endpoint.yaml`.
 
 <!-- demo GIF: images/demo.gif — not committed yet; record it with `make demo`
