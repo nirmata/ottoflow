@@ -15,7 +15,7 @@
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `prompt` | string | Yes | System prompt for the agent (role and base instructions). For dynamic content, use `additionalPrompts` in the workflow step's agentRef. |
-| `modelProvider` | string | Yes | LLM provider. One of: `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, `local`. `nirmata` requires the OttoFlow **enterprise plugin** and is unavailable in the open-source build — set an explicit `openai`, `anthropic`, `azure-openai`, `google`/`gemini`, or `local` provider there. There is no bedrock provider. |
+| `modelProvider` | string | Yes | LLM provider. One of: `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, `local`. `nirmata` requires the OttoFlow **enterprise plugin** and is unavailable in the open-source build — set an explicit `openai`, `anthropic`, `google`/`gemini`, or `local` provider there. `azure-openai` is accepted but is not supported: the Azure OpenAI client in this build does not keep the model's tool calls and replies in the conversation history, so multi-turn tool use is not supported (single-turn prompts may still work). There is no bedrock provider. |
 | `modelName` | string | No | Model identifier (e.g. `gpt-4`, `claude-3-opus`). Default depends on provider. |
 | `mcpTools` | []string | No | List of MCP tools the agent can use. Format: `"server:tool"` (e.g. `kubernetes-mcp:get-resource`). |
 | `outputExtraction` | [OutputExtraction](#outputextraction) | No | How to extract outputs from agent responses (json, regex, text). |

@@ -1,5 +1,7 @@
 # Agent step using the Azure OpenAI provider (gollm provider id: azopenai).
 #
+# azure-openai is accepted but is not supported; see docs/user/reference/api/agent.md.
+#
 # Credential mechanism (verified against source, not assumed):
 #   - gollm's azopenai provider reads its API key from the
 #     AZURE_OPENAI_API_KEY process environment variable INSIDE the
