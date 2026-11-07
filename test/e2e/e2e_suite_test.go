@@ -34,6 +34,9 @@ const agentExecutorCASecretDefault = "ottoflow-agent-executor.ottoflow.svc.tls-c
 // agentExecutorDeploymentDefault matches include "ottoflow.agentExecutor.fullname" for release ottoflow.
 const agentExecutorDeploymentDefault = "ottoflow-agent-executor"
 
+// agentExecutorServiceHost is the Service DNS name the agent-executor certificate carries as a SAN.
+const agentExecutorServiceHost = agentExecutorDeploymentDefault + "." + namespace + ".svc"
+
 var manifestPath string
 
 // waitForControllerPod polls until one controller pod is Running or timeout.

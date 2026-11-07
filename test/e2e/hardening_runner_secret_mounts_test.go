@@ -319,10 +319,7 @@ spec:
 		// is resolved from its mount before the first request is built. A runner that could not
 		// read either would fail earlier and differently: with a Secret error (regression to API
 		// reads) or an x509 error (CA not applied). Both are ruled out below.
-		caB64, err := kubectl("get", "secret", agentExecutorCASecretDefault, "-n", namespace, "-o", `jsonpath={.data.tls\.crt}`)
-		Expect(err).NotTo(HaveOccurred(), caB64)
-		caPEM, err := base64.StdEncoding.DecodeString(caB64)
-		Expect(err).NotTo(HaveOccurred())
+		caPEM := agentExecutorCAPEM()
 		Expect(string(caPEM)).To(ContainSubstring("BEGIN CERTIFICATE"))
 		mustCreateSecret(tenant, "a2a-ca", map[string]string{"ca.crt": string(caPEM)})
 		mustCreateSecret(tenant, "a2a-token", map[string]string{"token": "e2e-a2a-bearer-placeholder"})
@@ -337,7 +334,7 @@ spec:
   steps:
     - name: probe
       externalAgentRef:
-        url: https://%[2]s.%[3]s.svc:8443
+        url: https://%[2]s:8443
         protocol: a2a
         prompt: '"ping"'
         timeout: 30s
@@ -357,7 +354,7 @@ spec:
   workflowRef:
     name: a2a-wf
     namespace: %[1]s
-`, tenant, agentExecutorDeploymentDefault, namespace))
+`, tenant, agentExecutorServiceHost))
 
 		expectRunFailsWith(tenant, "a2a-run", "probe", "agent card fetch returned", 4*time.Minute)
 

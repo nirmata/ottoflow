@@ -11,6 +11,8 @@ package e2e
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -31,7 +33,7 @@ import (
 // Caller gates: the chart's caller ClusterRoles must grant what the servers' SubjectAccessReview asks.
 // Each pair is minted the same way, so a 401 for the runner identity is attributable to the SAR.
 // Unlabelled: the CI e2e workflow runs on push to main and manual dispatch only.
-var _ = Describe("Caller gates", Ordered, func() {
+var _ = Describe("Caller gates", Ordered, ContinueOnFailure, func() {
 	const (
 		tenant   = "e2e-caller-gate"
 		wfName   = "gate-wf"
@@ -40,7 +42,8 @@ var _ = Describe("Caller gates", Ordered, func() {
 		mcpInit  = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26",` +
 			`"capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}`
 	)
-	var mcpURL, a2aURL string
+	var mcpURL, a2aURL, aeURL string
+	var client *http.Client
 	runnerSA := runnerSAFor(wfName)
 
 	BeforeAll(func() {
@@ -96,7 +99,53 @@ metadata:
   namespace: %[1]s
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ottoflow-a2a-caller}
 subjects: [{kind: ServiceAccount, name: caller, namespace: %[1]s}]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: stranger
+  namespace: %[1]s
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ae-caller
+  namespace: %[1]s
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: viewer
+  namespace: %[1]s
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: e2e-gate-ae-caller
+  namespace: %[2]s
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: ottoflow-agent-executor-caller}
+subjects: [{kind: ServiceAccount, name: ae-caller, namespace: %[1]s}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: e2e-gate-viewer
+  namespace: %[2]s
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: view}
+subjects: [{kind: ServiceAccount, name: viewer, namespace: %[1]s}]
 `, tenant, namespace))
+
+		// The agent-executor serves TLS only; one client serves all three gates (the CA applies only to TLS). Verify against the published CA and the Service DNS
+		// name (a SAN on its certificate), not 127.0.0.1: this is a security-gate test.
+		caPEM := agentExecutorCAPEM()
+		pool := x509.NewCertPool()
+		Expect(pool.AppendCertsFromPEM(caPEM)).To(BeTrue())
+		client = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			RootCAs:    pool,
+			ServerName: agentExecutorServiceHost,
+			MinVersion: tls.VersionTLS12,
+		}}}
+		aeURL = "https://" + portForward("svc/"+agentExecutorDeploymentDefault, namespace, "8443") + "/api/exec/"
 
 		mcpURL = "http://" + portForward("svc/ottoflow-mcp", namespace, "8084") + "/mcp"
 		a2aURL = "http://" + startServeA2A(tenant, wfName) + "/"
@@ -110,7 +159,7 @@ subjects: [{kind: ServiceAccount, name: caller, namespace: %[1]s}]
 			g.Expect(err).NotTo(HaveOccurred())
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Authorization", "Bearer "+token)
-			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			resp, err := client.Do(req)
 			g.Expect(err).NotTo(HaveOccurred())
 			defer func() { _ = resp.Body.Close() }()
 			b, _ := io.ReadAll(resp.Body)
@@ -130,6 +179,25 @@ subjects: [{kind: ServiceAccount, name: caller, namespace: %[1]s}]
 	})
 	It("A2A refuses the runner ServiceAccount", func() {
 		expect(a2aURL, serviceAccountToken(tenant, runnerSA, a2aAud), a2aProbe, http.StatusUnauthorized, "")
+	})
+	// 400 "path must be" is the handler answering after the gate passed (no Agent or LLM needed).
+	It("Agent-executor accepts a caller bound to ottoflow-agent-executor-caller", func() {
+		expect(aeURL, serviceAccountToken(tenant, "ae-caller"), "{}", http.StatusBadRequest, "path must be")
+	})
+	It("Agent-executor refuses a ServiceAccount bound only to view", func() {
+		expect(aeURL, serviceAccountToken(tenant, "viewer"), "{}", http.StatusUnauthorized, "")
+	})
+	It("MCP refuses a ServiceAccount bound only to view", func() {
+		expect(mcpURL, serviceAccountToken(tenant, "viewer"), mcpInit, http.StatusUnauthorized, "")
+	})
+	It("MCP refuses a caller with no binding", func() {
+		expect(mcpURL, serviceAccountToken(tenant, "stranger"), mcpInit, http.StatusUnauthorized, "")
+	})
+	It("A2A refuses a caller with no binding", func() {
+		expect(a2aURL, serviceAccountToken(tenant, "stranger", a2aAud), a2aProbe, http.StatusUnauthorized, "")
+	})
+	It("Agent-executor refuses a caller with no binding", func() {
+		expect(aeURL, serviceAccountToken(tenant, "stranger"), "{}", http.StatusUnauthorized, "")
 	})
 })
 
