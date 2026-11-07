@@ -331,8 +331,8 @@ the install namespace" above). One entry per namespace per component; the chart 
 > Every one of them reaches the controller's own identity: the core, additional and view lists
 > render into ClusterRoles the controller's aggregated ClusterRole selects, so a grant there lands
 > on its ServiceAccount directly; the runner and view lists render into runner-aggregated
-> ClusterRoles, and the controller keeps `create`/`update` on ClusterRoleBindings plus `bind` on
-> the runner role (needed for the roleRef-immutability migration), so a grant there is one it
+> ClusterRoles, and the controller keeps `create`/`delete`/`update` on ClusterRoleBindings plus
+> `bind` on the runner role (needed because roleRef is immutable), so a grant there is one it
 > could bind to its own ServiceAccount. Either way the cluster-wide access this hardening removed
 > would silently re-open. Grant Secret access only through `rbac.secretAccess` above (named,
 > namespaced, `get`-only).
