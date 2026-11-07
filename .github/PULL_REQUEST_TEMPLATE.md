@@ -13,4 +13,4 @@
 - [ ] Tests added/updated and passing (`make test`)
 - [ ] Documentation updated
 - [ ] CRDs regenerated if `api/v1alpha1/*_types.go` changed (`make manifests generate`)
-- [ ] No breaking changes (or clearly called out below if unavoidable)
+- [ ] No breaking changes (or clearly called out below if unavoidable, with an upgrade note in `docs/user/upgrades/`)

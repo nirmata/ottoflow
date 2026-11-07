@@ -9,6 +9,11 @@ metadata:
     {{- include "ottoflow.labels.n4" . }}
     app.kubernetes.io/component: agent-executor-caller
 rules:
+  - apiGroups: ["gate.ottoflow.nirmata.io"]
+    resources: ["callers"]
+    resourceNames: ["agent-executor-caller"]
+    verbs: ["invoke"]
+  # Legacy check of images before this release; remove in the next release.
   - apiGroups: [""]
     resources: ["configmaps"]
     resourceNames: ["agent-executor-caller"]

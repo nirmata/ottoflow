@@ -13,7 +13,7 @@
 #
 # Listing an origin trusts it with the agent-executor's LLM credentials: any
 # Agent may name a listed origin, and every provider client that uses the
-# endpoint (with the pinned gollm, azure-openai) sends its credential there
+# endpoint (with the pinned gollm, azure-openai and anthropic) sends its credential there
 # together with the full prompt. Do not allowlist a host you do not control.
 #
 # Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
@@ -26,7 +26,10 @@
 #         OPENAI_ENDPOINT or OPENAI_API_BASE process environment variable
 #         (set via the agent-executor pod's env, e.g. Helm
 #         `agentExecutor.env`).
-#       * gemini / anthropic: IGNORED entirely.
+#       * anthropic: honored unless the agent-executor sets ANTHROPIC_BASE_URL.
+#       * gemini / google: REJECTED, even when the origin is allowlisted,
+#         because the client ignores the field. Set GOOGLE_GEMINI_BASE_URL on
+#         the agent-executor process instead (Helm `agentExecutor.env`).
 #       * local: IGNORED — the local (llama.cpp) provider uses LLAMACPP_HOST
 #         instead (see agent-local-llamacpp.yaml).
 #   - skipVerifySSL:

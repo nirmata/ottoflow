@@ -80,6 +80,8 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 
 	Describe("spec.config.endpoint / skipVerifySSL: operator allowlist gate", func() {
 		allProviders := []string{"anthropic", "azure-openai", "openai", "google", "gemini", "local"}
+		nonGeminiProviders := []string{"anthropic", "azure-openai", "openai", "local"}
+		geminiProviders := []string{"google", "gemini"}
 
 		newAgent := func(provider string, config map[string]string) *ottoflowv1alpha1.Agent {
 			return &ottoflowv1alpha1.Agent{
@@ -122,7 +124,7 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		It("default closed: an unset or empty-ish allowlist refuses every provider", func() {
 			for _, envVal := range []string{"", " ", ",", " , ", ",,", "\t\n"} {
 				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, envVal)
-				assertRefused(allProviders, map[string]string{"endpoint": "https://unlisted.example.com"},
+				assertRefused(nonGeminiProviders, map[string]string{"endpoint": "https://unlisted.example.com"},
 					"allowlisted no LLM endpoints")
 			}
 		})
@@ -145,7 +147,7 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		DescribeTable("refuses an endpoint whose origin differs from the allowlisted one",
 			func(endpoint string) {
 				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
-				assertRefused(allProviders, map[string]string{"endpoint": endpoint}, "not in the operator's allowlist")
+				assertRefused(nonGeminiProviders, map[string]string{"endpoint": endpoint}, "not in the operator's allowlist")
 			},
 			Entry("host suffix", "https://llm.corp.example.other.example"),
 			Entry("scheme", "http://llm.corp.example"),
@@ -155,14 +157,14 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 
 		It("refuses userinfo on an allowlisted host", func() {
 			GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
-			assertRefused(allProviders, map[string]string{"endpoint": "https://other.example@llm.corp.example"},
+			assertRefused(nonGeminiProviders, map[string]string{"endpoint": "https://other.example@llm.corp.example"},
 				"userinfo is not permitted")
 		})
 
 		It("refuses a path, query or fragment on an allowlisted origin", func() {
 			GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
 			for _, ep := range []string{"https://llm.corp.example/v1", "https://llm.corp.example?x=1", "https://llm.corp.example#f"} {
-				assertRefused(allProviders, map[string]string{"endpoint": ep}, "path/query/fragment are not permitted")
+				assertRefused(nonGeminiProviders, map[string]string{"endpoint": ep}, "path/query/fragment are not permitted")
 			}
 		})
 
@@ -177,7 +179,7 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 				err := ValidateLLMEndpointAllowlist()
 				Expect(err).To(HaveOccurred(), entry)
 				Expect(err.Error()).To(ContainSubstring("origin only"), entry)
-				assertRefused(allProviders, map[string]string{"endpoint": "https://llm.corp.example"}, "origin only")
+				assertRefused(nonGeminiProviders, map[string]string{"endpoint": "https://llm.corp.example"}, "origin only")
 			}
 		})
 
@@ -195,7 +197,7 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 				" https://llm.corp.example , , ",
 			} {
 				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, envVal)
-				assertRefused(allProviders, map[string]string{"endpoint": "https://definitely-not-listed.invalid"},
+				assertRefused(nonGeminiProviders, map[string]string{"endpoint": "https://definitely-not-listed.invalid"},
 					"not in the operator's allowlist")
 			}
 		})
@@ -215,10 +217,18 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 		It("refuses skipVerifySSL=true for every provider, with or without an allowlisted endpoint", func() {
 			GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, "https://llm.corp.example")
 			assertRefused(allProviders, map[string]string{"skipVerifySSL": "true"}, "no longer honored")
-			assertRefused(allProviders, map[string]string{
+			assertRefused(nonGeminiProviders, map[string]string{
 				"endpoint":      "https://llm.corp.example",
 				"skipVerifySSL": "true",
 			}, "no longer honored")
+		})
+
+		It("refuses a google/gemini endpoint before the allowlist is consulted", func() {
+			for _, allow := range []string{"", "https://llm.corp.example/v1", "https://llm.corp.example"} {
+				GinkgoT().Setenv(AgentLLMEndpointAllowlistEnv, allow)
+				assertRefused(geminiProviders, map[string]string{"endpoint": "https://llm.corp.example"},
+					"GOOGLE_GEMINI_BASE_URL")
+			}
 		})
 
 		It("keeps skipVerifySSL=\"false\" legal", func() {

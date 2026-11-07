@@ -110,6 +110,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-ttl-seconds-after-finished` | | `0` (= 3600) | Seconds before finished runner Jobs are deleted |
 | `--workflow-runner-llm-credentials-secret` | `WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET` | (empty) | Secret for LLM credential injection into runner Jobs; empty disables |
 | `--webhook-trigger-addr` | | (empty) | Address for the webhook-trigger HTTP server; empty disables |
+| `--event-trigger-allowed-source-namespaces` | `EVENT_TRIGGER_ALLOWED_SOURCE_NAMESPACES` | (empty) | Comma-separated Workflow namespaces whose event triggers may watch another namespace, all namespaces, a cluster-scoped kind, or a kind the API server cannot resolve. Empty limits every event trigger to its Workflow's own namespace (Helm `controller.eventTriggerAllowedSourceNamespaces`). Listing a namespace lets every Workflow in it watch any resource the controller can watch, in any namespace. List only namespaces whose Workflow authors you would trust with that read access |
 
 Two more env vars are read directly by the controller (not exposed as flags):
 `WEBHOOK_SERVICE_NAME` (default `ottoflow-webhook`) and `WEBHOOK_CONFIG_NAME`
@@ -158,7 +159,7 @@ The agent executor is the HTTPS service that runs agent steps on behalf of the w
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tls-port` | `8443` | TLS server port |
-| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `configmaps/agent-executor-caller` in this namespace) |
+| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in this namespace) |
 | `-v` | `0` | klog verbosity level (e.g. `-v=2` for troubleshooting, `-v=4` for deep debugging). See [Logging](logging.md). |
 
 Nirmata credentials for LLM are used by the **workflow runner** when it executes agent steps (set via env vars in the runner pod), not by the agent-executor binary itself.
