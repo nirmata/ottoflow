@@ -27,7 +27,7 @@ Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../s
 ### `features/` (67)
 
 - **Basics:** `hello-world`, `simple-greeting`, `expressions-workflow`, `step-dependencies`, `complex-workflow`, `conditional-execution`, `workflow-variables`, `workflow-reference`, `foreach-example`, `json-output-example`, `steptemplate-example`
-- **Agents / LLM providers:** `agent-basic`, `agent-step`, `agent-config`, `agent-openai`, `agent-azure-openai`, `agent-gemini`, `agent-local-llamacpp`, `agent-custom-endpoint`, `agent-mcp-combined`, `simple-agent-question`, `pod-diagnostics-agent`, `pod-diagnostics-with-mcp`, `kagent-integration`
+- **Agents / LLM providers:** `agent-basic`, `agent-step`, `agent-config`, `agent-openai`, `agent-azure-openai` (azure-openai is not supported), `agent-gemini`, `agent-local-llamacpp`, `agent-custom-endpoint`, `agent-mcp-combined`, `simple-agent-question`, `pod-diagnostics-agent`, `pod-diagnostics-with-mcp`, `kagent-integration`
 - **MCP:** `mcpserver-config`, `mcpserver-auth-variants`, `mcp-tool-call`, `mcp-with-auth`, `mcp-oauth2-auth`
 - **Triggers:** `cron-trigger`, `cron-trigger-timezone`, `cron-trigger-replace`, `event-trigger`, `complex-triggers`, `argocd-event-trigger`, `fluxcd-event-trigger`, `github-actions-webhook`
 - **Retries** (step-level `retry` is accepted but not applied): `retry-exponential-backoff`, `retry-linear-backoff`, `retry-max-attempts`, `retry-with-conditions`, `complex-workflow-with-retry`
@@ -341,7 +341,7 @@ Demonstrates:
 - `modelProvider: local`, so it runs against a llama.cpp-compatible server
   (llama.cpp, ollama, vLLM, LM Studio) without a cloud API key
 
-For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml`,
+For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml` (azure-openai is not supported),
 `agent-gemini.yaml`, `agent-local-llamacpp.yaml`, and `agent-custom-endpoint.yaml`
 (which documents exactly which `spec.config` fields each provider honours, and that
 `spec.config.endpoint` needs its origin on the operator's `AGENT_LLM_ENDPOINT_ALLOWLIST`).

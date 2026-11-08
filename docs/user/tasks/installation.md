@@ -94,7 +94,7 @@ Read the [upgrade notes](../upgrades/) before you upgrade. Chart-specific steps 
 
 ## Nirmata LLM credentials (optional)
 
-> **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `azure-openai`, `google`/`gemini`, and `local`. The Nirmata LLM credentials below apply only when running with the enterprise plugin.
+> **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `google`/`gemini`, and `local`. `azure-openai` is accepted but is not supported (see the [Agent API reference](../reference/api/agent.md)); the admission webhook warns when it is set. The Nirmata LLM credentials below apply only when running with the enterprise plugin.
 
 For **in-cluster** workflow runs that use Nirmata LLM (agent steps), configure credentials securely using a Kubernetes Secret. Create the secret in the same namespace as your WorkflowRuns (or a namespace the runner can reference):
 

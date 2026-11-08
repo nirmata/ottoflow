@@ -22,7 +22,7 @@ spec:
   # LLAMACPP_HOST environment variable, NOT from spec.config -- the underlying client does
   # not read spec.config.endpoint. For ollama:
   #   LLAMACPP_HOST=http://127.0.0.1:11434/ ottoflow run <workflow> --model <your-model>
-  # Or switch modelProvider to openai / anthropic / azure-openai / google with credentials.
+  # Or switch modelProvider to openai / anthropic / google with credentials.
   # modelName: ""  # Uses default model if not specified
   outputExtraction:
     type: json
@@ -47,7 +47,7 @@ spec:
   # LLAMACPP_HOST environment variable, NOT from spec.config -- the underlying client does
   # not read spec.config.endpoint. For ollama:
   #   LLAMACPP_HOST=http://127.0.0.1:11434/ ottoflow run <workflow> --model <your-model>
-  # Or switch modelProvider to openai / anthropic / azure-openai / google with credentials.
+  # Or switch modelProvider to openai / anthropic / google with credentials.
   outputExtraction:
     type: text
     # pattern: ""  # Optional: can be empty for text extraction
@@ -87,7 +87,7 @@ spec:
   # LLAMACPP_HOST environment variable, NOT from spec.config -- the underlying client does
   # not read spec.config.endpoint. For ollama:
   #   LLAMACPP_HOST=http://127.0.0.1:11434/ ottoflow run <workflow> --model <your-model>
-  # Or switch modelProvider to openai / anthropic / azure-openai / google with credentials.
+  # Or switch modelProvider to openai / anthropic / google with credentials.
   outputExtraction:
     type: json
     pattern: "$"

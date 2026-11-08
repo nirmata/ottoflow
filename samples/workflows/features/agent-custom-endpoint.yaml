@@ -20,7 +20,7 @@
 # Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
 #   - endpoint (origin only, "scheme://host[:port]"; a path, query, fragment
 #     or user:pass@ is rejected):
-#       * azure-openai (gollm azopenai provider, azopenai.go:62-64): honored.
+#       * azure-openai (accepted but not supported; gollm azopenai provider, azopenai.go:62-64): honored.
 #         Overrides AZURE_OPENAI_ENDPOINT. The endpoint must be https://,
 #         because the client forces the scheme to https.
 #       * openai: IGNORED. openai instead takes its base URL from the
