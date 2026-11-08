@@ -174,3 +174,34 @@ func TestEventWatchReopenAfterDirectGoneStartsFresh(t *testing.T) {
 		t.Errorf("runs = %d, want 0 (an UPDATE-only trigger ignores the replayed ADDED)", n)
 	}
 }
+
+// Ordinary events on a trusted stream advance the kept resourceVersion: a re-open resumes from the
+// last event, not the last BOOKMARK, and the same holds on a resumed stream with no BOOKMARK.
+// Those events still create runs; the BOOKMARK creates none.
+func TestEventWatchReopenResumesFromLatestEvent(t *testing.T) {
+	t.Parallel() // ~2 s in the re-open backoffs (watchReopenDelay, twice)
+	f, runs := resumeFixture(t)
+	w0 := f.waitOpen(t, 0)
+	w0.ch <- watch.Event{Type: watch.Bookmark, Object: bookmarkAt("120")}
+	w0.ch <- watch.Event{Type: watch.Modified, Object: configMapAt("125")}
+	w0.Stop()
+	w1 := f.waitOpen(t, 1)
+	o1 := f.lastOpts
+	cm2 := configMapAt("130") // another object: the same one inside the dedup window would not run
+	cm2.SetName("cm2")
+	cm2.SetUID("cm2-uid")
+	w1.ch <- watch.Event{Type: watch.Modified, Object: cm2}
+	w1.Stop()
+	f.waitOpen(t, 2)
+	o2 := f.lastOpts
+
+	if o1.ResourceVersion != "125" {
+		t.Errorf("open 1 resourceVersion = %q, want 125 (the MODIFIED after the BOOKMARK, not the BOOKMARK's 120)", o1.ResourceVersion)
+	}
+	if o2.ResourceVersion != "130" {
+		t.Errorf("open 2 resourceVersion = %q, want 130 (the MODIFIED on the resumed stream, which sent no BOOKMARK)", o2.ResourceVersion)
+	}
+	if n := runs(); n != 2 {
+		t.Errorf("runs = %d, want 2 (each MODIFIED on a trusted stream still runs; the BOOKMARK does not)", n)
+	}
+}
