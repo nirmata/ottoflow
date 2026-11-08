@@ -28,6 +28,18 @@
 # AGENT_LLM_ENDPOINT_ALLOWLIST — see agent-custom-endpoint.yaml for that
 # pattern and its caveats, e.g. the endpoint having to be https://).
 apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Agent
+metadata:
+  name: azure-openai-agent
+  namespace: ottoflow
+spec:
+  prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
+  modelProvider: azure-openai
+  modelName: gpt-4o
+  outputExtraction:
+    type: text
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:
   name: agent-azure-openai-workflow
@@ -62,15 +74,3 @@ spec:
     name: agent-azure-openai-workflow
   inputValues:
     question: "Explain Kubernetes in simple terms"
----
-apiVersion: ottoflow.nirmata.io/v1alpha1
-kind: Agent
-metadata:
-  name: azure-openai-agent
-  namespace: ottoflow
-spec:
-  prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
-  modelProvider: azure-openai
-  modelName: gpt-4o
-  outputExtraction:
-    type: text

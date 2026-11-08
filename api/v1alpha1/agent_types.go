@@ -45,7 +45,7 @@ type AgentSpec struct {
 
 	// ModelProvider is the LLM provider to use. This field is required.
 	// Options: nirmata, openai, anthropic, azure-openai, google, gemini, local
-	// azure-openai is accepted but is not supported: multi-turn tool use is not supported.
+	// azure-openai is accepted but not supported (no multi-turn tool use).
 	// +kubebuilder:validation:Enum=nirmata;openai;anthropic;azure-openai;google;gemini;local
 	// +kubebuilder:validation:Required
 	ModelProvider string `json:"modelProvider"`
