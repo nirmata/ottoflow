@@ -562,6 +562,9 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			return
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
+				if openWatch == nil {
+					return // only tests pass nil
+				}
 				w, reopened := tm.reopenWatch(ctx, stopChan, func() (watch.Interface, error) {
 					w, err := openWatch(rv)
 					// A 410 from the Watch call itself: drop rv so the retry (and trusted below) is fresh.

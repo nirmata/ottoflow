@@ -205,3 +205,24 @@ func TestEventWatchReopenResumesFromLatestEvent(t *testing.T) {
 		t.Errorf("runs = %d, want 2 (each MODIFIED on a trusted stream still runs; the BOOKMARK does not)", n)
 	}
 }
+
+// TestWatchEventsNilOpenWatchReturnsOnClose: with no re-open func, a closed stream ends the
+// watch instead of calling a nil func.
+func TestWatchEventsNilOpenWatchReturnsOnClose(t *testing.T) {
+	trig := podEventTrigger()
+	wf := eventTestWorkflow("nil-open-wf", trig)
+	tm := NewTriggerManager(makeFakeClient(wf), unitTestScheme, nil)
+	fw := &fakeWatch{ch: make(chan watch.Event)}
+	fw.Stop()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		tm.watchEvents(t.Context(), "nil-open", wf, trig.Event, fw, make(chan struct{}), nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchEvents did not return after its stream closed")
+	}
+}
