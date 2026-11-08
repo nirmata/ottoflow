@@ -32,6 +32,16 @@ func kubectl(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// agentExecutorCAPEM returns the agent-executor CA certificate published in its Secret.
+func agentExecutorCAPEM() []byte {
+	GinkgoHelper()
+	caB64, err := kubectl("get", "secret", agentExecutorCASecretDefault, "-n", namespace, "-o", `jsonpath={.data.tls\.crt}`)
+	Expect(err).NotTo(HaveOccurred(), caB64)
+	caPEM, err := base64.StdEncoding.DecodeString(caB64)
+	Expect(err).NotTo(HaveOccurred())
+	return caPEM
+}
+
 // kubectlIgnoreErr runs kubectl and discards failures. For cleanup only.
 func kubectlIgnoreErr(args ...string) string {
 	out, _ := kubectl(args...)
