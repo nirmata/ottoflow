@@ -37,24 +37,10 @@ const agentExecutorDeploymentDefault = "ottoflow-agent-executor"
 // agentExecutorServiceHost is the Service DNS name the agent-executor certificate carries as a SAN.
 const agentExecutorServiceHost = agentExecutorDeploymentDefault + "." + namespace + ".svc"
 
-var manifestPath string
+// controllerDeploymentDefault matches include "ottoflow.fullname" for release ottoflow.
+const controllerDeploymentDefault = "ottoflow"
 
-// waitForControllerPod polls until one controller pod is Running or timeout.
-func waitForControllerPod(ns string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	for time.Now().Before(deadline) {
-		cmd := exec.Command("kubectl", "get", "pods", "-l", "control-plane=controller-manager",
-			"-n", ns, "-o", "jsonpath={.items[0].status.phase}")
-		out, err := utils.Run(cmd)
-		if err == nil && len(out) > 0 && string(out) == "Running" {
-			return nil
-		}
-		<-ticker.C
-	}
-	return fmt.Errorf("controller pod did not become Running within %v", timeout)
-}
+var manifestPath string
 
 // waitForSecret polls until the Secret exists (e.g. agent-executor CA from the TLS cert controller).
 func waitForSecret(name, ns string, timeout time.Duration) error {
@@ -155,8 +141,8 @@ var _ = BeforeSuite(func() {
 	_, err = utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred())
 
-	By("waiting for controller pod to be running")
-	Expect(waitForControllerPod(namespace, 90*time.Second)).To(Succeed())
+	By("waiting for controller-manager Deployment ready (webhook server listening)")
+	Expect(waitForDeploymentRollout(controllerDeploymentDefault, namespace, 90*time.Second)).To(Succeed())
 
 	By("waiting for agent-executor internal TLS CA secret (async after controller start)")
 	Expect(waitForSecret(agentExecutorCASecretDefault, namespace, 2*time.Minute)).To(Succeed())
