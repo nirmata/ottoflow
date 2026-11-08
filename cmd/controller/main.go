@@ -544,6 +544,12 @@ func main() {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}
+	// Report Ready only once the webhook server accepts TLS connections, so the webhook
+	// Service does not send admission requests to a pod that would refuse them.
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		setupLog.Error(err, "unable to set up webhook ready check")
+		os.Exit(1)
+	}
 
 	// Start agent-executor TLS certificate controller (internal cert generation, no cert-manager)
 	if agentExecutorServiceName != "" {
