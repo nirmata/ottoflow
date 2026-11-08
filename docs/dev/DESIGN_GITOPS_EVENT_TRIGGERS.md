@@ -176,6 +176,8 @@ spec:
       # ... agent or expression steps using inputs.appName, inputs.appNamespace
 ```
 
+This Workflow is in `ottoflow` and watches `argocd`, so `ottoflow` must be listed in the controller's `--event-trigger-allowed-source-namespaces`; without it admission rejects the Workflow, or the controller skips the resource if the webhook is off.
+
 ---
 
 ## Relationship to multi-cluster orchestration

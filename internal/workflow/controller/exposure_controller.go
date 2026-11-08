@@ -42,6 +42,8 @@ const (
 	// BYO pod's ServiceAccount to the Helm-provisioned shared serve-a2a ClusterRole.
 	serveA2ARoleName = "ottoflow-serve-a2a"
 
+	ownerLabel = "app.kubernetes.io/part-of"
+
 	// exposureRequeue is the periodic resync for exposed Workflows. There is no Watch on
 	// the kagent Agent type, so we requeue to reconcile drift.
 	exposureRequeue = 10 * time.Minute
@@ -173,7 +175,7 @@ func (r *WorkflowExposureReconciler) ensureRBAC(ctx context.Context, ns string) 
 	}
 
 	desired := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: ns},
+		ObjectMeta: metav1.ObjectMeta{Name: serveA2ARoleName, Namespace: ns, Labels: map[string]string{ownerLabel: ottoflowPartOf}},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
@@ -204,9 +206,18 @@ func (r *WorkflowExposureReconciler) reconcileRoleBinding(ctx context.Context, d
 		return err
 	}
 
+	owner, labeled := existing.Labels[ownerLabel]
+	if owner != ottoflowPartOf {
+		if labeled || existing.RoleRef != desired.RoleRef || !equality.Semantic.DeepEqual(existing.Subjects, desired.Subjects) {
+			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (requires label %s=%s); label it or delete it to let OttoFlow manage it", existing.Namespace, existing.Name, ownerLabel, ottoflowPartOf)
+		}
+		metav1.SetMetaDataLabel(&existing.ObjectMeta, ownerLabel, ottoflowPartOf)
+		return r.Update(ctx, &existing)
+	}
+
 	if existing.RoleRef != desired.RoleRef {
 		// roleRef is immutable; the only way to repoint it is to recreate the binding.
-		if err := r.Delete(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+		if err := r.Delete(ctx, &existing, client.Preconditions{UID: &existing.UID}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 		return r.Create(ctx, desired)

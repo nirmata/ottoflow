@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -193,7 +194,11 @@ func (s *Scheduler) handleCronFire(key string) {
 	}
 
 	if err := s.createWorkflowRun(ctx, workflow, cronSpec); err != nil {
-		logger.Error(err, "Failed to create WorkflowRun from cron trigger")
+		msg := "Failed to create WorkflowRun from cron trigger"
+		if errors.Is(err, errStatusUpdateAfterCreate) {
+			msg = "WorkflowRun created from cron trigger but its status update failed"
+		}
+		logger.Error(err, msg)
 		s.recordCronFireFailure(workflow, err)
 		return
 	}
@@ -273,22 +278,21 @@ func deepCopyExecution(in *ottoflowv1alpha1.WorkflowRunExecutionSpec) *ottoflowv
 }
 
 // cronInputValuesFromSecrets reads the given InputValuesFrom entries and returns a map of input name to value.
-// Secrets are read in workflowNamespace when ref.Namespace is empty.
+// Secrets are read only in workflowNamespace; a ref naming another namespace is refused.
 func (s *Scheduler) cronInputValuesFromSecrets(ctx context.Context, workflowNamespace string, from []ottoflowv1alpha1.CronInputFromSecret) (map[string]string, error) {
 	out := make(map[string]string)
 	for _, entry := range from {
-		ns := entry.SecretRef.Namespace
-		if ns == "" {
-			ns = workflowNamespace
+		if ns := entry.SecretRef.Namespace; ns != "" && ns != workflowNamespace {
+			return nil, fmt.Errorf("secret %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, entry.SecretRef.Name, workflowNamespace)
 		}
 		secret := &corev1.Secret{}
-		key := client.ObjectKey{Namespace: ns, Name: entry.SecretRef.Name}
+		key := client.ObjectKey{Namespace: workflowNamespace, Name: entry.SecretRef.Name}
 		if err := s.client.Get(ctx, key, secret); err != nil {
-			return nil, fmt.Errorf("secret %s/%s: %w", ns, entry.SecretRef.Name, err)
+			return nil, fmt.Errorf("secret %s/%s: %w", workflowNamespace, entry.SecretRef.Name, err)
 		}
 		data, ok := secret.Data[entry.SecretRef.Key]
 		if !ok {
-			return nil, fmt.Errorf("secret %s/%s: key %q %w", ns, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
+			return nil, fmt.Errorf("secret %s/%s: key %q %w", workflowNamespace, entry.SecretRef.Name, entry.SecretRef.Key, errCronInputKeyMissing)
 		}
 		out[entry.InputName] = string(data)
 	}
@@ -352,24 +356,5 @@ func (s *Scheduler) createWorkflowRun(ctx context.Context, workflow *ottoflowv1a
 		return err
 	}
 
-	// The cached client may not see the object immediately after Create.
-	// Retry the Get+Status.Update with a short backoff.
-	key := client.ObjectKeyFromObject(workflowRun)
-	var lastErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		if err := s.client.Get(ctx, key, workflowRun); err != nil {
-			lastErr = err
-			continue
-		}
-		workflowRun.Status = *statusToSet
-		if err := s.client.Status().Update(ctx, workflowRun); err != nil {
-			lastErr = err
-			continue
-		}
-		return nil
-	}
-	return fmt.Errorf("failed to set WorkflowRun status after create: %w", lastErr)
+	return setStatusAfterCreate(ctx, s.client, workflowRun, statusToSet)
 }

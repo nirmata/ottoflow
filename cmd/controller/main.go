@@ -88,6 +88,7 @@ func main() {
 	var workflowRunnerTTLSecondsAfterFinished int
 	var workflowRunnerLLMCredentialsSecret string
 	var secretRefAllowedNamespacesFlag string
+	var eventTriggerAllowedNamespacesFlag string
 	var webhookTriggerAddr string
 	var mcpAddr string
 	var callbackAddr string
@@ -159,6 +160,12 @@ func main() {
 		llmCredSecret,
 		"Secret name in the WorkflowRun namespace for LLM credential injection. "+
 			"Empty (default) disables injection. Override per run via spec.execution.llmCredentialsSecret.")
+	flag.StringVar(&eventTriggerAllowedNamespacesFlag, "event-trigger-allowed-source-namespaces",
+		os.Getenv("EVENT_TRIGGER_ALLOWED_SOURCE_NAMESPACES"),
+		"Comma-separated Workflow namespaces whose event triggers may watch other namespaces, all "+
+			"namespaces, a cluster-scoped kind, or a kind the API server cannot resolve. Empty (default) "+
+			"limits every event trigger to its Workflow's own namespace. Each listed namespace's Workflows "+
+			"get the controller's watch access in every namespace.")
 	flag.StringVar(&secretRefAllowedNamespacesFlag, "secret-ref-allowed-namespaces",
 		os.Getenv("SECRET_REF_ALLOWED_NAMESPACES"),
 		"Comma-separated namespaces the cross-namespace-secret-reference POLICY check allows in "+
@@ -188,7 +195,8 @@ func main() {
 			"Default: ottoflow-serve-a2a.")
 	flag.BoolVar(&serveA2AAllowUnauthenticated, "serve-a2a-allow-unauthenticated", false,
 		"Turn OFF caller authentication on serve-a2a pods: anyone who can reach a pod can create WorkflowRuns. "+
-			"Default false (callers need a TokenReview-valid token and get configmaps/a2a-caller). "+
+			"Default false (callers need a TokenReview-valid token and the invoke permission on "+
+			"callers.gate.ottoflow.nirmata.io/a2a-caller). "+
 			"Pair with a NetworkPolicy; see docs/user/tasks/workflows-as-a2a-agents.md.")
 
 	webhookServiceName := envOrDefault("WEBHOOK_SERVICE_NAME", "ottoflow-webhook")
@@ -200,7 +208,7 @@ func main() {
 	flag.StringVar(&callbackAddr, "callback-addr", ":8084",
 		"The address the workflow callback server binds to.")
 	flag.StringVar(&mcpCallerNamespace, "mcp-caller-namespace", "",
-		"Namespace holding the mcp-caller ConfigMap that SubjectAccessReview checks for MCP callers. "+
+		"Namespace in which SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/mcp-caller for MCP callers. "+
 			"Defaults to --namespace.")
 	logConfig.AddFlags(flag.CommandLine)
 	flag.Parse()
@@ -420,6 +428,14 @@ func main() {
 		}
 	}
 
+	var eventTriggerAllowedNS []string
+	for _, ns := range strings.Split(eventTriggerAllowedNamespacesFlag, ",") {
+		if ns = strings.TrimSpace(ns); ns != "" {
+			eventTriggerAllowedNS = append(eventTriggerAllowedNS, ns)
+		}
+	}
+	triggerManager.SetEventTriggerAllowedNamespaces(eventTriggerAllowedNS)
+
 	runnerConfig := workflowcontroller.RunnerConfig{
 		RunnerImage:                workflowRunnerImage,
 		RunnerServiceAccount:       workflowRunnerServiceAccount,
@@ -500,7 +516,10 @@ func main() {
 	hookPathAgent := "/validate-ottoflow-nirmata-io-v1alpha1-agent"
 	hookPathMCPServer := "/validate-ottoflow-nirmata-io-v1alpha1-mcpserver"
 	mgr.GetWebhookServer().Register(hookPathWorkflow, &ctrlwebhook.Admission{
-		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{Client: mgr.GetClient()}),
+		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{
+			Client:                        mgr.GetClient(),
+			EventTriggerAllowedNamespaces: eventTriggerAllowedNS,
+		}),
 	})
 	mgr.GetWebhookServer().Register(hookPathWorkflowRun, &ctrlwebhook.Admission{
 		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowRunValidator{}),

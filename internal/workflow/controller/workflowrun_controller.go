@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -595,7 +596,7 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		if clusterRoleBinding.RoleRef.Name != desiredRoleName {
 			// RoleRef is immutable on an existing ClusterRoleBinding, so migrating to a new
 			// (narrower) role requires delete-and-recreate rather than an in-place Update.
-			if err := r.Delete(ctx, clusterRoleBinding); client.IgnoreNotFound(err) != nil {
+			if err := r.Delete(ctx, clusterRoleBinding, client.Preconditions{UID: &clusterRoleBinding.UID}); client.IgnoreNotFound(err) != nil {
 				return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
 			}
 			fresh := buildRunnerClusterRoleBinding(clusterRoleBindingName, desiredRoleName, serviceAccountName, workflowRun.Namespace)
@@ -679,7 +680,7 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
 		}
 		// RoleRef is immutable: recreate.
-		if err := r.Delete(ctx, existing); client.IgnoreNotFound(err) != nil {
+		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
 			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
 		}
 	case !apierrors.IsNotFound(err):
@@ -939,12 +940,15 @@ func (r *WorkflowRunReconciler) injectWellKnownLLMCredentials(
 // This allows Workflow podTemplates or WorkflowRun execution.job.volumes to reference
 // secrets that exist only in the ottoflow namespace. The agent-executor CA is not one of
 // them: its volume is ConfigMap-backed (vol.Secret == nil, skipped below), and
-// ensureAgentExecutorCA publishes that ConfigMap.
+// ensureAgentExecutorCA publishes that ConfigMap. A kubernetes.io/tls Secret is never
+// copied out of ControllerNamespace or the agent-executor namespace.
 func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, job *batchv1.Job, sourceNamespace string) error {
 	runnerNamespace := workflowRun.Namespace
 	if sourceNamespace == "" {
 		sourceNamespace = runnerNamespace
 	}
+	agentExecutorNamespace := cmp.Or(r.RunnerConfig.AgentExecutorNamespace, defaultAgentExecutorNamespace) // same fallback as ensureAgentExecutorCA
+	fenceTLS := sourceNamespace == r.ControllerNamespace || sourceNamespace == agentExecutorNamespace
 	for _, vol := range job.Spec.Template.Spec.Volumes {
 		if vol.Secret == nil {
 			continue
@@ -990,6 +994,9 @@ func (r *WorkflowRunReconciler) ensureRunnerSecrets(ctx context.Context, workflo
 				return r.forbiddenSecretRoleError(ctx, sourceKey, workflowRun.Namespace, err)
 			}
 			return transientUnless(apierrors.IsInvalid(err), fmt.Errorf("get secret %s from source namespace: %w", sourceKey, err))
+		}
+		if fenceTLS && sourceSecret.Type == corev1.SecretTypeTLS {
+			return fmt.Errorf("secret %q in namespace %q is of type kubernetes.io/tls and is not copied out of OttoFlow's own namespaces; create it in namespace %q, then re-run", secretName, sourceNamespace, runnerNamespace)
 		}
 		copySecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{

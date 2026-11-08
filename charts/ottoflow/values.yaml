@@ -19,8 +19,6 @@ controller:
     repository: controller
     # When empty, chart uses .Chart.AppVersion (fixed tag for released charts)
     tag: ""
-    # Override image name if needed
-    nameOverride: ""
     # Override full image if needed
     fullOverride: ""
 
@@ -96,6 +94,10 @@ controller:
   # Command arguments
   args:
     - --leader-elect
+
+  # Workflow namespaces whose event triggers may watch other or all namespaces (empty: own namespace only).
+  # Each listed namespace's Workflows get the controller's watch access in every namespace.
+  eventTriggerAllowedSourceNamespaces: []
 
   # Callback server for waitForCallback steps (POST /api/v1/workflow-runs/.../callback/...).
   callback:
@@ -272,7 +274,7 @@ agentExecutor:
   # Pod labels
   podLabels: {}
 
-  # Namespace used for RBAC auth (SubjectAccessReview checks get configmaps/agent-executor-caller in this namespace).
+  # Namespace used for RBAC auth (SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace).
   # Defaults to release namespace.
   callerNamespace: ""
 
@@ -416,7 +418,7 @@ serveA2A:
 
   # Caller authentication on serve-a2a pods. By default every call except the public agent card
   # needs a bearer ServiceAccount token minted with --audience=ottoflow-a2a (checked with
-  # TokenReview) whose ServiceAccount holds "get configmaps/a2a-caller" in the Workflow's
+  # TokenReview) whose ServiceAccount holds "invoke callers.gate.ottoflow.nirmata.io/a2a-caller" in the Workflow's
   # namespace (checked with SubjectAccessReview). The chart creates the ClusterRoles
   # <fullname>-a2a-token-reviewer and <fullname>-a2a-caller; the operator binds them (see
   # docs/user/tasks/workflows-as-a2a-agents.md).
@@ -620,14 +622,6 @@ networkPolicy:
       - protocol: TCP
         port: 4317
 
-# CRD installation
-crds:
-  # Specifies whether CRDs should be installed
-  install: true
-  # CRD installation mode: "install" (default) or "skip"
-  # Use "skip" if CRDs are managed outside of Helm
-  mode: install
-
 # Namespace configuration
 namespace:
   # Namespace name (if not set, uses Release.Namespace from helm -n)
@@ -636,6 +630,3 @@ namespace:
 # Labels and annotations
 commonLabels: {}
 commonAnnotations: {}
-
-# Additional resources (for advanced users)
-additionalResources: []

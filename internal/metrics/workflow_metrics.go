@@ -26,6 +26,17 @@ var (
 		[]string{"workflow", "namespace", "phase"},
 	)
 
+	// WorkflowTriggerEventsDroppedTotal counts event-trigger events dropped because the WorkflowRun
+	// create path returned an error (after retrying transient Create errors). A run may still
+	// exist if a Create landed but its response was lost. reason: api_error.
+	WorkflowTriggerEventsDroppedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: metricPrefix + "trigger_events_dropped_total",
+			Help: "Total number of event-trigger events dropped because the WorkflowRun create path returned an error, by reason (api_error)",
+		},
+		[]string{"workflow", "namespace", "reason"},
+	)
+
 	// WorkflowRunDurationSeconds is a histogram of workflow execution duration
 	WorkflowRunDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
@@ -73,5 +84,6 @@ func init() {
 		WorkflowStepsTotal,
 		WorkflowStepDurationSeconds,
 		WorkflowRunsActive,
+		WorkflowTriggerEventsDroppedTotal,
 	)
 }

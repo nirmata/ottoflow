@@ -83,11 +83,13 @@ type fakeWatcherFactory struct {
 	mu       sync.Mutex
 	watchers []*fakeWatch
 	lastOpts metav1.ListOptions
+	nss      []string // namespace of every Watch call
 }
 
-func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, _ string, opts metav1.ListOptions) (watch.Interface, error) {
+func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.nss = append(f.nss, ns)
 	w := &fakeWatch{ch: make(chan watch.Event)}
 	f.watchers = append(f.watchers, w)
 	f.lastOpts = opts
@@ -644,6 +646,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_WithWatcherFactory(t *test
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -667,6 +670,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_InvalidAPIVersion(t *testi
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	err := tm.RegisterWorkflow(ctx, wf)
 	if err == nil {
 		t.Fatal("expected error for invalid APIVersion")
@@ -862,42 +866,16 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_StaleCacheKeepsR
 	ns := defaultNamespace
 	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
 	live := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: "new-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: liveBindingUID},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "agent-caller"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "my-sa", Namespace: ns}},
 	}
 	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
-	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if err := c.Get(ctx, key, obj, opts...); err != nil {
-				return err
-			}
-			if crb, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
-				crb.UID = "old-uid"
-				crb.RoleRef.Name = "old-role"
-			}
-			return nil
-		},
-		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-			do := &client.DeleteOptions{}
-			do.ApplyOptions(opts)
-			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != "new-uid" {
-				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), errors.New("uid precondition"))
-			}
-			return c.Delete(ctx, obj, opts...)
-		},
-	})
-	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme}
 	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); !errors.Is(err, errRequeueRunnerAccess) {
 		t.Fatalf("err = %v, want requeue sentinel", err)
 	}
-	got := &rbacv1.ClusterRoleBinding{}
-	if err := base.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
-		t.Fatal(err)
-	}
-	if got.UID != "new-uid" {
-		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.UID)
-	}
+	assertNotRecreated(t, base, live)
 }
 
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
@@ -3553,6 +3531,73 @@ func TestBuildWorkflowRunnerJob_ShutdownGraceAndHardStop(t *testing.T) {
 	}
 }
 
+const liveBindingUID types.UID = "new-uid"
+
+// staleUIDClient serves the binding as an old incarnation (old UID, old roleRef) while the
+// live object is liveBindingUID, and rejects deletes whose UID precondition does not match it.
+func staleUIDClient(base client.WithWatch) client.Client {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			switch b := obj.(type) {
+			case *rbacv1.ClusterRoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			case *rbacv1.RoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			}
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != liveBindingUID {
+				return apierrors.NewConflict(rbacv1.Resource("bindings"), obj.GetName(), errors.New("uid precondition"))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+}
+
+func assertNotRecreated(t *testing.T, c client.Client, live client.Object) {
+	t.Helper()
+	got := live.DeepCopyObject().(client.Object)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(live), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GetUID() != liveBindingUID {
+		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.GetUID())
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerAccess_StaleCacheKeepsReplacementClusterRoleBinding(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns}}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "my-sa", Namespace: ns}}
+	crbName := workflowRunnerRoleBindingName(ns, "my-sa")
+	live := buildRunnerClusterRoleBinding(crbName, "ottoflow-new-role", "my-sa", ns)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr, sa, live).Build()
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerClusterRole: "ottoflow-new-role"}}
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "my-sa", false); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerConfigMapWriter_StaleCacheKeepsReplacement(t *testing.T) {
+	live := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
+	r := cmWriterReconciler(staleUIDClient(base), cmWriterRole)
+	if err := r.ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
+}
+
 func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{
@@ -3567,6 +3612,7 @@ func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3620,6 +3666,7 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &stallingWatcherFactory{blocked: make(chan struct{}), released: make(chan struct{})}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3639,6 +3686,8 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	}
 }
 
+// eventTestWorkflow builds a Workflow in "default". Tests that register it against the fake client's default (empty)
+// REST mapper allowlist "default", since every kind would otherwise be refused as unresolvable.
 func eventTestWorkflow(name string, triggers ...ottoflowv1alpha1.Trigger) *ottoflowv1alpha1.Workflow {
 	return &ottoflowv1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -3670,6 +3719,7 @@ func TestWorkflowReconciler_Reconcile_NotFound_StopsEventWatchers(t *testing.T) 
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3691,6 +3741,7 @@ func TestTriggerManager_RegisterWorkflow_ShrunkTriggers_StopsRemovedIndex(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger(), podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3709,6 +3760,7 @@ func TestTriggerManager_RegisterWorkflow_EventReplacedByCron_StopsWatcher(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3725,6 +3777,7 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3736,5 +3789,19 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 	}
 	if _, ok := tm.eventWatchers["default/a-event-0-x-event-0-resource-0"]; !ok || watchClosed(factory.get(1)) {
 		t.Fatal("re-registering a stopped the watcher of a-event-0-x")
+	}
+}
+
+func TestWebhookServer_StartListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s := NewWebhookServer(ln.Addr().String(), logr.Discard(), nil, nil)
+	if err := s.Start(ctx); err == nil {
+		t.Fatal("Start on a bound address should return an error")
 	}
 }

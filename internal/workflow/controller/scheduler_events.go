@@ -34,6 +34,8 @@ const maxEventNoteBytes = 1024
 // its note, so each failure class gets its own reason.
 func cronFireFailureReason(err error) string {
 	switch {
+	case errors.Is(err, errStatusUpdateAfterCreate):
+		return "CronWorkflowRunStatusUpdateFailed"
 	case !errors.Is(err, errCronInputValuesFrom):
 		return "CronWorkflowRunCreateFailed"
 	case errors.Is(err, errCronInputKeyMissing):
