@@ -69,7 +69,7 @@ func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 				"and only if it is origin-only (no path, query or fragment) and the agent-executor operator "+
 				"has allowlisted its origin (AGENT_LLM_ENDPOINT_ALLOWLIST / Helm "+
 				"agentExecutor.llmEndpointAllowlist). Otherwise the agent run will FAIL. "+
-				"google, gemini and nirmata always FAIL when it is set; openai and local ignore it.")
+				"google, gemini and nirmata always FAIL when it is set; openai and local FAIL unless its origin is allowlisted, and ignore it once accepted.")
 		}
 	}
 
