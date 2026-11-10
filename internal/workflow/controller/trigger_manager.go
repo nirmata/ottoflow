@@ -30,7 +30,6 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/watch"
@@ -1103,23 +1102,11 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 		tm.dedupMu.Unlock()
 	}
 
-	// Like setStatusAfterCreate, but stops on NotFound, ignores a final failure and replaces the
-	// whole status.
-	wrKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Name}
-	for attempt := 0; attempt < 5; attempt++ {
-		if attempt > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-		if err := tm.client.Get(ctx, wrKey, run); err != nil {
-			if apierrors.IsNotFound(err) {
-				break // deleted between Create and Get — stop retrying
-			}
-			continue
-		}
-		run.Status = *statusToSet
-		if err := tm.client.Status().Update(ctx, run); err == nil {
-			break
-		}
+	// The run exists, so a failed status write is logged, not returned: the handler would answer
+	// with an error and the sender's retry would create a second run.
+	if err := setStatusAfterCreate(ctx, tm.client, run, statusToSet); err != nil {
+		logger.Error(err, "WorkflowRun created but its status update failed",
+			logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, logging.KeyWorkflowRun, run.Name)
 	}
 
 	return run, WebhookRunCreated, nil
