@@ -14,12 +14,13 @@
 # Listing an origin trusts it with the agent-executor's LLM credentials: any
 # Agent may name a listed origin, and every provider client that uses the
 # endpoint (with the pinned gollm, azure-openai and anthropic) sends its credential there
-# together with the full prompt. Do not allowlist a host you do not control.
+# together with the full prompt. Do not allowlist a host you do not control. List only origins
+# you control that do not redirect to another origin.
 #
 # Agent.spec.config effectiveness by provider, once an origin IS allowlisted:
 #   - endpoint (origin only, "scheme://host[:port]"; a path, query, fragment
 #     or user:pass@ is rejected):
-#       * azure-openai (gollm azopenai provider, azopenai.go:62-64): honored.
+#       * azure-openai (accepted but not supported; gollm azopenai provider, azopenai.go:62-64): honored.
 #         Overrides AZURE_OPENAI_ENDPOINT. The endpoint must be https://,
 #         because the client forces the scheme to https.
 #       * openai: IGNORED. openai instead takes its base URL from the

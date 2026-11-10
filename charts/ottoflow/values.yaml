@@ -289,7 +289,7 @@ agentExecutor:
   # Listing an origin trusts it with this pod's LLM credentials: any Agent may name a listed
   # origin, and every provider client that uses the endpoint (with the pinned gollm,
   # azure-openai) sends its credential there together with the full prompt. Do not list a host
-  # you do not control.
+  # you do not control. List only origins that do not redirect to another origin.
   #
   # Matching: scheme exact; host case-insensitive, trailing dot ignored; default ports :443 and
   # :80 folded. No wildcards. The Agent's endpoint must itself be origin-only (a trailing "/" is
@@ -297,7 +297,8 @@ agentExecutor:
   # azure-openai additionally requires an https:// endpoint.
   #
   # Upgrade note: Agents that set spec.config.endpoint ran before this setting existed and now
-  # fail until their origin is listed here.
+  # fail until their origin is listed here. See docs/user/upgrades/llm-endpoint-allowlist.md
+  # (also covers skipVerifySSL).
   llmEndpointAllowlist: []
 
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the

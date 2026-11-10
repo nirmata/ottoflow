@@ -113,15 +113,15 @@ rules:
       - list
       - watch
   # ClusterRoleBindings - bind runner ServiceAccount to the runner ClusterRole (create, get, update).
-  # delete required so the controller can migrate a runner ClusterRoleBinding to a narrowed
-  # role — roleRef is immutable, so migration is delete-and-recreate.
+  # delete required because roleRef is immutable: when the role of a managed binding (runner or
+  # agent-executor caller) changes, the controller deletes and recreates it.
   # This grant is cluster-wide (not scoped to chart-managed bindings) because Kubernetes RBAC
   # resourceNames cannot be combined with label selectors.
   #
   # Blast radius: this delete verb is cluster-wide, not limited to OttoFlow-managed bindings.
   # A compromised controller could delete ANY ClusterRoleBinding in the cluster — an
-  # availability/lockout risk that did not exist before this grant. It is a temporary
-  # migration grant needed only because roleRef is immutable; removal is tracked in https://github.com/nirmata/ottoflow/issues/25.
+  # availability/lockout risk that did not exist before this grant. It is a standing grant
+  # (the controller checks the part-of label in code); no removal is planned.
   - apiGroups:
       - rbac.authorization.k8s.io
     resources:

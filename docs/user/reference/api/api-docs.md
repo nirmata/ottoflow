@@ -69,7 +69,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `prompt` _string_ | Prompt is the system prompt for the agent<br />This is a static prompt that defines the agent's role and base instructions<br />For dynamic content, use additionalPrompts in the workflow step's agentRef |  | Required: \{\} <br /> |
-| `modelProvider` _string_ | ModelProvider is the LLM provider to use. This field is required.<br />Options: nirmata, openai, anthropic, azure-openai, google, gemini, local |  | Enum: [nirmata openai anthropic azure-openai google gemini local] <br />Required: \{\} <br /> |
+| `modelProvider` _string_ | ModelProvider is the LLM provider to use. This field is required.<br />Options: nirmata, openai, anthropic, azure-openai, google, gemini, local<br />azure-openai is accepted but not supported (no multi-turn tool use). |  | Enum: [nirmata openai anthropic azure-openai google gemini local] <br />Required: \{\} <br /> |
 | `modelName` _string_ | ModelName is the specific model to use (e.g., "gpt-4", "claude-3-opus")<br />Default depends on provider |  | Optional: \{\} <br /> |
 | `mcpTools` _string array_ | MCPTools is a list of MCP tools the agent can use<br />Each tool is specified as "server:tool" (e.g., "kubernetes-mcp:get-resource") |  | Optional: \{\} <br /> |
 | `outputExtraction` _[OutputExtraction](#outputextraction)_ | OutputExtraction defines how to extract outputs from agent responses |  | Optional: \{\} <br /> |

@@ -504,7 +504,13 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 	}
 
 	wctx, cancel := context.WithCancel(ctx)
-	openWatch := func() (watch.Interface, error) {
+	// openWatch opens a watch resuming from rv ("" = a fresh open, which replays existing
+	// objects as ADDED). Bookmarks are always requested; a server that sends none leaves rv
+	// empty, so every re-open there is fresh, as before this change.
+	openWatch := func(rv string) (watch.Interface, error) {
+		opts := opts
+		opts.ResourceVersion = rv
+		opts.AllowWatchBookmarks = true
 		if tm.watcherFactory != nil {
 			return tm.watcherFactory.Watch(wctx, gvr, resource.Namespace, opts)
 		}
@@ -516,7 +522,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 		}
 		return tm.dynamicClient.Resource(gvr).Watch(wctx, opts)
 	}
-	watcher, err := openWatch()
+	watcher, err := openWatch("")
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to create watcher: %w", err)
@@ -538,9 +544,15 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 // watchEvents watches for events and creates WorkflowRuns.
 // eventKey is the bare event key used as the dedup scope — scoped to the trigger,
 // not to a single resource watcher, so unregisterEventTrigger can clean it up.
-func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func() (watch.Interface, error)) {
+func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func(rv string) (watch.Interface, error)) {
 	logger := log.FromContext(ctx)
 	defer func() { watcher.Stop() }()
+
+	// rv is the resume point for a re-open, so existing objects are not replayed as ADDED.
+	// trusted is false on a fresh (RV-less) stream until its first BOOKMARK: the initial ADDED
+	// burst carries each object's own last-write RV in key order, not a resume point.
+	var rv string
+	trusted := false
 
 	for {
 		select {
@@ -550,12 +562,34 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			return
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				w, reopened := tm.reopenWatch(ctx, stopChan, openWatch, workflow)
+				if openWatch == nil {
+					return // only tests pass nil
+				}
+				w, reopened := tm.reopenWatch(ctx, stopChan, func() (watch.Interface, error) {
+					w, err := openWatch(rv)
+					// A 410 from the Watch call itself: drop rv so the retry (and trusted below) is fresh.
+					if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+						rv = ""
+					}
+					return w, err
+				}, workflow)
 				if !reopened {
 					return
 				}
 				watcher.Stop()
 				watcher = w
+				trusted = rv != ""
+				continue
+			}
+
+			// ERROR events carry a *metav1.Status. A 410 means rv is too old: drop it so the
+			// re-open after the stream closes is a fresh one. Other errors keep rv.
+			if event.Type == watch.Error {
+				err := apierrors.FromObject(event.Object)
+				logger.Info("watch ERROR event — skipping", "err", err)
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					rv = ""
+				}
 				continue
 			}
 
@@ -563,6 +597,14 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			unstruct, ok := event.Object.(*unstructured.Unstructured)
 			if !ok {
 				logger.Info("watch event object is not Unstructured — skipping", "type", fmt.Sprintf("%T", event.Object))
+				continue
+			}
+
+			if trusted || event.Type == watch.Bookmark {
+				rv = unstruct.GetResourceVersion()
+			}
+			if event.Type == watch.Bookmark {
+				trusted = true
 				continue
 			}
 
