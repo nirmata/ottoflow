@@ -169,12 +169,8 @@ func (g *LegacyRunnerBindingGC) liveRun(ctx context.Context, job *batchv1.Job) (
 // controllerOwner fetches controllee's controlling owner of kind into owner; found is false when the
 // ref is absent, of another kind or lacks blockOwnerDeletion, or the owner is gone or has another UID.
 func (g *LegacyRunnerBindingGC) controllerOwner(ctx context.Context, controllee metav1.Object, kind string, owner client.Object) (bool, error) {
-	ref := metav1.GetControllerOfNoCopy(controllee)
-	if ref == nil || ref.Kind != kind || !ptr.Deref(ref.BlockOwnerDeletion, false) {
+	if ref := metav1.GetControllerOfNoCopy(controllee); ref == nil || !ptr.Deref(ref.BlockOwnerDeletion, false) {
 		return false, nil
 	}
-	if err := g.reader.Get(ctx, client.ObjectKey{Namespace: controllee.GetNamespace(), Name: ref.Name}, owner); err != nil {
-		return false, client.IgnoreNotFound(err)
-	}
-	return owner.GetUID() == ref.UID, nil
+	return controllerOwnerOf(ctx, g.reader, controllee, kind, owner)
 }

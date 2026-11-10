@@ -1371,7 +1371,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CRBExistsNotManaged_ReturnsErr
 		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
 	}
 	clusterRole := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}}
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "controller-manager", Namespace: ns}}
+	sa := runnerServiceAccount("controller-manager", ns)
 	mainCRBName := workflowRunnerRoleBindingName(ns, "controller-manager")
 	mainCRB := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: mainCRBName}, // no part-of label - not managed by us
@@ -1444,6 +1444,262 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_OwnsRunnerSAByWorkflow(t *test
 	owner := sa.OwnerReferences[0]
 	if owner.Kind != "Workflow" || owner.Name != wf.Name || owner.Controller == nil || !*owner.Controller {
 		t.Errorf("unexpected owner reference: %+v", owner)
+	}
+	if sa.Labels["app.kubernetes.io/part-of"] != ottoflowPartOf {
+		t.Errorf("created ServiceAccount labels = %v, want part-of=ottoflow", sa.Labels)
+	}
+}
+
+// runnerServiceAccount builds a runner ServiceAccount fixture that carries the part-of=ottoflow
+// label ensureRunnerAccess requires before it binds an existing derived or shared account.
+func runnerServiceAccount(name, namespace string) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}},
+	}
+}
+
+func newUnmanagedRunnerAccessFixture(t *testing.T, extra ...client.Object) (*WorkflowRunReconciler, client.Client, *ottoflowv1alpha1.WorkflowRun) {
+	t.Helper()
+	ns := defaultNamespace
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+		Status:     ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhasePending},
+	}
+	objs := append([]client.Object{wf, wr}, extra...)
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme, EventRecorder: events.NewFakeRecorder(10),
+		RunnerConfig: RunnerConfig{RunnerClusterRole: "ottoflow-role", AgentExecutorCallerRole: "ottoflow-caller"}}
+	return r, c, wr
+}
+
+func unmanagedRunnerSA() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "wf-runner", Namespace: defaultNamespace}}
+}
+
+func TestEnsureRunnerAccess_UnlabelledDerivedServiceAccount_NotBound(t *testing.T) {
+	ctx := context.Background()
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+
+	err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false)
+	if !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	}
+	for _, name := range []string{workflowRunnerRoleBindingName(defaultNamespace, "wf-runner"), agentExecutorCallerRoleBindingName(defaultNamespace, "wf-runner")} {
+		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); !apierrors.IsNotFound(getErr) {
+			t.Errorf("ClusterRoleBinding %s must not exist, Get err = %v", name, getErr)
+		}
+	}
+}
+
+func TestEnsureRunnerAccess_UnlabelledAccount_ExplicitExempt(t *testing.T) {
+	ctx := context.Background()
+	r, _, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", true); err != nil {
+		t.Fatalf("explicit account must pass: %v", err)
+	}
+}
+
+func TestEnsureRunnerAccess_UnlabelledSharedAccount_NotBoundAndBindingsRemoved(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	managed := func(name string) *rbacv1.ClusterRoleBinding {
+		return buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+	}
+	names := []string{workflowRunnerRoleBindingName(ns, "shared-runner"), agentExecutorCallerRoleBindingName(ns, "shared-runner")}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "shared-runner", Namespace: ns}}
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, sa, managed(names[0]), managed(names[1]))
+	r.RunnerConfig.RunnerServiceAccount = "shared-runner"
+
+	err := r.ensureRunnerAccess(ctx, wr, nil, "shared-runner", false)
+	if !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	}
+	for _, name := range names {
+		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); !apierrors.IsNotFound(getErr) {
+			t.Errorf("ClusterRoleBinding %s must not exist, Get err = %v", name, getErr)
+		}
+	}
+}
+
+func TestEnsureRunnerAccess_LabelledSharedAccount_Bound(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, runnerServiceAccount("shared-runner", ns))
+	r.RunnerConfig.RunnerServiceAccount = "shared-runner"
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "shared-runner", false); err != nil {
+		t.Fatalf("labelled shared account must pass: %v", err)
+	}
+	for _, name := range []string{workflowRunnerRoleBindingName(ns, "shared-runner"), agentExecutorCallerRoleBindingName(ns, "shared-runner")} {
+		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); getErr != nil {
+			t.Errorf("ClusterRoleBinding %s must exist: %v", name, getErr)
+		}
+	}
+}
+
+// An account created between the controller's read and its own create is checked as the server
+// holds it, not as the controller would have created it.
+func TestEnsureRunnerAccess_AccountCreatedAfterRead_Unlabelled_NotBound(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	r, base, wr := newUnmanagedRunnerAccessFixture(t)
+	r.RunnerConfig.RunnerConfigMapWriterRole = cmWriterRole
+	r.Client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if sa, ok := obj.(*corev1.ServiceAccount); ok {
+				if err := cl.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: sa.Name, Namespace: sa.Namespace}}); err != nil {
+					return err
+				}
+				return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "serviceaccounts"}, sa.Name)
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+	})
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false); !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	}
+	requireBindings(t, base, false, workflowRunnerRoleBindingName(ns, "wf-runner"), agentExecutorCallerRoleBindingName(ns, "wf-runner"))
+	if getErr := base.Get(ctx, types.NamespacedName{Namespace: ns, Name: runnerConfigMapWriterBindingName("wf-runner")}, &rbacv1.RoleBinding{}); !apierrors.IsNotFound(getErr) {
+		t.Errorf("writer RoleBinding must not exist, Get err = %v", getErr)
+	}
+}
+
+func TestReconcile_UnlabelledDerivedServiceAccount_FailsRunWithEvent(t *testing.T) {
+	ctx := context.Background()
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+	recorder := events.NewFakeRecorder(10)
+	r.EventRecorder = recorder
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected an error for an unlabelled derived ServiceAccount")
+	}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Fatalf("Phase = %v, want Failed", updated.Status.Phase)
+	}
+	var jobs batchv1.JobList
+	if err := c.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Errorf("no runner Job may exist for an unmanaged account, got %d", len(jobs.Items))
+	}
+	select {
+	case evt := <-recorder.Events:
+		if !strings.Contains(evt, "RunnerServiceAccountNotManaged") || !strings.Contains(evt, "wf-runner") {
+			t.Errorf("event = %q, want reason RunnerServiceAccountNotManaged naming wf-runner", evt)
+		}
+	default:
+		t.Error("expected a Warning event")
+	}
+}
+
+func TestEnsureRunnerAccess_UnlabelledAccount_DeletesOnlyMatchingOttoFlowBindings(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	mk := func(name string, labelled bool, subjectNS string) *rbacv1.ClusterRoleBinding {
+		b := buildRunnerClusterRoleBinding(name, "ottoflow-role", "wf-runner", subjectNS)
+		if !labelled {
+			b.Labels = nil
+		}
+		return b
+	}
+	runnerName := workflowRunnerRoleBindingName(ns, "wf-runner")
+	callerName := agentExecutorCallerRoleBindingName(ns, "wf-runner")
+
+	cases := []struct {
+		name        string
+		runner      *rbacv1.ClusterRoleBinding
+		caller      *rbacv1.ClusterRoleBinding
+		wantRunner  bool
+		wantCallers bool
+	}{
+		{"labelled and matching subject are deleted", mk(runnerName, true, ns), mk(callerName, true, ns), false, false},
+		{"labelled with a different subject namespace is kept", mk(runnerName, true, "other"), mk(callerName, true, "other"), true, true},
+		{"unlabelled with matching subject is kept", mk(runnerName, false, ns), mk(callerName, false, ns), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA(), tc.runner, tc.caller)
+			if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false); !errors.Is(err, errRunnerServiceAccountNotManaged) {
+				t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+			}
+			for name, want := range map[string]bool{runnerName: tc.wantRunner, callerName: tc.wantCallers} {
+				err := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{})
+				if want && err != nil {
+					t.Errorf("binding %s should be kept: %v", name, err)
+				}
+				if !want && !apierrors.IsNotFound(err) {
+					t.Errorf("binding %s should be deleted, Get err = %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteRunnerBindingsFor_BindingChangedAfterRead_NotDeleted(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	name := workflowRunnerRoleBindingName(ns, "shared-runner")
+	crb := buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(crb).Build()
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := cl.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if got, ok := obj.(*rbacv1.ClusterRoleBinding); ok && key.Name == name {
+				changed := got.DeepCopy()
+				changed.Subjects[0].Name = "someone-else"
+				return cl.Update(ctx, changed)
+			}
+			return nil
+		},
+	})
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+
+	r.deleteRunnerBindingsFor(ctx, ns, "shared-runner")
+
+	if err := base.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); err != nil {
+		t.Fatalf("binding changed after the read must not be deleted, Get err = %v", err)
+	}
+}
+
+func TestDeleteRunnerBindingsFor_NotSingleSubject_Preserved(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	sa := rbacv1.Subject{Kind: "ServiceAccount", Name: "shared-runner", Namespace: ns}
+	other := rbacv1.Subject{Kind: "User", Name: "alice", APIGroup: rbacv1.GroupName}
+	subjects := map[string][]rbacv1.Subject{"no subjects": nil, "matching SA then another": {sa, other}}
+	names := map[string]string{
+		"runner":     workflowRunnerRoleBindingName(ns, "shared-runner"),
+		"agent-exec": agentExecutorCallerRoleBindingName(ns, "shared-runner"),
+	}
+	for sname, subs := range subjects {
+		for bname, name := range names {
+			t.Run(sname+"/"+bname, func(t *testing.T) {
+				crb := buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+				crb.Subjects = subs
+				c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(crb).Build()
+				r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+
+				r.deleteRunnerBindingsFor(ctx, ns, "shared-runner")
+
+				if err := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); err != nil {
+					t.Fatalf("binding with %d subjects must be preserved, Get err = %v", len(subs), err)
+				}
+			})
+		}
 	}
 }
 
@@ -3523,7 +3779,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_StaleCacheKeepsReplacementClus
 	ctx := context.Background()
 	ns := defaultNamespace
 	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns}}
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "my-sa", Namespace: ns}}
+	sa := runnerServiceAccount("my-sa", ns)
 	crbName := workflowRunnerRoleBindingName(ns, "my-sa")
 	live := buildRunnerClusterRoleBinding(crbName, "ottoflow-new-role", "my-sa", ns)
 	live.UID = liveBindingUID
