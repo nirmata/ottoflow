@@ -947,6 +947,8 @@ func TestSuccessAfterSignalChecksJobDeadline(t *testing.T) {
 		wantUpdates int
 		fast        bool
 		noSignal    bool
+		// signalDuringRunGet delivers the signal while the status write reads the WorkflowRun.
+		signalDuringRunGet bool
 	}{
 		{name: "FailureTarget observed", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget))},
 		{name: "Failed observed", job: deadlineJob(past, deadlineCond(batchv1.JobFailed))},
@@ -968,6 +970,10 @@ func TestSuccessAfterSignalChecksJobDeadline(t *testing.T) {
 		{name: "deadline in the future", job: deadlineJob(time.Now()), wantUpdates: 1, fast: true},
 		{name: "no signal", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget)), wantUpdates: 1, fast: true,
 			noSignal: true},
+		{name: "signal during the WorkflowRun read", job: deadlineJob(past, deadlineCond(batchv1.JobFailureTarget)),
+			fast: true, signalDuringRunGet: true},
+		{name: "signal during the WorkflowRun read, deadline not due", job: deadlineJob(time.Now()),
+			wantUpdates: 1, fast: true, signalDuringRunGet: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := newRun()
@@ -978,9 +984,14 @@ func TestSuccessAfterSignalChecksJobDeadline(t *testing.T) {
 			}
 			base, updates := ctxAwareClient(objs...)
 			jobGets := 0
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
 			c := interceptor.NewClient(base, interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object,
 					opts ...client.GetOption) error {
+					if _, ok := o.(*ottoflowv1alpha1.WorkflowRun); ok && tc.signalDuringRunGet {
+						cancel()
+					}
 					err := c.Get(ctx, k, o, opts...)
 					if job, ok := o.(*batchv1.Job); ok {
 						jobGets++
@@ -994,9 +1005,7 @@ func TestSuccessAfterSignalChecksJobDeadline(t *testing.T) {
 			key := client.ObjectKeyFromObject(run)
 			inMemory := newRun()
 			inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if !tc.noSignal {
+			if !tc.noSignal && !tc.signalDuringRunGet {
 				cancel()
 			}
 			start := time.Now()

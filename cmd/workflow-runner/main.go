@@ -80,8 +80,8 @@ const (
 	interruptedMessage = "interrupted by SIGTERM"
 	// exitInterrupted is 128+SIGTERM. It must be non-zero: the controller reads exit 0 as "run complete".
 	exitInterrupted = 143
-	// persistTimeout bounds a post-signal write. The interrupted path shares one budget for the
-	// checkpoint flush and the status update; failure uses it per write, success shares it with the Job read.
+	// persistTimeout is the budget for each of: the interrupted path's checkpoint flush plus status update,
+	// one failure write, success's first write, and success's post-signal Job check plus write.
 	persistTimeout   = 5 * time.Second
 	jobCheckTimeout  = 2 * time.Second
 	jobCheckInterval = 300 * time.Millisecond
@@ -786,14 +786,6 @@ func persistExecutionSuccess(
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	jobName, podName string,
 ) {
-	writeCtx, cancel := boundedCtx(ctx)
-	defer cancel()
-	jobKey := client.ObjectKey{Namespace: runKey.Namespace, Name: jobName}
-	if ctx.Err() != nil && jobDeadlineExceeded(writeCtx, controlClient, jobKey) {
-		klog.InfoS("Job carries a DeadlineExceeded condition; not writing success so the controller fails the run",
-			append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, runKey.Namespace, runKey.Name), "job", jobName)...)
-		return
-	}
 	end := metav1.Now()
 	// A resumed run still carries the marker markInterrupted wrote; a normal success writes no message.
 	if workflowRun.Status.Message == interruptedMessage {
@@ -807,7 +799,28 @@ func persistExecutionSuccess(
 	workflowRun.Status.Execution.PodName = podName
 	workflowRun.Status.Execution.Message = workflowRun.Status.Message
 	workflowRun.Status.Execution.CompletionTime = &end
-	err := persistWorkflowRunStatus(writeCtx, controlClient, runKey, workflowRun.Status, preserveDeadlineFailure)
+	var err error
+	// No signal yet: write on a ctx the signal cancels, so a SIGTERM mid-write falls back to the Job check.
+	if ctx.Err() == nil {
+		firstCtx, cancelFirst := context.WithTimeout(ctx, persistTimeout)
+		err = persistWorkflowRunStatus(firstCtx, controlClient, runKey, workflowRun.Status, preserveDeadlineFailure)
+		cancelFirst()
+		if err == nil {
+			return
+		}
+	}
+	// Branch on ctx, not the error: RetryOnConflict can return a Conflict after the cancel.
+	if ctx.Err() != nil {
+		writeCtx, cancel := boundedCtx(ctx)
+		defer cancel()
+		jobKey := client.ObjectKey{Namespace: runKey.Namespace, Name: jobName}
+		if jobDeadlineExceeded(writeCtx, controlClient, jobKey) {
+			klog.InfoS("Job carries a DeadlineExceeded condition; not writing success so the controller fails the run",
+				append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, runKey.Namespace, runKey.Name), "job", jobName)...)
+			return
+		}
+		err = persistWorkflowRunStatus(writeCtx, controlClient, runKey, workflowRun.Status, preserveDeadlineFailure)
+	}
 	if err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, string(workflowRun.Status.Phase))
