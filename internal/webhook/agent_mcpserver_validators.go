@@ -42,15 +42,20 @@ func (v *AgentValidator) ValidateUpdate(ctx context.Context, oldA, a *ottoflowv1
 	return validateAgentConfig(a), nil
 }
 
-// validateAgentConfig warns about spec.config keys no executor in this build reads, and
-// about malformed values for keys that are read.
+// validateAgentConfig warns about an unsupported modelProvider, spec.config keys no executor in this
+// build reads, and about malformed values for keys that are read.
 func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
-	if a == nil || len(a.Spec.Config) == 0 {
+	if a == nil {
 		return nil
 	}
 
 	var unknown []string
 	var warnings admission.Warnings
+	if a.Spec.ModelProvider == "azure-openai" {
+		warnings = append(warnings, "spec.modelProvider azure-openai is not supported: "+
+			"the Azure OpenAI client in this build does not keep the model's tool calls and replies in the conversation history (single-turn prompts may still work)")
+	}
+
 	for k, val := range a.Spec.Config {
 		if _, ok := agentConfigKeysReadByDefaultExecutor[k]; !ok {
 			unknown = append(unknown, k)
@@ -69,7 +74,7 @@ func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 				"and only if it is origin-only (no path, query or fragment) and the agent-executor operator "+
 				"has allowlisted its origin (AGENT_LLM_ENDPOINT_ALLOWLIST / Helm "+
 				"agentExecutor.llmEndpointAllowlist). Otherwise the agent run will FAIL. "+
-				"google, gemini and nirmata always FAIL when it is set; openai and local ignore it.")
+				"google, gemini and nirmata always FAIL when it is set; openai and local FAIL unless its origin is allowlisted, and ignore it once accepted.")
 		}
 	}
 

@@ -97,6 +97,9 @@ func (r *WorkflowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		r.TriggerManager = NewTriggerManager(mgr.GetClient(), mgr.GetScheme(), nil)
 	}
 
+	// MaxConcurrentReconciles stays at the controller-runtime default of 1 on purpose: only
+	// Reconcile reads or writes the TriggerManager event-trigger maps, and they have no lock.
+	// Add locking there before raising the worker count.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&ottoflowv1alpha1.Workflow{}).
 		Complete(r)
