@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package certmanager
 
 import (
+	"bytes"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -26,9 +27,7 @@ import (
 // checks two properties. A2: a stored leaf verifies against the stored CA bundle until its own
 // expiry. A1: rotation reuses the CA key. A1 is not over-specification: a client that cached the
 // pre-rotation CA cert (a runner keeps the CA it loaded at start-up) verifies leaves signed after
-// rotation only because the new CA cert has the same key and subject. A1 can fail while A2
-// passes, for example when rotation mints a fresh key and the leaf is re-issued under the new CA;
-// that still breaks such clients.
+// rotation only because the new CA cert has the same key and subject.
 //
 // Pass 1 issues a CA that expires in 1h and a leaf with the production leaf validity
 // (TLSValidityDuration). Pass 2 runs with the production durations, so the CA is inside its
@@ -63,6 +62,7 @@ func TestCARotation_LeafStaysVerifiable(t *testing.T) {
 		t.Fatalf("want 1 CA cert after pass 1, got %d", len(pass1CAs))
 	}
 	pass1CA := pass1CAs[0]
+	pass1Leaf := get(tlsName).Data[corev1.TLSCertKey]
 
 	// The fake clientset leaves ResourceVersion empty on created objects, and the renewer creates
 	// rather than updates when it is empty (see emptyTLSPlaceholder). Stamp both Secrets so pass 2
@@ -81,10 +81,13 @@ func TestCARotation_LeafStaysVerifiable(t *testing.T) {
 	caSecret := get(caName)
 	caCerts := parseCertificatesPEM(caSecret.Data[corev1.TLSCertKey])
 
-	// A0: the CA rotated, so the checks below are not vacuous.
+	// A0: the CA rotated and the pass-1 leaf was kept, so the checks below are not vacuous.
 	if !slices.ContainsFunc(caCerts, func(c *x509.Certificate) bool { return !c.Equal(pass1CA) }) {
 		t.Fatalf("A0: no stored CA cert other than the pass-1 cert after pass 2 (%d cert(s)); the CA did not rotate",
 			len(caCerts))
+	}
+	if !bytes.Equal(get(tlsName).Data[corev1.TLSCertKey], pass1Leaf) {
+		t.Fatal("A0: pass 2 replaced the pass-1 leaf")
 	}
 
 	// A1: rotation reuses the pass-1 CA key: the stored key and the newest stored cert both carry it.
