@@ -129,7 +129,7 @@ spec:
           repo: object.repository.full_name
           headRef: object.pull_request.head.ref
           headSha: object.pull_request.head.sha
-        dedupKey: 'object.pull_request.head.sha'
+        dedupKey: "object.repository.full_name + '#' + string(object.pull_request.number) + '@' + object.pull_request.head.sha"
 ```
 
 The GitHub webhook points at `POST https://<ingress>/webhooks/{namespace}/{workflowName}` with the same
