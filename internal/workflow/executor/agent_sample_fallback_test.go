@@ -164,6 +164,7 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 		`"capabilitiesAdd":["NET_ADMIN"],"name":"app","ports":[8080],"privileged":"unset",` +
 		`"readOnlyRootFilesystem":"unset","runAsNonRoot":true}],"deployment":"prod/web","hostNetwork":false,` +
 		`"hostPID":false,"replicas":2,"serviceAccount":"default"}]`
+	seenID := map[string]string{} // @id -> row; the rows run back to back, normally within one second
 	for _, tc := range []struct {
 		name, cveID, reply string
 		want               map[string]any // the statement's judgment fields; nil when the run must fail
@@ -273,10 +274,16 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 				t.Fatalf("@context/version/author: %s", rawVex.Raw)
 			}
 			const idPrefix = "https://openvex.dev/docs/public/ottoflow-" + cve + "-"
-			secs, err := strconv.ParseInt(strings.TrimPrefix(doc.ID, idPrefix), 10, 64)
-			if !strings.HasPrefix(doc.ID, idPrefix) || err != nil || secs < before || secs > time.Now().Unix() {
-				t.Fatalf("@id %q is not %s<unix seconds of this run>", doc.ID, idPrefix)
+			secsText, suffix, _ := strings.Cut(strings.TrimPrefix(doc.ID, idPrefix), "-")
+			secs, err := strconv.ParseInt(secsText, 10, 64)
+			if !strings.HasPrefix(doc.ID, idPrefix) || err != nil || secs < before || secs > time.Now().Unix() ||
+				len(suffix) != 16 || strings.Trim(suffix, "0123456789abcdef") != "" {
+				t.Fatalf("@id %q is not %s<unix seconds of this run>-<16 hex digits>", doc.ID, idPrefix)
 			}
+			if prev, dup := seenID[doc.ID]; dup {
+				t.Fatalf("rows %q and %q got the same @id %q", prev, tc.name, doc.ID)
+			}
+			seenID[doc.ID] = tc.name
 			// RFC 3339 with the process's UTC offset, not necessarily Z.
 			if _, err := time.Parse(time.RFC3339Nano, doc.Timestamp); err != nil {
 				t.Fatalf("timestamp %q: %v", doc.Timestamp, err)
