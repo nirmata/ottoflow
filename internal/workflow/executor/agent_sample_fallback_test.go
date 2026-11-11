@@ -149,6 +149,9 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 	}
 
 	const image, cve, noStatus = "ghcr.io/acme/web:1.2.3", "CVE-2025-0001", "no such key: status"
+	// purl is the product @id the sample derives from image; hex is a digest for the digest rows.
+	const purl, noImage = "pkg:oci/web?repository_url=ghcr.io%2Facme%2Fweb&tag=1.2.3", "no such key: invalid image"
+	const hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	// What collectDeployments keeps: for dmz/edge the values it sets, minus the two strings that
 	// are not capability names; for prod/bare every security default; for prod/web its set fields, with
 	// runAsNonRoot on the Pod only so it comes through the Pod fallback, and defaults otherwise.
@@ -166,28 +169,29 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 		`"hostPID":false,"replicas":2,"serviceAccount":"default"}]`
 	seenID := map[string]string{} // @id -> row; the rows run back to back, normally within one second
 	for _, tc := range []struct {
-		name, cveID, reply string
-		want               map[string]any // the statement's judgment fields; nil when the run must fail
-		wantErr            string         // a substring of the run's error when want is nil
+		// purl is the product @id the image gives; "" when the run must fail.
+		name, cveID, image, purl, reply string
+		want                            map[string]any // the statement's judgment fields; nil when the run must fail
+		wantErr                         string         // a substring of the run's error when want is nil
 		// extra holds more objects for the fake cluster.
 		extra []client.Object
 	}{
-		{"not_affected", cve, `{"status":"not_affected","justification":"vulnerable_code_not_in_execute_path"}`,
+		{"not_affected", cve, image, purl, `{"status":"not_affected","justification":"vulnerable_code_not_in_execute_path"}`,
 			map[string]any{"status": "not_affected", "justification": "vulnerable_code_not_in_execute_path"}, "", nil},
-		{"unknown justification", cve, `{"status":"not_affected","justification":"made_up"}`,
+		{"unknown justification", cve, image, purl, `{"status":"not_affected","justification":"made_up"}`,
 			map[string]any{"status": "under_investigation"}, "", nil},
-		{"affected without action", cve, `{"status":"affected"}`, map[string]any{"status": "under_investigation"}, "", nil},
-		{"affected with null action", cve, `{"status":"affected","action_statement":null}`,
+		{"affected without action", cve, image, purl, `{"status":"affected"}`, map[string]any{"status": "under_investigation"}, "", nil},
+		{"affected with null action", cve, image, purl, `{"status":"affected","action_statement":null}`,
 			map[string]any{"status": "under_investigation"}, "", nil},
-		{"affected", cve, `{"status":"affected","action_statement":"Upgrade to 1.2.4."}`,
+		{"affected", cve, image, purl, `{"status":"affected","action_statement":"Upgrade to 1.2.4."}`,
 			map[string]any{"status": "affected", "action_statement": "Upgrade to 1.2.4."}, "", nil},
-		{"fixed", cve, `{"status":"fixed"}`, map[string]any{"status": "under_investigation"}, "", nil},
-		{"status not a string", cve, `{"status":1}`, map[string]any{"status": "under_investigation"}, "", nil},
-		{"prose reply", cve, "It is probably fine.", nil, noStatus, nil},
-		{"wrong key", cve, `{"Status":"fixed"}`, nil, noStatus, nil},
-		{"cveId with a space", "CVE-2025 0001", `{"status":"fixed"}`, nil, "no such key: invalid cveId", nil},
+		{"fixed", cve, image, purl, `{"status":"fixed"}`, map[string]any{"status": "under_investigation"}, "", nil},
+		{"status not a string", cve, image, purl, `{"status":1}`, map[string]any{"status": "under_investigation"}, "", nil},
+		{"prose reply", cve, image, "", "It is probably fine.", nil, noStatus, nil},
+		{"wrong key", cve, image, "", `{"Status":"fixed"}`, nil, noStatus, nil},
+		{"cveId with a space", "CVE-2025 0001", image, "", `{"status":"fixed"}`, nil, "no such key: invalid cveId", nil},
 		// 200 Deployments with 243-character names take the list past 100000 characters of JSON.
-		{"Deployment list too large", cve, `{"status":"fixed"}`, nil,
+		{"Deployment list too large", cve, image, "", `{"status":"fixed"}`, nil,
 			"no such key: 203 Deployments run the image and their list is",
 			func() []client.Object {
 				more := make([]client.Object, 0, 200)
@@ -196,20 +200,36 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 				}
 				return more
 			}()},
+		// In the purl, a digest is written sha256%3A<hex>.
+		{"port registry and digest", cve, "localhost:5000/team/app@sha256:" + hex,
+			"pkg:oci/app@sha256%3A" + hex + "?repository_url=localhost:5000%2Fteam%2Fapp",
+			`{"status":"fixed"}`, map[string]any{"status": "under_investigation"}, "", nil},
+		{"tag and digest", cve, "ghcr.io/acme/web:1.2.3@sha256:" + hex,
+			"pkg:oci/web@sha256%3A" + hex + "?repository_url=ghcr.io%2Facme%2Fweb&tag=1.2.3",
+			`{"status":"fixed"}`, map[string]any{"status": "under_investigation"}, "", nil},
+		{"Docker Hub short name", cve, "nginx", "pkg:oci/nginx?repository_url=index.docker.io%2Flibrary%2Fnginx&tag=latest",
+			`{"status":"fixed"}`, map[string]any{"status": "under_investigation"}, "", nil},
+		// isImage accepts the first three images; the sample's character class refuses them.
+		{"query characters in the registry", cve, "h&tag=1.io/x:1", "", `{"status":"fixed"}`, nil, noImage, nil},
+		{"IPv6 registry", cve, "[::1]:5000/x:1", "", `{"status":"fixed"}`, nil, noImage, nil},
+		{"empty repository part", cve, "ghcr.io/acme/:1", "", `{"status":"fixed"}`, nil, noImage, nil},
+		{"image with a space", cve, "a b", "", `{"status":"fixed"}`, nil, noImage, nil},
+		// The class accepts this one and isImage refuses it: a repository is lowercase.
+		{"uppercase repository", cve, "ghcr.io/Acme/web:1", "", `{"status":"fixed"}`, nil, noImage, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			web := sampleDeployment("prod", "web", image)
+			web := sampleDeployment("prod", "web", tc.image)
 			web.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{RunAsNonRoot: ptr(true)}
 			web.Spec.Template.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{
 				Capabilities: &corev1.Capabilities{Add: []corev1.Capability{"NET_ADMIN"}},
 			}
-			objs := []client.Object{ag.DeepCopy(), edgeDeployment(image), sampleDeployment("prod", "bare", image), web,
+			objs := []client.Object{ag.DeepCopy(), edgeDeployment(tc.image), sampleDeployment("prod", "bare", tc.image), web,
 				sampleDeployment("prod", "other", "ghcr.io/acme/other:9")}
 			objs = append(objs, tc.extra...)
 			c := fake.NewClientBuilder().WithScheme(newTestScheme()).WithObjects(objs...).Build()
 			run := newTestWorkflowRun("r")
 			run.Namespace = wf.Namespace // the namespace input defaults to "": all namespaces
-			run.Spec.InputValues = map[string]string{"image": image, "cveId": tc.cveID}
+			run.Spec.InputValues = map[string]string{"image": tc.image, "cveId": tc.cveID}
 			stub := agent.NewMockAgentExecutor()
 			stub.SetDefaultResponse(tc.reply)
 			we, err := NewWorkflowExecutorWithAgentExecutor(c, nil, nil, nil, run, stub, true, 0, 5, nil)
@@ -290,7 +310,7 @@ func TestSampleCVEVexAssessment(t *testing.T) {
 			}
 
 			// vulnerability and products come from the run inputs, never from the reply.
-			want := map[string]any{"vulnerability": map[string]any{"name": cve}, "products": []any{map[string]any{"@id": image}}}
+			want := map[string]any{"vulnerability": map[string]any{"name": cve}, "products": []any{map[string]any{"@id": tc.purl}}}
 			maps.Copy(want, tc.want)
 			if len(doc.Statements) != 1 || !reflect.DeepEqual(doc.Statements[0], want) {
 				t.Fatalf("statements = %v, want [%v]", doc.Statements, want)
