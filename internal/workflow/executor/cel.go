@@ -111,6 +111,10 @@ type CELEvaluator struct {
 	// resourceListPageSize overrides the default 500-item page size for resource.List()
 	// CEL expressions. 0 means use the default. Set via SetResourceListPageSize.
 	resourceListPageSize int64
+	// run is bound as the CEL variable `run`: the namespace, name and UID of the WorkflowRun
+	// this evaluator serves. An inline sub-workflow inherits its parent's (see newChildExecutor),
+	// because its in-memory child run is never created in the API server and has no UID.
+	run map[string]string
 }
 
 // NewCELEvaluator creates a new CEL evaluator with Resource library support
@@ -155,7 +159,7 @@ func createCELEnvironment(
 	stringFormatOpts := GetStringFormatOptions()
 	listFuncOpts := GetListFunctions()
 
-	floOpts := make([]celapi.EnvOption, 0, 17)
+	floOpts := make([]celapi.EnvOption, 0, 19)
 	floOpts = append(floOpts,
 		celapi.Variable("inputs", celapi.MapType(celapi.StringType, celapi.DynType)),
 		celapi.Variable("expressions", celapi.MapType(celapi.StringType, celapi.DynType)),
@@ -179,6 +183,8 @@ func createCELEnvironment(
 		celapi.Variable("item", celapi.DynType),
 		// Prometheus query step result (result.type, result.samples, result.value)
 		celapi.Variable("result", celapi.DynType),
+		// Identity of the WorkflowRun being executed (run.namespace, run.name, run.uid)
+		celapi.Variable("run", celapi.MapType(celapi.StringType, celapi.StringType)),
 	)
 	floOpts = append(floOpts, resourceMacroOpts...)
 	floOpts = append(floOpts, stringFormatOpts...)
@@ -272,7 +278,20 @@ func NewCELEvaluatorWithMetrics(
 		celCostLimit:        DefaultCELCostLimit,
 		imageDataFetcher:    imageDataFetcher,
 		macroCtx:            macroCtx,
+		run:                 runIdentity(workflowRun),
 	}, nil
+}
+
+// runIdentity returns the value bound as the CEL variable `run`. Every key is always present,
+// empty when there is no WorkflowRun, so `run.uid` never fails with "no such key".
+func runIdentity(workflowRun *ottoflowv1alpha1.WorkflowRun) map[string]string {
+	run := map[string]string{"namespace": "", "name": "", "uid": ""}
+	if workflowRun != nil {
+		run["namespace"] = workflowRun.Namespace
+		run["name"] = workflowRun.Name
+		run["uid"] = string(workflowRun.UID)
+	}
+	return run
 }
 
 // ResolveCELCostLimit returns the CEL cost limit for a workflow (spec.CELCostLimit or default).
@@ -454,6 +473,7 @@ func (e *CELEvaluator) EvaluateExpression(ctx context.Context, expr string, vars
 	if vars == nil {
 		vars = make(map[string]interface{})
 	}
+	vars["run"] = e.run
 	vars["http"] = kyvernohttp.Context{ContextInterface: NewCELHTTPContext()}
 	vars["globalContext"] = kyvernoglobalcontext.Context{ContextInterface: noopGlobalContext{}}
 

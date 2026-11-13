@@ -9,6 +9,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -413,5 +414,47 @@ spec:
 	}
 	if run == nil || run.Status.Phase != "Failed" {
 		t.Fatalf("expected Phase Failed, got: %+v", run)
+	}
+}
+
+// A local run is never created in an API server, so nothing else assigns its UID. CEL
+// `run.uid` must still identify it, and differ between two local runs.
+func TestExecuteWorkflow_LocalRunHasUID(t *testing.T) {
+	manifest := `apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: wf
+spec:
+  outputs:
+    - name: id
+      expression: run.namespace + "/" + run.name + "/" + run.uid
+  steps:
+    - name: step1
+      expressions:
+        - name: noop
+          expression: '"ok"'
+`
+	exec := NewLocalWorkflowExecutor(fake.NewClientBuilder().Build(), "", 1, "", "")
+	if err := exec.LoadFromReader(strings.NewReader(manifest)); err != nil {
+		t.Fatalf("LoadFromReader: %v", err)
+	}
+
+	ids := make([]string, 0, 2)
+	for range 2 {
+		run, err := exec.ExecuteWorkflow(context.Background(), "wf", "default", nil)
+		if err != nil {
+			t.Fatalf("ExecuteWorkflow: %v", err)
+		}
+		if run.UID == "" {
+			t.Fatal("local run has no UID")
+		}
+		want := fmt.Sprintf("%q", "default/"+run.Name+"/"+string(run.UID))
+		if got := string(run.Status.Outputs["id"].Raw); got != want {
+			t.Fatalf("output id = %s, want %s", got, want)
+		}
+		ids = append(ids, string(run.UID))
+	}
+	if ids[0] == ids[1] {
+		t.Fatalf("two local runs share UID %s", ids[0])
 	}
 }

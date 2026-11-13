@@ -309,6 +309,8 @@ func (e *WorkflowExecutor) newChildExecutor(childWorkflowRun *ottoflowv1alpha1.W
 	}
 	// Propagate setter-based fields so sub-workflows behave identically to the parent.
 	child.progressCallback = e.progressCallback
+	// CEL `run` names the WorkflowRun that exists in the API server, not the in-memory child.
+	child.celEvaluator.run = e.celEvaluator.run
 	// Share the parent's already-initialized HTTP client directly so child executors (forEach)
 	// reuse the same connection pool without re-initializing.
 	if c := e.execHTTPClient; c != nil {

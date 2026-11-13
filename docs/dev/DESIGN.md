@@ -497,6 +497,7 @@ CEL expressions have access to the **complete suite of Kyverno CEL libraries** (
 16. **Step Context Variables**:
     - `inputs.<name>` - Access workflow input parameters
     - `variables.<key>` - Access outputs from previous steps
+    - `run.namespace`, `run.name`, `run.uid` - Identity of the WorkflowRun being executed (a `workflowRef` sub-workflow sees its parent's)
     - `expressions.<name>` - Access results from CEL expressions evaluated in the current step
       - **Important**: Expressions are evaluated sequentially, so later expressions can reference earlier ones
       - This allows extracting common sub-expressions (e.g., `resource.Get()`) and reusing them
