@@ -655,6 +655,10 @@ type StepResourceQuery struct {
 	// Resources are fetched in pages of 500; collection stops once this many
 	// items have been accumulated. When 0 (default) all pages are fetched.
 	// Use this to bound memory usage when querying large clusters.
+	// The limit is applied before outputs are evaluated, so items, and any filter over it in
+	// outputs, see only the collected items; matches beyond the limit are dropped without an
+	// error. Narrow the query with namespace, labelSelector or fieldSelector first, and set a
+	// limit only when partial results are acceptable.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	Limit int64 `json:"limit,omitempty"`

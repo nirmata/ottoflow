@@ -175,7 +175,7 @@ Simplified Kubernetes resource query.
 | `name` | string | No | Resource name (CEL expression). Omit for a list query. |
 | `labelSelector` | map[string]string | No | Label name → **CEL expression** (list queries only). Values are always evaluated as CEL — quote literals: `app: '"nginx"'`. |
 | `fieldSelector` | string | No | **CEL expression** yielding a field selector string (list queries only). Always evaluated as CEL — a literal selector must be quoted inside the expression: `'"status.phase=Running"'`. An unquoted `status.phase=Running` is not valid CEL and fails at runtime. |
-| `limit` | integer | No | Cap on the number of resources collected for list queries (0 = all). |
+| `limit` | integer | No | Cap on the number of resources collected for list queries (0 = all). Applied before `outputs`, so `items` and any filter over it see only the collected items; narrow with `namespace`, `labelSelector` or `fieldSelector` when every match matters. |
 | `pageSize` | integer | No | Resources fetched per API call during list pagination (default 500, max 1000). |
 | `outputs` | map[string]string | Yes | Output name → CEL expression, written to `variables.<name>`. For single-resource queries the fetched resource is bound to **`object`** (e.g. `object.status.phase`); for list queries the result list is bound to **`items`** (e.g. `items.map(i, i.metadata.name)`). |
 
