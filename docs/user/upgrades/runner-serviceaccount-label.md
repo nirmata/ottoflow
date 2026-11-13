@@ -2,7 +2,7 @@
 
 The controller now binds an existing runner ServiceAccount only when it carries the label `app.kubernetes.io/part-of: ottoflow`. This covers the derived `<workflow>-runner` account and the shared `workflowRunner.serviceAccountName` account. Accounts the controller created itself already carry the label, so a default install needs no change. An explicit `spec.execution.job.serviceAccountName` is not affected: the controller binds nothing to it.
 
-An unlabelled derived or shared account now fails the run with a `RunnerServiceAccountNotManaged` Warning event, and the controller removes the runner, agent-executor caller and ConfigMap-writer bindings it made for that account earlier, which also breaks runs already in progress on it. On a run whose runner Job already exists, the controller records the same event and creates no ConfigMap-writer RoleBinding, but does not fail the run.
+An unlabelled derived or shared account now fails the run with a `RunnerServiceAccountNotManaged` Warning event, the run gets no binding, and the controller removes nothing at that point. Runs already running keep their bindings until they finish, and the sweep below then removes them. A run paused in a callback wait, or retrying after a runner pod failure, on an unlabelled account fails when it resumes or retries, so label every runner account you created yourself before upgrading (see below). On a run whose runner Job already exists, the controller records the same event and creates no ConfigMap-writer RoleBinding, but does not fail the run.
 
 The controller also sweeps its runner and agent-executor caller ClusterRoleBindings when a replica becomes leader and every 10 minutes after. It removes the bindings of a ServiceAccount that no longer exists, and of an unlabelled ServiceAccount that no live run uses.
 
@@ -16,7 +16,7 @@ kubectl label serviceaccount <account> -n <namespace> app.kubernetes.io/part-of=
 
 - **Shared account:** if you set `workflowRunner.serviceAccountName`, label that account in every tenant namespace. Use a dedicated name, never `default`.
 - **Controller account as the runner account:** if you set `workflowRunner.serviceAccountName` to the controller's ServiceAccount with `controller.serviceAccount.create=false`, label your own controller ServiceAccount the same way. The chart labels the controller ServiceAccount it creates.
-- **Changing the runner ServiceAccount setting:** a run started on an unlabelled account before the change can lose its bindings to the sweep while it is still running. Let those runs finish first, or add the label to the old account and remove it after they end.
+- **Changing the runner ServiceAccount setting:** a running run keeps the bindings of the account its runner Job runs as, whatever the setting is now. A paused run resumes as the account the setting then gives it (`<workflow>-runner` when the setting is empty), so that account, not the old one, needs the label.
 
 Every account a run has already used is the subject of one of the controller's runner ClusterRoleBindings. This lists those accounts, in every namespace, that lack the label:
 

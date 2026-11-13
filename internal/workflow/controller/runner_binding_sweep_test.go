@@ -27,7 +27,10 @@ import (
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
 
-const sweepNS = "sweep-ns"
+const (
+	sweepNS      = "sweep-ns"
+	sweepOtherSA = "other"
+)
 
 func sweepBindings(sa string) []client.Object {
 	return []client.Object{
@@ -36,8 +39,8 @@ func sweepBindings(sa string) []client.Object {
 	}
 }
 
-func sweepUnlabelledAccount(name string) *corev1.ServiceAccount {
-	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: sweepNS}}
+func sweepUnlabelledAccount() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "idle", Namespace: sweepNS}}
 }
 
 func sweepRun(phase ottoflowv1alpha1.WorkflowRunPhase) *ottoflowv1alpha1.WorkflowRun {
@@ -80,7 +83,7 @@ func newSweepReconciler(readerFuncs interceptor.Funcs, objs ...client.Object) (*
 		WithIndex(&corev1.Pod{}, "spec.serviceAccountName", func(o client.Object) []string {
 			return []string{o.(*corev1.Pod).Spec.ServiceAccountName}
 		}).Build()
-	return &WorkflowRunReconciler{Client: base, Scheme: unitTestScheme, APIReader: interceptor.NewClient(base, readerFuncs), RunnerConfig: RunnerConfig{RunnerServiceAccount: "idle"}}, base
+	return &WorkflowRunReconciler{Client: base, Scheme: unitTestScheme, APIReader: interceptor.NewClient(base, readerFuncs)}, base
 }
 
 func bindingNames(sa string) []string {
@@ -135,7 +138,7 @@ func TestRunnerBindingSweep_NeverReadsAccountsOfBindingsItDoesNotOwn(t *testing.
 	noPartOf.Labels = nil
 	multi := buildRunnerClusterRoleBinding(workflowRunnerRoleBindingName(sweepNS, "multi"), "runner-role", "multi", sweepNS)
 	multi.Subjects = append(multi.Subjects, rbacv1.Subject{Kind: rbacv1.ServiceAccountKind, Name: "second", Namespace: sweepNS})
-	otherSubject := buildRunnerClusterRoleBinding(workflowRunnerRoleBindingName(sweepNS, "named"), "runner-role", "other", sweepNS)
+	otherSubject := buildRunnerClusterRoleBinding(workflowRunnerRoleBindingName(sweepNS, "named"), "runner-role", sweepOtherSA, sweepNS)
 	userSubject := buildRunnerClusterRoleBinding(workflowRunnerRoleBindingName(sweepNS, "user"), "runner-role", "user", sweepNS)
 	userSubject.Subjects[0].Kind = rbacv1.UserKind
 	owned := sweepBindings("control")
@@ -146,7 +149,7 @@ func TestRunnerBindingSweep_NeverReadsAccountsOfBindingsItDoesNotOwn(t *testing.
 
 	requireBindings(t, c, false, bindingNames("control")...)
 	requireBindings(t, c, true, noPartOf.Name, multi.Name, otherSubject.Name, userSubject.Name)
-	for _, sa := range []string{"nolabel", "multi", "second", "named", "other", "user"} {
+	for _, sa := range []string{"nolabel", "multi", "second", "named", sweepOtherSA, "user"} {
 		if reads[sa] != 0 {
 			t.Errorf("ServiceAccount %s was read %d times, want 0", sa, reads[sa])
 		}
@@ -187,25 +190,36 @@ func TestRunnerBindingSweep_UnlabelledAccountInUseOrIdle(t *testing.T) {
 		"running pod of a running run keeps the bindings when its Job has finished": {
 			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), sweepJob(true), sweepPod("idle")}, wantKept: true,
 		},
+		"unfinished Job of a run whose spec now names another account keeps the bindings": {
+			objs: []client.Object{sweepRunAs(ottoflowv1alpha1.WorkflowRunPhaseRunning, sweepOtherSA), sweepJob(false)}, wantKept: true,
+		},
 		"unfinished Job with a non-blocking controller reference keeps the bindings": {
 			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), nonBlockingOwner(sweepJob(false))}, wantKept: true,
 		},
 		"running pod with a non-blocking controller reference keeps the bindings": {
 			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), sweepJob(true), nonBlockingOwner(sweepPod("idle"))}, wantKept: true,
 		},
-		"unfinished Job of a run using another account removes the bindings": {
-			objs: []client.Object{sweepRunAs(ottoflowv1alpha1.WorkflowRunPhaseRunning, "other"), sweepJob(false)},
+		"unfinished Job not named for its run removes the bindings": {
+			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), func() client.Object {
+				job := sweepJob(false)
+				job.Name = "forged-job"
+				return job
+			}()},
 		},
-		"running pod of a run using another account removes the bindings": {
-			objs: []client.Object{sweepRunAs(ottoflowv1alpha1.WorkflowRunPhaseRunning, "other"), sweepJob(true), sweepPod("idle")},
+		"running pod whose run Job template uses another account removes the bindings": {
+			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), func() client.Object {
+				job := sweepJob(true)
+				job.Spec.Template.Spec.ServiceAccountName = sweepOtherSA
+				return job
+			}(), sweepPod("idle")},
 		},
 		"running pod of another account does not keep the bindings": {
-			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), sweepJob(true), sweepPod("other")},
+			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), sweepJob(true), sweepPod(sweepOtherSA)},
 		},
 		"unfinished Job of another account does not keep the bindings": {
 			objs: []client.Object{sweepRun(ottoflowv1alpha1.WorkflowRunPhaseRunning), func() client.Object {
 				job := sweepJob(false)
-				job.Spec.Template.Spec.ServiceAccountName = sweepPod("other").Spec.ServiceAccountName
+				job.Spec.Template.Spec.ServiceAccountName = sweepPod(sweepOtherSA).Spec.ServiceAccountName
 				return job
 			}()},
 		},
@@ -216,10 +230,48 @@ func TestRunnerBindingSweep_UnlabelledAccountInUseOrIdle(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			objs := append(sweepBindings("idle"), sweepUnlabelledAccount("idle"))
+			objs := append(sweepBindings("idle"), sweepUnlabelledAccount())
 			r, c := newSweepReconciler(interceptor.Funcs{}, append(objs, tc.objs...)...)
 			r.sweepRunnerBindings(context.Background())
 			requireBindings(t, c, tc.wantKept, bindingNames("idle")...)
+		})
+	}
+}
+
+func TestRunnerBindingSweep_KeepsBindingsOfAccountLabelledDuringInUseCheck(t *testing.T) {
+	labelled := runnerServiceAccount("idle", sweepNS)
+	cases := map[string]func(ctx context.Context, base client.Client) error{
+		"label added": func(ctx context.Context, base client.Client) error {
+			sa := &corev1.ServiceAccount{}
+			if err := base.Get(ctx, client.ObjectKeyFromObject(labelled), sa); err != nil {
+				return err
+			}
+			sa.Labels = labelled.Labels
+			return base.Update(ctx, sa)
+		},
+		"deleted and recreated labelled": func(ctx context.Context, base client.Client) error {
+			if err := base.Delete(ctx, sweepUnlabelledAccount()); err != nil {
+				return err
+			}
+			return base.Create(ctx, labelled.DeepCopy())
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			var base client.Client
+			var mutateErr error
+			r, b := newSweepReconciler(interceptor.Funcs{List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*batchv1.JobList); ok {
+					mutateErr = mutate(ctx, base)
+				}
+				return cl.List(ctx, list, opts...)
+			}}, append(sweepBindings("idle"), sweepUnlabelledAccount())...)
+			base = b
+			r.sweepRunnerBindings(context.Background())
+			if mutateErr != nil {
+				t.Fatalf("mid-pass account change: %v", mutateErr)
+			}
+			requireBindings(t, b, true, bindingNames("idle")...)
 		})
 	}
 }
@@ -246,7 +298,7 @@ func TestRunnerBindingSweep_KeepsBindingsWhenInUseCheckFails(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			objs := append(sweepBindings("idle"), sweepUnlabelledAccount("idle"))
+			objs := append(sweepBindings("idle"), sweepUnlabelledAccount())
 			r, c := newSweepReconciler(tc.funcs, append(objs, tc.objs...)...)
 			r.sweepRunnerBindings(context.Background())
 			requireBindings(t, c, true, bindingNames("idle")...)
@@ -264,7 +316,7 @@ func TestRunnerBindingSweep_KeepsBindingsOfUnlabelledServiceAccountWithLivePod(t
 		}
 	}
 	create(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: sweepNS}})
-	create(sweepUnlabelledAccount("idle"))
+	create(sweepUnlabelledAccount())
 	for _, b := range sweepBindings("idle") {
 		create(b)
 	}
@@ -284,10 +336,21 @@ func TestRunnerBindingSweep_KeepsBindingsOfUnlabelledServiceAccountWithLivePod(t
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(run, ottoflowv1alpha1.GroupVersion.WithKind("WorkflowRun"))},
 		},
 		Spec: batchv1.JobSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever, ServiceAccountName: "job-template-sa", Containers: containers,
+			RestartPolicy: corev1.RestartPolicyNever, ServiceAccountName: "idle", Containers: containers,
 		}}},
 	}
 	create(job)
+	// Finished Job, so the Pod path is the one that keeps the bindings.
+	now := metav1.Now()
+	job.Status.StartTime = &now
+	job.Status.CompletionTime = &now
+	job.Status.Conditions = []batchv1.JobCondition{
+		{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue},
+		{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+	}
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatalf("status update job: %v", err)
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "run-runner-pod", Namespace: sweepNS,
@@ -301,7 +364,7 @@ func TestRunnerBindingSweep_KeepsBindingsOfUnlabelledServiceAccountWithLivePod(t
 		t.Fatalf("status update pod: %v", err)
 	}
 
-	r := &WorkflowRunReconciler{Client: c, APIReader: c, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerServiceAccount: "idle"}}
+	r := &WorkflowRunReconciler{Client: c, APIReader: c, Scheme: unitTestScheme}
 	r.sweepRunnerBindings(ctx)
 	requireBindings(t, c, true, bindingNames("idle")...)
 }

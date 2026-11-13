@@ -45,7 +45,7 @@ func (r *WorkflowRunReconciler) runRunnerBindingSweep(ctx context.Context, perio
 func (r *WorkflowRunReconciler) sweepRunnerBindings(ctx context.Context) {
 	logger := log.FromContext(ctx).WithName("runner-binding-sweep")
 	var list rbacv1.ClusterRoleBindingList
-	if err := r.List(ctx, &list, client.MatchingLabels{"app.kubernetes.io/part-of": ottoflowPartOf}); err != nil {
+	if err := r.List(ctx, &list, client.MatchingLabels{ownerLabel: ottoflowPartOf}); err != nil {
 		logger.Error(err, "listing ClusterRoleBindings")
 		return
 	}
@@ -92,7 +92,7 @@ func (r *WorkflowRunReconciler) sweepRunnerSubject(ctx context.Context, s types.
 	case err != nil:
 		logger.Error(err, "reading ServiceAccount; keeping its runner ClusterRoleBindings")
 		return
-	case sa.Labels["app.kubernetes.io/part-of"] == ottoflowPartOf:
+	case sa.Labels[ownerLabel] == ottoflowPartOf:
 		return
 	default:
 		inUse, err := r.runnerServiceAccountInUse(ctx, s)
@@ -101,6 +101,15 @@ func (r *WorkflowRunReconciler) sweepRunnerSubject(ctx context.Context, s types.
 			return
 		}
 		if inUse {
+			return
+		}
+		// Re-read just before deleting: an operator or a new run's controller may have labelled or
+		// created the account during the in-use check. Residual window: a label landing between this
+		// read and the delete is not seen.
+		if err := r.directReader().Get(ctx, s, sa); err == nil && sa.Labels[ownerLabel] == ottoflowPartOf {
+			return
+		} else if err != nil && !apierrors.IsNotFound(err) {
+			logger.Error(err, "re-reading ServiceAccount; keeping its runner ClusterRoleBindings")
 			return
 		}
 	}
@@ -116,10 +125,10 @@ func (r *WorkflowRunReconciler) runnerServiceAccountInUse(ctx context.Context, s
 	}
 	for i := range jobs.Items {
 		job := &jobs.Items[i]
-		if job.Spec.Template.Spec.ServiceAccountName != s.Name || jobConditionTrue(job, batchv1.JobComplete) || jobConditionTrue(job, batchv1.JobFailed) {
+		if jobConditionTrue(job, batchv1.JobComplete) || jobConditionTrue(job, batchv1.JobFailed) {
 			continue
 		}
-		if live, err := r.controllingRunIsLive(ctx, reader, s.Name, job); err != nil || live {
+		if live, err := liveRunnerJobRunsAs(ctx, reader, s.Name, job); err != nil || live {
 			return live, err
 		}
 	}
@@ -140,17 +149,23 @@ func (r *WorkflowRunReconciler) runnerServiceAccountInUse(ctx context.Context, s
 		if !found {
 			continue
 		}
-		if live, err := r.controllingRunIsLive(ctx, reader, s.Name, &job); err != nil || live {
+		if live, err := liveRunnerJobRunsAs(ctx, reader, s.Name, &job); err != nil || live {
 			return live, err
 		}
 	}
 	return false, nil
 }
 
-func (r *WorkflowRunReconciler) controllingRunIsLive(ctx context.Context, reader client.Reader, sa string, job *batchv1.Job) (bool, error) {
+// Keeps the bindings only for a live run's own runner Job whose pod template runs as sa. The
+// template account is fixed at Job creation, so this does not depend on the current runner
+// ServiceAccount setting or on the run's editable spec.
+func liveRunnerJobRunsAs(ctx context.Context, reader client.Reader, sa string, job *batchv1.Job) (bool, error) {
+	if job.Spec.Template.Spec.ServiceAccountName != sa {
+		return false, nil
+	}
 	var wr ottoflowv1alpha1.WorkflowRun
 	found, err := controllerOwnerOf(ctx, reader, job, "WorkflowRun", &wr)
-	return found && !wr.Status.Phase.IsTerminal() && runnerServiceAccountName(r.RunnerConfig, &wr) == sa, err
+	return found && !wr.Status.Phase.IsTerminal() && job.Name == workflowRunnerJobName(wr.Name), err
 }
 
 func controllerOwnerOf(ctx context.Context, reader client.Reader, controllee metav1.Object, kind string, owner client.Object) (bool, error) {

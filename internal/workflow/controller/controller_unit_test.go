@@ -1505,7 +1505,7 @@ func TestEnsureRunnerAccess_UnlabelledAccount_ExplicitExempt(t *testing.T) {
 	}
 }
 
-func TestEnsureRunnerAccess_UnlabelledSharedAccount_NotBoundAndBindingsRemoved(t *testing.T) {
+func TestReconcile_UnlabelledSharedAccount_FailsRunAndKeepsBindings(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
 	managed := func(name string) *rbacv1.ClusterRoleBinding {
@@ -1516,15 +1516,20 @@ func TestEnsureRunnerAccess_UnlabelledSharedAccount_NotBoundAndBindingsRemoved(t
 	r, c, wr := newUnmanagedRunnerAccessFixture(t, sa, managed(names[0]), managed(names[1]))
 	r.RunnerConfig.RunnerServiceAccount = "shared-runner"
 
-	err := r.ensureRunnerAccess(ctx, wr, nil, "shared-runner", false)
-	if !errors.Is(err, errRunnerServiceAccountNotManaged) {
-		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected an error for an unlabelled shared ServiceAccount")
 	}
-	for _, name := range names {
-		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); !apierrors.IsNotFound(getErr) {
-			t.Errorf("ClusterRoleBinding %s must not exist, Get err = %v", name, getErr)
-		}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
 	}
+	if updated.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Fatalf("Phase = %v, want Failed", updated.Status.Phase)
+	}
+	if evts := drain(t, r.EventRecorder.(*events.FakeRecorder)); len(evts) == 0 || !strings.Contains(evts[0], "RunnerServiceAccountNotManaged") {
+		t.Errorf("events = %q, want a RunnerServiceAccountNotManaged Warning first", evts)
+	}
+	requireBindings(t, c, true, names...)
 }
 
 func TestEnsureRunnerAccess_LabelledSharedAccount_Bound(t *testing.T) {
@@ -1604,7 +1609,7 @@ func TestReconcile_UnlabelledDerivedServiceAccount_FailsRunWithEvent(t *testing.
 	}
 }
 
-func TestEnsureRunnerAccess_UnlabelledAccount_DeletesOnlyMatchingOttoFlowBindings(t *testing.T) {
+func TestDeleteRunnerBindingsFor_DeletesOnlyMatchingOttoFlowBindings(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
 	mk := func(name string, labelled bool, subjectNS string) *rbacv1.ClusterRoleBinding {
@@ -1630,10 +1635,8 @@ func TestEnsureRunnerAccess_UnlabelledAccount_DeletesOnlyMatchingOttoFlowBinding
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA(), tc.runner, tc.caller)
-			if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false); !errors.Is(err, errRunnerServiceAccountNotManaged) {
-				t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
-			}
+			r, c, _ := newUnmanagedRunnerAccessFixture(t, tc.runner, tc.caller)
+			r.deleteRunnerBindingsFor(ctx, ns, "wf-runner")
 			for name, want := range map[string]bool{runnerName: tc.wantRunner, callerName: tc.wantCallers} {
 				err := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{})
 				if want && err != nil {

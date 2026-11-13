@@ -9,6 +9,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -104,53 +105,24 @@ func TestReconcile_ExplicitSAThenCleared_NoWriterBinding(t *testing.T) {
 	}
 }
 
-func labelRemovedFixture(t *testing.T) (*WorkflowRunReconciler, client.Client, *ottoflowv1alpha1.WorkflowRun) {
-	t.Helper()
+func TestEnsureRunnerAccess_LabelRemoved_WriterBindingKept(t *testing.T) {
+	sa := cmWriterSAObj()
+	sa.Labels = nil
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(sa, managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)).Build()
 	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: cmWriterNS}}
-	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj()).Build()
-	r := cmWriterReconciler(c, cmWriterRole)
-	ctx := context.Background()
-	if err := r.ensureRunnerAccess(ctx, wr, nil, cmWriterSA, false); err != nil {
-		t.Fatal(err)
+	if err := cmWriterReconciler(c, cmWriterRole).ensureRunnerAccess(context.Background(), wr, nil, cmWriterSA, false); !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
 	}
 	if !writerBindingExists(t, c, cmWriterSA) {
-		t.Fatal("setup: writer RoleBinding not created")
-	}
-	sa := &corev1.ServiceAccount{}
-	if err := c.Get(ctx, client.ObjectKey{Namespace: cmWriterNS, Name: cmWriterSA}, sa); err != nil {
-		t.Fatal(err)
-	}
-	sa.Labels = nil
-	if err := c.Update(ctx, sa); err != nil {
-		t.Fatal(err)
-	}
-	return r, c, wr
-}
-
-func TestEnsureRunnerAccess_LabelRemoved_WriterBindingDeleted(t *testing.T) {
-	r, c, wr := labelRemovedFixture(t)
-	if err := r.ensureRunnerAccess(context.Background(), wr, nil, cmWriterSA, false); err == nil {
-		t.Fatal("expected a not-managed error")
-	}
-	if writerBindingExists(t, c, cmWriterSA) {
-		t.Error("writer RoleBinding survived the unlabelled-SA cleanup")
+		t.Error("writer RoleBinding was deleted by the gate; only the sweep removes it")
 	}
 }
 
-func TestEnsureRunnerAccess_LabelRemoved_UnlabelledSameNameWriterBindingPreserved(t *testing.T) {
-	r, c, wr := labelRemovedFixture(t)
-	ctx := context.Background()
-	rb, err := getWriterBinding(t, c)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestDeleteRunnerBindingsFor_UnlabelledSameNameWriterBindingPreserved(t *testing.T) {
+	rb := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
 	rb.Labels = nil
-	if err := c.Update(ctx, rb); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.ensureRunnerAccess(ctx, wr, nil, cmWriterSA, false); err == nil {
-		t.Fatal("expected a not-managed error")
-	}
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(rb).Build()
+	cmWriterReconciler(c, cmWriterRole).deleteRunnerBindingsFor(context.Background(), cmWriterNS, cmWriterSA)
 	if !writerBindingExists(t, c, cmWriterSA) {
 		t.Error("unlabelled RoleBinding was deleted")
 	}

@@ -574,8 +574,8 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 
 	// Bind only an account labelled as an OttoFlow runner account; the controller labels the
 	// accounts it creates. See "Runner ServiceAccount label" in charts/ottoflow/README.md.
+	// Nothing is removed here: the run fails, and the sweep removes the bindings once no live run uses them.
 	if serviceAccount.Labels[ownerLabel] != ottoflowPartOf {
-		r.deleteRunnerBindingsFor(ctx, workflowRun.Namespace, serviceAccountName)
 		return fmt.Errorf("runner ServiceAccount %q in namespace %q is missing label app.kubernetes.io/part-of=ottoflow: %w", serviceAccountName, workflowRun.Namespace, errRunnerServiceAccountNotManaged)
 	}
 
