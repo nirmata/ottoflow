@@ -329,6 +329,42 @@ func TestRunWorkflowToCompletionInterrupted(t *testing.T) {
 	}
 }
 
+// A Continue step that fails after SIGTERM must be stored Pending (was Failed), not final.
+func TestRunWorkflowToCompletionInterruptedContinueStep(t *testing.T) {
+	run := newRun()
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: "default"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{
+			{Name: "s", FailurePolicy: ottoflowv1alpha1.FailurePolicyContinue,
+				Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: "variables.doesNotExist"}}},
+		}},
+	}
+	c, _ := ctxAwareClient(run, wf)
+	exec := retryExecutor(t, c, run)
+	cm := workflowexecutor.NewCheckpointManager(c, run)
+	exec.SetCheckpointManager(cm)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exec.SetProgressCallback(func(r *ottoflowv1alpha1.WorkflowRun, _ *ottoflowv1alpha1.Workflow) {
+		if r.Status.StepStatuses["s"].Phase == ottoflowv1alpha1.StepPhaseRunning {
+			cancel() // SIGTERM arrives while the step runs
+		}
+	})
+	cfg := runnerConfig{runName: "r", runNamespace: "default", runKey: client.ObjectKeyFromObject(run)}
+
+	if code := runWorkflowToCompletion(ctx, exec, cm, wf, run, c, cfg); code != exitInterrupted {
+		t.Fatalf("exit code=%d, want %d", code, exitInterrupted)
+	}
+	stored := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), cfg.runKey, stored); err != nil {
+		t.Fatal(err)
+	}
+	if s := stored.Status.StepStatuses["s"]; stored.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseRunning ||
+		s.Phase != ottoflowv1alpha1.StepPhasePending || s.Message != "interrupted by SIGTERM (was Failed)" {
+		t.Fatalf("Continue step stored as final: %+v", stored.Status)
+	}
+}
+
 // The signal arriving after the run completed (err == nil, ctx done) is a success: exit 0, the
 // success write, and no interrupted rewrite.
 func TestRunWorkflowToCompletionSignalAfterCompletionIsSuccess(t *testing.T) {
