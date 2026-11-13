@@ -302,6 +302,26 @@ CEL map literals require a single, consistent value type per map — the Adaptiv
 
 If the Power Automate flow's trigger is configured with "Anyone" auth mode, do **not** set an `Authorization` header — sending one fails the POST.
 
+### Random Library
+
+`random()` and `random(pattern)` return a new random string on every evaluation.
+
+| Function | Description |
+|----------|-------------|
+| `random()` | 8 characters from `[0-9a-z]` |
+| `random(pattern)` | A string that matches the regular expression `pattern`, e.g. `random("[A-Z0-9]{6}")` |
+
+`random.random()` and `random.random(pattern)` are aliases. The pattern is a CEL string: write `random("[a-f0-9]{8}")`, not `random([a-f0-9]{8})`. An invalid pattern fails the expression.
+
+**Example:**
+```yaml
+expressions:
+  - name: ticketId
+    expression: '"TICKET-" + random("[A-Z0-9]{6}")'
+```
+
+Each call returns a different value. Where several places need the same id, generate it once in an expression or output and reference that (`expressions.ticketId`, `variables.<output>`) instead of calling `random()` again.
+
 ---
 
 ## Kubernetes CEL Libraries
@@ -341,6 +361,7 @@ These are the mistakes most frequently seen in real workflows. All of them were 
 - **`resource.Get()` returns `null` for a missing resource** — not an error and not an empty map. Guard with `!= null` before field access.
 - **`resource.List(...)` returns an object that wraps the list.** Iterate `dyn(resource.List(...)).items`, not the return value itself — `size()` of the wrapper counts its keys (e.g. `3`), which is a silently wrong answer.
 - **`resource.List()` fails the expression above 10000 items per call.** Narrow the list by namespace or labels, or use a `resourceQuery` step with `limit` (which returns only the first `limit` items).
+- **A `resourceQuery` `limit` applies before the step's `outputs`.** A filter such as `items.filter(...)` sees only the collected items, so matches past the limit are dropped without an error. Narrow the query with `namespace`, `labelSelector` or `fieldSelector` first, and set `limit` only when partial results are acceptable.
 - **`+` does not work on maps.** To add keys, build a new map literal; for mutate steps return a partial object to deep-merge.
 - **Heterogeneous map literals are all-or-nothing on `dyn()`.** The first entry fixes the map's value type; wrap values in `dyn()` if they differ (e.g. `{"a": dyn(1), "b": dyn("x")}`).
 - **No int/double division overload.** Cast both sides: `double(a) / double(b)`.
