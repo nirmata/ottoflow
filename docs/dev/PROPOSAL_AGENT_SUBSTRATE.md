@@ -99,8 +99,8 @@ spec:
 The actor runs the agent-executor binary with a new standalone flag. In that mode it:
 
 - Has no Kubernetes client, no ServiceAccount token, and no TLS server key. It listens on plain HTTP inside the sandbox; the router terminates mTLS.
-- Accepts a resolved request: the prompt and context from today's `ExecRequest` (`internal/workflow/executor/exec_http_types.go:12-15`), plus the Agent spec and the spec of each MCPServer the agent's `mcpTools` reference. The CLI already runs agents from resolved objects with no cluster (`ottoflow run --workflow-dir`), so the standalone executor reuses that path.
-- Runs `DefaultAgentExecutor`, the tool loop, MCP clients, and `OutputExtractor` unchanged, and returns today's `ExecResponse`.
+- Accepts a resolved request: the prompt and context from today's `ExecRequest` (`internal/workflow/executor/exec_http_types.go:12-15`), plus the Agent spec and a resolved MCP client configuration for each MCPServer the agent's `mcpTools` reference. Today the MCP client resolves `spec.auth` Secrets through the Kubernetes client while it builds that configuration (`internal/agent/mcp_client_impl.go:209-215`, `:274-285`), which the actor can't do, so the gateway resolves it and the actor uses it as is. The CLI already runs agents from resolved objects with no cluster (`ottoflow run --workflow-dir`), so the standalone executor reuses that path.
+- Runs the same `RoutingAgentExecutor` that `service` mode uses, so provider routing is unchanged (`DefaultAgentExecutor` alone rejects the `nirmata` and empty providers), plus the tool loop, MCP clients, and `OutputExtractor`, and returns today's `ExecResponse`.
 
 The chart publishes an `ActorTemplate` for this image, pinned by digest, as an install hook or a gateway startup step, because `ActorTemplate` isn't a CRD.
 
@@ -118,8 +118,10 @@ The gateway needs a Go client for `ateapi`, generated from Substrate's protos, a
 
 ### Credentials
 
-- **LLM keys.** Move provider API keys out of the gateway's process environment and into `atenet-egress` header-injection policies for the provider endpoints. The actor never holds them, and the gateway no longer needs them for `substrate` Agents. The `X-LLM-Env` values the runner forwards (`internal/workflow/executor/exec_client.go`) follow the same rule: the gateway doesn't pass them into the actor.
-- **Remote MCP servers.** Auth headers from MCPServer Secret references move to egress policies the same way.
+- **Phase 2.** The gateway resolves LLM keys and MCPServer `spec.auth` Secrets and sends them in the resolved request, so they reach the actor for the life of one step.
+- **Phase 3: LLM keys.** Move provider API keys out of the gateway's process environment and into `atenet-egress` `replaceHeaders` rules for the provider endpoints, with `credentialUri` values that the Substrate credential provider resolves (for example `ate-secret://k8s.io/default/<namespace>/<secret>/<key>`, with the atespace granted that namespace). The actor never holds the keys. The `X-LLM-Env` values the runner forwards (`internal/workflow/executor/exec_client.go`) follow the same rule: the gateway doesn't pass them into the actor.
+- **Phase 3: remote MCP servers.** Auth from MCPServer Secret references moves to egress rules the same way.
+- **Phase 3: actor-side configuration.** Injection replaces only a header the actor already sends, and a request without it is forwarded unchanged. So the gateway sends placeholder credentials in place of real ones, the actor-side LLM and MCP clients send them in the headers the rules name, and the actor never resolves Secrets. For HTTPS, the gateway intercepts TLS, so the `ActorTemplate` mounts the `systemInfo` egress trust bundle and the actor's LLM and MCP clients trust it.
 - **stdio MCP servers that need Secret env values.** Substrate has no Secret injection, and env values are captured in snapshots. This proposal doesn't support such servers in `substrate` mode until the Open Question below is settled; the webhook rejects the combination.
 - **Kubernetes access.** An actor can't reach the API server by default. MCP tools that need cluster credentials, such as a kubectl MCP server, don't fit `substrate` mode in Phase 2.
 
@@ -139,8 +141,8 @@ OttoFlow integrates with kagent in two directions today, and Substrate changes e
 ## Phases
 
 1. **Interop (no code).** Check whether kagent exposes an A2A endpoint for `SandboxAgent`s, and if it does, document Option A with a sample workflow.
-2. **Step-scoped actors.** The API field, webhook validation, standalone executor, gateway dispatch, `ateapi` client, and chart `ActorTemplate`. LLM keys still reach the actor through the resolved request in this phase, but only for the life of one step, in a gVisor sandbox that holds no other tenant's state.
-3. **Credentials outside the sandbox.** Move LLM keys and remote MCP auth to egress injection, and stop sending them in the request.
+2. **Step-scoped actors.** The API field, webhook validation, standalone executor, gateway dispatch, `ateapi` client, and chart `ActorTemplate`. LLM keys and MCP auth values still reach the actor through the resolved request in this phase, but only for the life of one step, in a gVisor sandbox that holds no other tenant's state.
+3. **Credentials outside the sandbox.** Move LLM keys and remote MCP auth to egress injection, send placeholders in the request, and mount the egress trust bundle in the actor.
 4. **Run-scoped actors and suspend.** An `actorScope: run` field reuses one actor across a run's steps, suspends it while the run waits, and deletes it when the run finishes. The exec request then needs the WorkflowRun UID, which it doesn't carry today.
 
 ## Files to Change
@@ -160,7 +162,8 @@ OttoFlow integrates with kagent in two directions today, and Substrate changes e
 
 - Unit tests: webhook validation; gateway dispatch with a fake `ateapi` client and router, including `DeleteActor` on success, failure, and timeout; the standalone executor with resolved Agent and MCPServer specs and no Kubernetes client.
 - e2e on kind with Substrate's kind installer and gVisor: an `agentRef` step on a `substrate` Agent returns the same outputs and token usage as in `service` mode, and no actor is left after the run.
-- Manual: confirm an actor can't reach the Kubernetes API or another actor, and (Phase 3) that the LLM call succeeds with no key inside the actor.
+- Manual: confirm an actor can't reach the Kubernetes API or another actor.
+- Phase 3 e2e: with injection enabled, HTTPS LLM and authenticated MCP calls succeed with only placeholders inside the actor, and fail closed when the atespace isn't granted the Secret's namespace.
 - Measure step latency against `service` mode, including `uvx` and `npx` stdio servers under gVisor, and decide whether a golden snapshot (`goldenSnapshotConfig`) taken after warm-up is needed.
 
 ## Rollout and Backward Compatibility
