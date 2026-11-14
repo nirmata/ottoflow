@@ -267,6 +267,9 @@ its own LLM step — is in
 - **One Agent per exposed Workflow.** There is no batching of multiple Workflows
   behind a single kagent Agent, unlike the MCP-tools path where every opted-in
   Workflow shares one endpoint.
+- **kagent `SandboxAgent` callers are untested.** A `SandboxAgent` runs as an Agent Substrate
+  actor, so its calls leave through Substrate's egress gateway, which must allow the serve-a2a
+  Service. Whether the `headersFrom` token reaches the actor has not been checked.
 - **Namespace-scoped RBAC.** The per-workflow Agent's ServiceAccount is bound to the
   shared serve-a2a `ClusterRole` via a RoleBinding created in the Workflow's own
   namespace, not cluster-wide.
