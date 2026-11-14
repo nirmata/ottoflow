@@ -76,7 +76,7 @@ The controller renders each OttoFlow `Agent` as a kagent `SandboxAgent`, and the
 
 ### API
 
-Add `executionMode` to `AgentSpec` (`api/v1alpha1/agent_types.go`), as `docs/dev/DESIGN.md` FR1B.7 already reserves, with a Substrate block:
+Add `executionMode` to `AgentSpec` (`api/v1alpha1/agent_types.go`), as `docs/dev/DESIGN.md` FR1B.7 already reserves:
 
 ```yaml
 apiVersion: ottoflow.nirmata.io/v1alpha1
@@ -84,15 +84,13 @@ kind: Agent
 spec:
   modelProvider: anthropic
   executionMode: substrate      # service (default) | sandbox | substrate
-  substrate:
-    actorTemplate: ottoflow-agent
 ```
 
-The Agent doesn't name an atespace. The operator maps each Kubernetes namespace to one atespace in the gateway's configuration (a chart value), and the gateway runs an Agent's actors only in the atespace mapped to the Agent's namespace. An Agent in a namespace with no mapping fails with a clear error. This stops an Agent in one namespace from running in another team's atespace and inheriting its egress and credential policy.
+The Agent names neither an atespace nor an `ActorTemplate`. Every `substrate` actor runs the operator's executor template (see below), so an Agent author can't pick a different image and bypass the checks the executor runs. The operator maps each Kubernetes namespace to one atespace in the gateway's configuration (a chart value), and the gateway runs an Agent's actors only in the atespace mapped to the Agent's namespace. An Agent in a namespace with no mapping fails with a clear error. This stops an Agent in one namespace from running in another team's atespace and inheriting its egress and credential policy.
 
 - `executionMode` defaults to `service`, so existing Agents keep today's behavior.
 - `sandbox` stays reserved for [PROPOSAL_AGENT_SANDBOXING.md](PROPOSAL_AGENT_SANDBOXING.md) Layer 2; both backends share the gateway and standalone executor below.
-- A validating webhook rejects `substrate` without a `substrate` block, and a `substrate` block with any other mode. The gateway enforces the namespace-to-atespace mapping at dispatch, so the check holds even if the mapping changes after admission.
+- A validating webhook rejects `substrate` when the feature is off. The gateway enforces the namespace-to-atespace mapping at dispatch, so the check holds even if the mapping changes after admission.
 - Only step-scoped actors are in scope here; a run-scoped `actorScope` field is Phase 4.
 
 ### Actor image: the agent-executor in standalone mode
@@ -103,7 +101,7 @@ The actor runs the agent-executor binary with a new standalone flag. In that mod
 - Accepts a resolved request: the prompt and context from today's `ExecRequest` (`internal/workflow/executor/exec_http_types.go:12-15`), plus the Agent spec and a resolved MCP client configuration for each MCPServer the agent's `mcpTools` reference. Today the MCP client resolves `spec.auth` Secrets through the Kubernetes client while it builds that configuration (`internal/agent/mcp_client_impl.go:209-215`, `:274-285`), which the actor can't do, so the gateway resolves it and the actor uses it as is. The CLI already runs agents from resolved objects with no cluster (`ottoflow run --workflow-dir`), so the standalone executor reuses that path.
 - Runs the same `RoutingAgentExecutor` that `service` mode uses, so provider routing is unchanged (`DefaultAgentExecutor` alone rejects the `nirmata` and empty providers), plus the tool loop, MCP clients, and `OutputExtractor`, and returns today's `ExecResponse`.
 
-The chart publishes an `ActorTemplate` for this image, pinned by digest, as an install hook or a gateway startup step, because `ActorTemplate` isn't a CRD.
+The chart publishes an `ActorTemplate` for this image, pinned by digest, in each mapped atespace under one fixed name from the gateway's configuration. It does this as an install hook or a gateway startup step, because `ActorTemplate` isn't a CRD.
 
 ### Gateway dispatch
 
@@ -111,7 +109,7 @@ For a `substrate` Agent, the agent-executor's exec handler:
 
 1. Authenticates and authorizes the caller, and reads the Agent and its MCPServers, exactly as today.
 2. Looks up the atespace mapped to the Agent's namespace, and fails the call if there is none.
-3. Calls `CreateActor` in that atespace from the Agent's `actorTemplate`, with a generated name that starts with a fixed `ottoflow-` prefix.
+3. Calls `CreateActor` in that atespace from the executor template named in the gateway's configuration, never a name taken from the Agent or the request, with a generated name that starts with a fixed `ottoflow-` prefix.
 4. POSTs the resolved request to `atenet-router` with `ate-target-actor: <atespace>/<actor>`, and waits for the response.
 5. Calls `DeleteActor` when the call finishes, fails, or is cancelled, which also removes the actor's snapshot.
 6. Returns the actor's `ExecResponse` to the runner unchanged.
@@ -129,7 +127,8 @@ The gateway needs a Go client for `ateapi`, generated from Substrate's protos, a
 - **Phase 2.** The gateway resolves LLM keys and MCPServer `spec.auth` Secrets and sends them in the resolved request, so they reach the actor for the life of one step.
 - **Phase 3: LLM keys.** Move provider API keys out of the gateway's process environment and into `atenet-egress` `replaceHeaders` rules for the provider endpoints, with `credentialUri` values that the Substrate credential provider resolves (for example `ate-secret://k8s.io/default/<namespace>/<secret>/<key>`, with the atespace granted that namespace). The actor never holds the keys. This covers operator-held keys stored in Kubernetes Secrets.
 - **Phase 3: per-run credentials.** Some credentials arrive per run in the `X-LLM-Env` header, not from a Secret. The `nirmata` provider's token is one: `internal/workflow/executor/exec_handler.go` reads `NIRMATA_LLM_TOKEN` from that header. An `ate-secret://` URI can't name a value that exists only in a request, so the gateway keeps passing these values into the step-scoped actor, as in Phase 2. See Open Questions.
-- **Phase 3: remote MCP servers.** Auth from MCPServer Secret references moves to egress rules the same way as operator-held LLM keys.
+- **Phase 3: remote MCP servers.** Static header credentials from MCPServer Secret references (`bearer`, `apiKey`, and `basic` auth) move to egress rules the same way as operator-held LLM keys.
+- **Phase 3: OAuth2 MCP servers are an exception.** In `oauth2` mode, the MCP client gets a token URL and client credentials and fetches its own access token (`internal/agent/mcp_client_impl.go:310-348`). Replacing outbound headers can't keep that token out of the actor, so the client credentials keep reaching the step-scoped actor in Phase 3. See Open Questions.
 - **Phase 3: actor-side configuration.** Injection replaces only a header the actor already sends, and a request without it is forwarded unchanged. So the gateway sends placeholder credentials in place of real ones, the actor-side LLM and MCP clients send them in the headers the rules name, and the actor never resolves Secrets. For HTTPS, the gateway intercepts TLS, so the `ActorTemplate` mounts the `systemInfo` egress trust bundle and the actor's LLM and MCP clients trust it.
 - **stdio MCP servers that need Secret env values.** Substrate has no Secret injection, and env values are captured in snapshots. This proposal doesn't support such servers in `substrate` mode until the Open Question below is settled; the webhook rejects the combination.
 - **Kubernetes access.** An actor can't reach the API server by default. MCP tools that need cluster credentials, such as a kubectl MCP server, don't fit `substrate` mode in Phase 2. The MCP client sets `KUBECONFIG` for stdio servers only when its context carries a kubeconfig path (`internal/agent/mcp_client_impl.go:177-178`). The runner sets one for a non-local `clusterRef`, but the agent-executor doesn't, so no kubeconfig reaches the actor.
@@ -166,8 +165,8 @@ OttoFlow integrates with kagent in two directions today, and Substrate changes e
 
 | File | Change |
 |---|---|
-| `api/v1alpha1/agent_types.go` | Add `executionMode` and the `substrate` block; run `make manifests generate codegen-docs` |
-| `internal/webhook/agent_mcpserver_validators.go` | Reject invalid mode and block combinations, and stdio MCP servers with Secret env in `substrate` mode |
+| `api/v1alpha1/agent_types.go` | Add `executionMode`; run `make manifests generate codegen-docs` |
+| `internal/webhook/agent_mcpserver_validators.go` | Reject `substrate` when the feature is off, and stdio MCP servers with Secret env in `substrate` mode |
 | `cmd/agent-executor/main.go` | Standalone mode flag; Substrate gateway configuration |
 | `internal/workflow/executor/exec_handler.go` | Branch on `executionMode`; map the namespace to an atespace; resolve Agent and MCPServers; forward to the router; reap orphaned actors |
 | `internal/workflow/executor/exec_client.go` | Send the WorkflowRun and step headers |
@@ -194,7 +193,7 @@ OttoFlow integrates with kagent in two directions today, and Substrate changes e
 ## Open Questions
 
 1. **Secrets for stdio MCP servers.** Options: send Secret values in the resolved request for step-scoped actors only (they're deleted with the actor, but they enter the sandbox and its snapshot); serve them from a file-based provider through Substrate's `external` volumes (preview); or keep rejecting them.
-2. **Per-run credentials outside the sandbox.** How should per-run values from `X-LLM-Env`, such as the `nirmata` provider's token, stay out of the actor? Options: a custom Substrate credential provider that the gateway registers a per-call value with, or accepting that they enter the step-scoped actor.
+2. **Credentials Phase 3 doesn't cover.** How should per-run values from `X-LLM-Env`, such as the `nirmata` provider's token, and OAuth2 MCP client credentials stay out of the actor? Options: a custom Substrate credential provider that the gateway registers a per-call value with, a gateway-side token broker that fetches OAuth2 access tokens and injects them as headers, or accepting that these values enter the step-scoped actor.
 3. **Backend choice.** Should OttoFlow implement both `sandbox` (one pod per execution, more mature) and `substrate` (shared workers, snapshots), or pick one? This proposal keeps both behind one gateway so the choice is per Agent.
 4. **Snapshot storage.** kagent's defaults are GCS paths. Which object stores do installs need, and should Phase 4 be blocked on S3 support?
 5. **Worker pool selection.** The chart-set `workerSelector` picks one pool for every OttoFlow Agent. Does any install need a per-Agent pool, for example to separate OttoFlow and kagent capacity, which would add a `workerPool` field?
