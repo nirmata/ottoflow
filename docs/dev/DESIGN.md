@@ -99,7 +99,7 @@ This separation provides:
 - **FR1B.4**: Agents must support output extraction configuration (JSON, text, regex patterns)
 - **FR1B.5**: Agents must support serviceAccount field for per-agent RBAC
 - **FR1B.6**: Agents must support executorImage field for custom executor images
-- **FR1B.7**: Agents must support executionMode field (enum: `service`, future: `sandbox`) - defaults to `service`
+- **FR1B.7**: Agents must support executionMode field (enum: `service`, future: `sandbox`, `substrate`) - defaults to `service`
 - **FR1B.8**: Agents must support serviceName and serviceNamespace fields for AgentExecutor Service configuration
 - **FR1B.9**: Agents must support resources field for resource requests/limits (future: for sandbox mode)
 - **FR1B.10**: Agents must be namespace-scoped
@@ -979,7 +979,7 @@ spec:
   prompt: "You are a code analyzer..."
   
   # Execution configuration (used by all steps using this agent)
-  executionMode: service  # service (default) or sandbox (future)
+  executionMode: service  # service (default); sandbox or substrate (future)
   serviceName: ottoflow-agent-executor  # Optional, defaults to ottoflow-agent-executor
   serviceNamespace: ottoflow-system  # Optional, defaults to ottoflow-system
   serviceAccount: agent-executor-sa  # For agent execution (if needed for MCP tools)
@@ -1010,6 +1010,7 @@ steps:
 **Execution Modes**:
 - `service`: Execute agent via AgentExecutor Service using A2A protocol (default)
 - `sandbox`: Execute agent as Job with Agent Sandbox isolation (future enhancement)
+- `substrate`: Execute agent as an Agent Substrate actor (future enhancement; see [PROPOSAL_AGENT_SUBSTRATE.md](PROPOSAL_AGENT_SUBSTRATE.md))
 
 **Default Behavior**:
 - Agent steps always execute via AgentExecutor Service (no in-process execution, no Jobs)
@@ -1144,6 +1145,8 @@ spec:
     templateName: "ottoflow-agent-sandbox"   # SandboxTemplate name
     templateNamespace: ""                   # optional
 ```
+
+[Agent Substrate](https://github.com/agent-substrate/substrate) is a second candidate backend (`executionMode: substrate`); [PROPOSAL_AGENT_SUBSTRATE.md](PROPOSAL_AGENT_SUBSTRATE.md) proposes both backends behind one agent-executor gateway.
 
 
 **Priority**: 🟡 **High** - Essential for secure execution of untrusted AI-generated code (Phase 2).
