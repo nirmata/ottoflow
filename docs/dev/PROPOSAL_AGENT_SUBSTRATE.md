@@ -1,7 +1,9 @@
 # Proposal: Agent Substrate as an Agent Execution Layer
 
 **Status**: Draft  
-**Issue**: Tracked internally
+**Issue**: https://github.com/nirmata/ottoflow/issues/272 (tasks and status)
+
+Keep this proposal and the issue in sync: when a PR changes the design, update this file in the same PR and edit the affected tasks in the issue.
 
 ## Problem
 
