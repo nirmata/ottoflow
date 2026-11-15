@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -224,5 +225,61 @@ func TestDeleteRunnerBindingsFor_WriterRoleUnset_SkipsWriterBinding(t *testing.T
 				t.Errorf("writer RoleBinding removed = %v, want %v (err=%v)", removed, tc.wantRemoved, err)
 			}
 		})
+	}
+}
+
+func TestReconcile_ExistingJob_UnlabelledSA_SubjectDrift_KeepsWriterBinding(t *testing.T) {
+	for name, subj := range map[string][]rbacv1.Subject{
+		"empty":         nil,
+		"other subject": {{Kind: "ServiceAccount", Name: "other", Namespace: cmWriterNS}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wr, objs := existingJobFixture(batchv1.JobStatus{Active: 1})
+			objs[len(objs)-1].SetLabels(nil)
+			drifted := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+			drifted.Subjects = subj
+			objs = append(objs, drifted)
+			c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+			r := cmWriterReconciler(c, cmWriterRole)
+			rec := events.NewFakeRecorder(10)
+			r.EventRecorder = rec
+			if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err != nil {
+				t.Fatal(err)
+			}
+			rb, err := getWriterBinding(t, c)
+			if err != nil {
+				t.Fatalf("writer RoleBinding gone: %v", err)
+			}
+			if !slices.Equal(rb.Subjects, subj) {
+				t.Errorf("subjects = %+v, want unchanged %+v", rb.Subjects, subj)
+			}
+			expectWriterRefusalRecorded(t, c, wr, rec)
+		})
+	}
+}
+
+func TestReconcile_ExistingJob_LabelledSA_SubjectDrift_RepairsWriterBinding(t *testing.T) {
+	wr, objs := existingJobFixture(batchv1.JobStatus{Active: 1})
+	drifted := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	drifted.Subjects = nil
+	objs = append(objs, drifted)
+	reads := map[string]int{}
+	funcs := accountReadCounter(reads)
+	funcs.Delete = func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+		if _, ok := obj.(*rbacv1.RoleBinding); ok {
+			t.Error("writer RoleBinding deleted; want subjects repaired in place")
+		}
+		return cl.Delete(ctx, obj, opts...)
+	}
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).WithInterceptorFuncs(funcs).Build()
+	if _, err := cmWriterReconciler(c, cmWriterRole).Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err != nil {
+		t.Fatal(err)
+	}
+	rb, err := getWriterBinding(t, c)
+	if err != nil || len(rb.Subjects) != 1 || rb.Subjects[0].Name != cmWriterSA {
+		t.Errorf("rb=%+v err=%v, want subjects repaired", rb, err)
+	}
+	if reads[cmWriterSA] != 1 {
+		t.Errorf("ServiceAccount Gets = %d, want 1", reads[cmWriterSA])
 	}
 }

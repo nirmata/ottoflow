@@ -678,18 +678,15 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 		}
 		// A binding owned by a previous SA incarnation is garbage-collected with it, so recreate it too.
 		// An empty saUID (steady-state reconcile) skips the owner check to avoid a live SA read per reconcile.
-		if existing.RoleRef == roleRef && (saUID == "" || slices.ContainsFunc(existing.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == saUID })) {
-			if slices.Equal(existing.Subjects, subjects) {
-				return nil
-			}
-			existing.Subjects = subjects
-			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
+		// A subject change waits for the label check below.
+		if existing.RoleRef == roleRef && slices.Equal(existing.Subjects, subjects) && (saUID == "" || ownedBy(existing, saUID)) {
+			return nil
 		}
 	case !apierrors.IsNotFound(getErr):
 		return classifyRunnerAccessErr(getErr, "ConfigMap writer RoleBinding", key)
 	}
 
-	// Checked before the drift delete below, so a refusal leaves the live binding in place.
+	// Checked before any change below (subject repair, delete, create), so a refusal leaves the live binding in place.
 	if saUID == "" {
 		// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
 		sa := &corev1.ServiceAccount{}
@@ -704,6 +701,10 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 		saUID = sa.UID
 	}
 	if getErr == nil {
+		if existing.RoleRef == roleRef && ownedBy(existing, saUID) {
+			existing.Subjects = subjects
+			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
+		}
 		// Only a stale binding gets here (other RoleRef, or owned by a previous SA incarnation); RoleRef is immutable: recreate.
 		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
 			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
@@ -722,6 +723,10 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 		Subjects: subjects,
 	}
 	return classifyRunnerAccessErr(r.Create(ctx, rb), "ConfigMap writer RoleBinding", key)
+}
+
+func ownedBy(rb *rbacv1.RoleBinding, uid types.UID) bool {
+	return slices.ContainsFunc(rb.OwnerReferences, func(o metav1.OwnerReference) bool { return o.UID == uid })
 }
 
 // classifyRunnerAccessErr keeps Forbidden/Invalid terminal and requeues every other failure.
