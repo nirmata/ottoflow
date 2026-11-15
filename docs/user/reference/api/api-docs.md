@@ -873,6 +873,7 @@ _Appears in:_
 | `externalAgentRef` _[StepExternalAgentRef](#stepexternalagentref)_ | ExternalAgentRef defines a call to an external A2A-compatible agent service<br />When specified, this step sends a task to the referenced external agent via A2A protocol<br />The task result is available as `a2aResult` in output CEL expressions |  | Optional: \{\} <br /> |
 | `openReport` _[StepOpenReport](#stepopenreport)_ | OpenReport defines an OpenReports.io report generation step.<br />When specified, this step emits workflow results as an OpenReports.io Report CRD.<br />If the OpenReports CRD is not installed, the step falls back to storing report data<br />in context as reportResult.data with a Warning event on the WorkflowRun.<br />Report results are available as `reportResult` in output CEL expressions. |  | Optional: \{\} <br /> |
 | `waitForCallback` _[WaitForCallbackStep](#waitforcallbackstep)_ | WaitForCallback pauses workflow execution and waits for an external callback.<br />Enables human-in-the-loop and AI-to-human-to-AI workflows.<br />When specified, this step generates a cryptographically secure token, stores it in<br />WorkflowRun.status.pendingCallback, and exits with code 0. The controller recreates<br />the runner Job when callback data is POSTed to the callback endpoint. |  | Optional: \{\} <br /> |
+| `container` _[StepContainer](#stepcontainer)_ | Container runs an image as a child Job in the WorkflowRun namespace and exposes its<br />output to the step's output expressions as `step.stdout` and `step.exitCode`.<br />The image must match the controller's container step allowlist; with an empty<br />allowlist, container steps are disabled. |  | Optional: \{\} <br /> |
 
 
 #### StepAgentRef
@@ -896,6 +897,65 @@ _Appears in:_
 | `maxAdditionalPromptTokens` _integer_ | MaxAdditionalPromptTokens is an optional token budget for the combined additionalPrompts text.<br />When set, the evaluated additional prompt text is truncated to fit this budget, using a rough<br />heuristic of approximately 3 runes per token (code/YAML tokenizes denser than prose, so this<br />errs conservative). The agent's base prompt is not counted. Nil means no limit. 0 disables the limit. |  | Maximum: 1e+07 <br />Minimum: 0 <br />Optional: \{\} <br /> |
 | `contextBudgetMode` _string_ | ContextBudgetMode controls how much of the accumulated step context is visible to<br />CEL evaluation when evaluating additionalPrompts. Applied before BuildVariableMap,<br />so no materialization cost is paid for entries that are filtered out.<br />full: all step outputs are visible (default when omitted — preserves current behavior)<br />lastN: only the N most recently completed step outputs are visible<br />omit: no step outputs are visible<br />Only the step outputs are filtered. Inputs, variables, and expressions remain fully<br />visible in every mode. |  | Enum: [full lastN omit] <br />Optional: \{\} <br /> |
 | `contextBudgetLastN` _integer_ | ContextBudgetLastN is the number of most-recently-completed steps to include when<br />ContextBudgetMode=lastN. Steps beyond the last N are omitted from CEL context.<br />N counts only completed steps that have an entry in the context's steps map (e.g. agent<br />steps that produced a response/output); steps with no steps-map entry are not counted and<br />do not consume a slot in the window.<br />Ignored for other modes. Defaults to 5 when omitted or zero. |  | Maximum: 1000 <br />Minimum: 0 <br />Optional: \{\} <br /> |
+
+
+#### StepContainer
+
+
+
+StepContainer runs an allowlisted image as a hardened child Job.
+String fields (image, args, env values, files.configMapRef) may contain `{{ <CEL> }}`
+segments, which are evaluated in the workflow context; text outside them is literal.
+
+
+
+_Appears in:_
+- [Step](#step)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `image` _string_ | Image is the container image. It must match an entry of the controller's<br />container step allowlist after template evaluation. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `args` _string array_ | Args are the container arguments. The image's entrypoint is not overridden. |  | Optional: \{\} <br /> |
+| `env` _[StepContainerEnvVar](#stepcontainerenvvar) array_ | Env sets plain environment variables on the container. |  | Optional: \{\} <br /> |
+| `files` _[StepContainerFiles](#stepcontainerfiles)_ | Files mounts the keys of a ConfigMap in the WorkflowRun namespace read-only at mountPath. |  | Optional: \{\} <br /> |
+| `kubeconfig` _boolean_ | Kubeconfig mounts the WorkflowRun's spec.clusterRef.kubeConfigSecretRef read-only at<br />/kube/config. The Secret must be in the WorkflowRun namespace. This kubeconfig is the<br />container's only credential: no service account token is mounted. |  | Optional: \{\} <br /> |
+| `resources` _[ResourceRequirements](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#resourcerequirements-v1-core)_ | Resources sets the container's resource requests and limits. |  | Optional: \{\} <br /> |
+| `timeout` _string_ | Timeout bounds the container run, including scheduling and image pull (e.g. "30s", "10m").<br />Defaults to 10m. |  | Optional: \{\} <br /> |
+| `successExitCodes` _integer array_ | SuccessExitCodes are the exit codes treated as success. Defaults to [0].<br />Other exit codes fail the step. |  | Optional: \{\} <br /> |
+
+
+#### StepContainerEnvVar
+
+
+
+StepContainerEnvVar is a plain environment variable for a container step.
+
+
+
+_Appears in:_
+- [StepContainer](#stepcontainer)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the environment variable name. |  | Pattern: `^[A-Za-z_][A-Za-z0-9_]*$` <br />Required: \{\} <br /> |
+| `value` _string_ | Value is the environment variable value. |  | Optional: \{\} <br /> |
+
+
+#### StepContainerFiles
+
+
+
+StepContainerFiles mounts a ConfigMap into a container step.
+
+
+
+_Appears in:_
+- [StepContainer](#stepcontainer)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `configMapRef` _string_ | ConfigMapRef is the name of a ConfigMap in the WorkflowRun namespace. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `mountPath` _string_ | MountPath is the absolute directory the ConfigMap keys are mounted at. |  | Pattern: `^/.*` <br />Required: \{\} <br /> |
 
 
 #### StepExternalAgentRef

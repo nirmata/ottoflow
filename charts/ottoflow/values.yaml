@@ -387,6 +387,17 @@ workflowRunner:
   # the CA Secret name the controller's certificate manager uses when agent executor TLS is internal.
   agentExecutorCASecret: ""
 
+# Container steps (step.container) run an image as a child Job in the WorkflowRun namespace.
+# Only images on this allowlist may run; an empty list disables container steps. An entry ending
+# in "/" allows every image under that path; any other entry allows that repository with any tag
+# or digest (e.g. "ghcr.io/kyverno/kyverno-cli" allows "ghcr.io/kyverno/kyverno-cli:v1.15.0").
+# When non-empty, the controller binds <fullname>-runner-job-writer in each run namespace so the
+# runner can create and delete those Jobs.
+containerStep:
+  allowedImages: []
+  # Maximum stdout a container step may return; larger output fails the step (0 = 1 MiB).
+  maxOutputBytes: 0
+
 # serve-a2a exposure configuration.
 # When enabled, the controller publishes Workflows with spec.expose.kagent set as kagent BYO
 # Agents (running the serve-a2a image) and, per Workflow namespace, creates a ServiceAccount

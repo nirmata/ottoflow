@@ -32,6 +32,8 @@ var controllerOwnedRunnerEnv = []string{
 	"JOB_NAME",
 	"POD_NAME",
 	"AGENT_EXECUTOR_NAMESPACE",
+	"OTTOFLOW_CONTAINER_STEP_ALLOWED_IMAGES",
+	"OTTOFLOW_CONTAINER_STEP_MAX_OUTPUT_BYTES",
 }
 
 func TestReservedRunnerEnvNames_IsExactlyTheControllerOwnedSet(t *testing.T) {
@@ -182,8 +184,10 @@ func TestReservedRunnerEnvNames_CoverEveryControllerEnvAheadOfAuthorEntries(t *t
 	}
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf, tokenSecret, wr).Build()
 	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme, RunnerConfig: RunnerConfig{
-		PrometheusURL:          "http://prometheus.monitoring:9090",
-		AgentExecutorNamespace: "ottoflow",
+		PrometheusURL:               "http://prometheus.monitoring:9090",
+		AgentExecutorNamespace:      "ottoflow",
+		ContainerStepAllowedImages:  []string{"ghcr.io/kyverno/kyverno-cli"},
+		ContainerStepMaxOutputBytes: 1024,
 	}}
 
 	job, err := r.buildWorkflowRunnerJob(context.Background(), wr, wf)

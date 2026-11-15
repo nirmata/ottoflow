@@ -96,6 +96,15 @@ spec:
         - --legacy-runner-cluster-role={{ include "ottoflow.fullname" . }}-role
         - --legacy-runner-service-account={{ if .Values.controller.serviceAccount.name }}{{ .Values.controller.serviceAccount.name }}{{ else }}controller-manager{{ end }}
         - --runner-configmap-writer-cluster-role={{ include "ottoflow.fullname" . }}-runner-configmap-writer
+        {{- if .Values.containerStep.allowedImages }}
+        - --runner-job-writer-cluster-role={{ include "ottoflow.fullname" . }}-runner-job-writer
+        {{- end }}
+        {{- end }}
+        {{- with .Values.containerStep.allowedImages }}
+        - --container-step-allowed-images={{ join "," . }}
+        {{- end }}
+        {{- if .Values.containerStep.maxOutputBytes }}
+        - --container-step-max-output-bytes={{ .Values.containerStep.maxOutputBytes | int64 }}
         {{- end }}
         {{- if .Values.workflowRunner.podLabelsPartOf }}
         - --workflow-runner-pod-labels-part-of={{ .Values.workflowRunner.podLabelsPartOf }}

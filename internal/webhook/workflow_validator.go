@@ -10,6 +10,7 @@ package webhook
 import (
 	"context"
 	"fmt"
+	"path"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -28,6 +29,8 @@ type WorkflowValidator struct {
 	Client client.Client
 	// Workflow namespaces allowed to watch other or all namespaces.
 	EventTriggerAllowedNamespaces []string
+	// ContainerStepAllowedImages is the controller's container step allowlist; empty rejects container steps.
+	ContainerStepAllowedImages []string
 }
 
 // ValidateCreate implements admission.Validator.
@@ -103,6 +106,9 @@ func (v *WorkflowValidator) validate(ctx context.Context, w *ottoflowv1alpha1.Wo
 			return nil, err
 		}
 		if err := validateWaitForCallback(step.Name, step.WaitForCallback, step.ForEach); err != nil {
+			return nil, err
+		}
+		if err := validateContainer(step.Name, step.Container, v.ContainerStepAllowedImages); err != nil {
 			return nil, err
 		}
 		// Also validate forEach inline step's externalAgentRef and openReport
@@ -220,8 +226,34 @@ func validateStepExclusiveAction(stepName string, step ottoflowv1alpha1.Step) er
 	if step.WaitForCallback != nil {
 		count++
 	}
+	if step.Container != nil {
+		count++
+	}
 	if count > 1 {
 		return fmt.Errorf("workflow step %q: exactly one action field must be set, found %d", stepName, count)
+	}
+	return nil
+}
+
+// validateContainer checks a container step's image against the allowlist when the image is not templated;
+// the runner checks every image again after template evaluation.
+func validateContainer(stepName string, c *ottoflowv1alpha1.StepContainer, allowed []string) error {
+	if c == nil {
+		return nil
+	}
+	if len(allowed) == 0 {
+		return fmt.Errorf("workflow step %q: %w", stepName, executor.ErrContainerStepsDisabled)
+	}
+	if !executor.IsContainerTemplate(c.Image) && !executor.ImageAllowed(c.Image, allowed) {
+		return fmt.Errorf("workflow step %q: container image %q is not in the controller's container step allowlist", stepName, c.Image)
+	}
+	if c.Timeout != "" {
+		if d, err := time.ParseDuration(c.Timeout); err != nil || d <= 0 {
+			return fmt.Errorf("workflow step %q: invalid container timeout %q", stepName, c.Timeout)
+		}
+	}
+	if c.Files != nil && path.Clean(c.Files.MountPath) == "/kube" && c.Kubeconfig {
+		return fmt.Errorf("workflow step %q: container files.mountPath must not be /kube when kubeconfig is true", stepName)
 	}
 	return nil
 }

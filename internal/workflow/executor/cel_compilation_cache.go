@@ -199,6 +199,10 @@ func extractStepExpressions(exprs *[]rawExpression, prefix string, step *ottoflo
 		}
 	}
 
+	for i, v := range ContainerTemplateExpressions(step.Container) {
+		*exprs = append(*exprs, rawExpression{Name: fmt.Sprintf("%s.container.template.%d", prefix, i), Text: v})
+	}
+
 	if step.StepTemplateRef != nil {
 		for k, v := range step.StepTemplateRef.Arguments {
 			*exprs = append(*exprs, rawExpression{Name: prefix + ".tpl.arg." + k, Text: v})

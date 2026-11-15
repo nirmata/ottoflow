@@ -805,6 +805,7 @@ func collectCELExpressions(step *ottoflowv1alpha1.Step) []string {
 			}
 		}
 	}
+	out = append(out, executor.ContainerTemplateExpressions(step.Container)...)
 	if step.ForEach != nil && step.ForEach.Items != "" {
 		out = append(out, step.ForEach.Items)
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/google/cel-go/cel"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
 // steps.<stepName> or steps.<stepName>.field..., and stepStatus.<stepName>...
@@ -339,6 +340,7 @@ func collectCELStringsFromStep(step *ottoflowv1alpha1.Step) []string {
 			}
 		}
 	}
+	out = append(out, executor.ContainerTemplateExpressions(step.Container)...)
 	if step.Mutate != nil {
 		if step.Mutate.Target.Namespace != "" {
 			out = append(out, step.Mutate.Target.Namespace)

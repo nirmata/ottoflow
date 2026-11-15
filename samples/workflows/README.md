@@ -24,7 +24,7 @@ Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../s
 
 `cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`
 
-### `features/` (67)
+### `features/` (68)
 
 - **Basics:** `hello-world`, `simple-greeting`, `expressions-workflow`, `step-dependencies`, `complex-workflow`, `conditional-execution`, `workflow-variables`, `workflow-reference`, `foreach-example`, `json-output-example`, `steptemplate-example`
 - **Agents / LLM providers:** `agent-basic`, `agent-step`, `agent-config`, `agent-openai`, `agent-azure-openai` (azure-openai is not supported), `agent-gemini`, `agent-local-llamacpp`, `agent-custom-endpoint`, `agent-mcp-combined`, `simple-agent-question`, `pod-diagnostics-agent`, `pod-diagnostics-with-mcp`, `kagent-integration`
@@ -33,7 +33,7 @@ Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../s
 - **Retries** (step-level `retry` is accepted but not applied): `retry-exponential-backoff`, `retry-linear-backoff`, `retry-max-attempts`, `retry-with-conditions`, `complex-workflow-with-retry`
 - **Resource queries & metrics:** `resource-query-example`, `resource-list`, `crd-resource-query`, `advanced-field-paths`, `resource-metrics-example`, `gpu-metrics-example`, `pod-health-metrics`, `prometheus-query-example`, `prometheus-query-simple`, `namespace-resource-summary`, `pod-health-check`, `pod-restart-analysis`, `pod-resource-analysis`, `top-pods-cpu-analysis`
 - **CEL:** `kubernetes-cel-libraries`, `kyverno-cel-libraries`, `practical-cel-examples`
-- **Other step types & patterns:** `mutate-step-example`, `open-report-example`, `wait-for-callback`, `argocd-cluster-discovery`, `multi-cluster-workflowrun`, `multi-cluster-workflowrun-filepath`, `multi-cluster-workflowrun-csi`, `job-customized-workflowrun`
+- **Other step types & patterns:** `container-step`, `mutate-step-example`, `open-report-example`, `wait-for-callback`, `argocd-cluster-discovery`, `multi-cluster-workflowrun`, `multi-cluster-workflowrun-filepath`, `multi-cluster-workflowrun-csi`, `job-customized-workflowrun`
 
 ### `testing/` (5)
 

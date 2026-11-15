@@ -37,12 +37,13 @@ Step (api/v1alpha1/workflow_types.go)
 ├── waitForCallback              → Pause until an external signed callback arrives
 ├── stepTemplateRef              → Instantiate a parameterized StepTemplate
 ├── forEach                      → Parallel iteration over a list
-└── externalAgentRef             → A2A protocol call to an external agent (kagent, etc.)
+├── externalAgentRef             → A2A protocol call to an external agent (kagent, etc.)
+└── container                    → Run an allowlisted image as a child Job; stdout as output
 ```
 
 The step dispatcher in `executeStep()` (`internal/workflow/executor/executor.go`) checks these fields in this exact priority order:
 
-`expressions (evaluated first, on every step) → forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → outputs only (default)`
+`expressions (evaluated first, on every step) → forEach → stepTemplateRef → workflowRef → agentRef → mcpToolCall → externalAgentRef → resourceQuery → prometheusQuery → mutate → openReport → waitForCallback → container → outputs only (default)`
 
 A step takes exactly ONE action. A step's `expressions:` are evaluated before its action runs, so the action's fields can read them as `expressions.<name>`. To post-process the action's result, use the step's `outputs:` or a dependent expression-only step.
 

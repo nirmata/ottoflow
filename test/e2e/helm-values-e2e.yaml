@@ -15,3 +15,7 @@ controller:
 # Renders ottoflow-a2a-caller for the caller-gate spec.
 serveA2A:
   enabled: true
+# Lets the container step spec run a tiny public image.
+containerStep:
+  allowedImages:
+    - busybox

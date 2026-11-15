@@ -1,0 +1,89 @@
+# Container step: run an allowlisted image as a child Job and read its stdout.
+#
+# Prerequisites:
+#   - The controller allowlist includes the image, e.g. Helm:
+#       containerStep:
+#         allowedImages: ["ghcr.io/kyverno/kyverno-cli"]
+#   - A Secret "target-kubeconfig" in the WorkflowRun namespace with a kubeconfig for the
+#     cluster to evaluate against (key "config"). It is mounted read-only at /kube/config.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: container-step-policies
+  namespace: ottoflow
+data:
+  require-team-label.yaml: |
+    apiVersion: kyverno.io/v1
+    kind: ClusterPolicy
+    metadata:
+      name: require-team-label
+    spec:
+      validationFailureAction: Audit
+      rules:
+        - name: check-team
+          match:
+            any:
+              - resources:
+                  kinds: ["Deployment"]
+          validate:
+            message: "label 'team' is required"
+            pattern:
+              metadata:
+                labels:
+                  team: "?*"
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Workflow
+metadata:
+  name: container-step
+  namespace: ottoflow
+spec:
+  inputs:
+    - name: kyvernoVersion
+      default: "v1.15.0"
+    - name: policiesConfigMap
+      default: "container-step-policies"
+  steps:
+    - name: evaluate
+      message: "Apply policies to the live cluster with the Kyverno CLI"
+      container:
+        image: "ghcr.io/kyverno/kyverno-cli:{{ inputs.kyvernoVersion }}"
+        args:
+          - apply
+          - /in/require-team-label.yaml
+          - --cluster
+          - --kubeconfig
+          - /kube/config
+          - --policy-report
+          - --output-format
+          - json
+          - --remove-color
+        files:
+          configMapRef: "{{ inputs.policiesConfigMap }}"
+          mountPath: /in
+        kubeconfig: true
+        resources:
+          limits:
+            cpu: "1"
+            memory: 512Mi
+        timeout: 2m
+        # kyverno apply exits 1 when a policy fails; that is a result, not an error.
+        successExitCodes: [0, 1]
+      outputs:
+        - name: report
+          expression: "json.unmarshal(step.stdout)"
+        - name: exitCode
+          expression: "step.exitCode"
+---
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: WorkflowRun
+metadata:
+  name: container-step-run
+  namespace: ottoflow
+spec:
+  workflowRef:
+    name: container-step
+  clusterRef:
+    kubeConfigSecretRef:
+      name: target-kubeconfig
+      key: config

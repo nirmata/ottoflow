@@ -8,6 +8,7 @@ that can be found in the LICENSE.md file.
 package v1alpha1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -369,6 +370,81 @@ type Step struct {
 	// the runner Job when callback data is POSTed to the callback endpoint.
 	// +optional
 	WaitForCallback *WaitForCallbackStep `json:"waitForCallback,omitempty"`
+
+	// Container runs an image as a child Job in the WorkflowRun namespace and exposes its
+	// output to the step's output expressions as `step.stdout` and `step.exitCode`.
+	// The image must match the controller's container step allowlist; with an empty
+	// allowlist, container steps are disabled.
+	// +optional
+	Container *StepContainer `json:"container,omitempty"`
+}
+
+// StepContainer runs an allowlisted image as a hardened child Job.
+// String fields (image, args, env values, files.configMapRef) may contain `{{ <CEL> }}`
+// segments, which are evaluated in the workflow context; text outside them is literal.
+type StepContainer struct {
+	// Image is the container image. It must match an entry of the controller's
+	// container step allowlist after template evaluation.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Image string `json:"image"`
+
+	// Args are the container arguments. The image's entrypoint is not overridden.
+	// +optional
+	Args []string `json:"args,omitempty"`
+
+	// Env sets plain environment variables on the container.
+	// +optional
+	Env []StepContainerEnvVar `json:"env,omitempty"`
+
+	// Files mounts the keys of a ConfigMap in the WorkflowRun namespace read-only at mountPath.
+	// +optional
+	Files *StepContainerFiles `json:"files,omitempty"`
+
+	// Kubeconfig mounts the WorkflowRun's spec.clusterRef.kubeConfigSecretRef read-only at
+	// /kube/config. The Secret must be in the WorkflowRun namespace. This kubeconfig is the
+	// container's only credential: no service account token is mounted.
+	// +optional
+	Kubeconfig bool `json:"kubeconfig,omitempty"`
+
+	// Resources sets the container's resource requests and limits.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+
+	// Timeout bounds the container run, including scheduling and image pull (e.g. "30s", "10m").
+	// Defaults to 10m.
+	// +optional
+	Timeout string `json:"timeout,omitempty"`
+
+	// SuccessExitCodes are the exit codes treated as success. Defaults to [0].
+	// Other exit codes fail the step.
+	// +optional
+	SuccessExitCodes []int32 `json:"successExitCodes,omitempty"`
+}
+
+// StepContainerEnvVar is a plain environment variable for a container step.
+type StepContainerEnvVar struct {
+	// Name is the environment variable name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^[A-Za-z_][A-Za-z0-9_]*$`
+	Name string `json:"name"`
+
+	// Value is the environment variable value.
+	// +optional
+	Value string `json:"value,omitempty"`
+}
+
+// StepContainerFiles mounts a ConfigMap into a container step.
+type StepContainerFiles struct {
+	// ConfigMapRef is the name of a ConfigMap in the WorkflowRun namespace.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	ConfigMapRef string `json:"configMapRef"`
+
+	// MountPath is the absolute directory the ConfigMap keys are mounted at.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^/.*`
+	MountPath string `json:"mountPath"`
 }
 
 // Variable defines a top-level workflow variable

@@ -80,6 +80,9 @@ func main() {
 	var legacyRunnerClusterRole, legacyRunnerServiceAccount string
 	var agentExecutorCallerClusterRole string
 	var runnerConfigMapWriterClusterRole string
+	var runnerJobWriterClusterRole string
+	var containerStepAllowedImagesFlag string
+	var containerStepMaxOutputBytes int64
 	var workflowRunnerAgentExecutorCASecret string
 	var secretSourceNamespace string
 	var workflowRunnerImagePullSecrets string
@@ -134,6 +137,16 @@ func main() {
 	flag.StringVar(&runnerConfigMapWriterClusterRole, "runner-configmap-writer-cluster-role",
 		os.Getenv("RUNNER_CONFIGMAP_WRITER_CLUSTER_ROLE"),
 		"ClusterRole bound per run namespace to give runners ConfigMap write access there; empty disables (optional).")
+	flag.StringVar(&runnerJobWriterClusterRole, "runner-job-writer-cluster-role",
+		os.Getenv("RUNNER_JOB_WRITER_CLUSTER_ROLE"),
+		"ClusterRole bound per run namespace so runners can create and delete container step Jobs there; "+
+			"bound only when --container-step-allowed-images is set; empty disables (optional).")
+	flag.StringVar(&containerStepAllowedImagesFlag, "container-step-allowed-images",
+		os.Getenv("CONTAINER_STEP_ALLOWED_IMAGES"),
+		"Comma-separated images container steps may run: an entry ending in '/' allows every image under that path, "+
+			"any other entry allows that repository with any tag or digest. Empty disables container steps.")
+	flag.Int64Var(&containerStepMaxOutputBytes, "container-step-max-output-bytes", 0,
+		"Maximum stdout a container step may return; larger output fails the step (0 = 1 MiB).")
 	flag.StringVar(&agentExecutorCallerClusterRole, "agent-executor-caller-cluster-role",
 		os.Getenv("AGENT_EXECUTOR_CALLER_CLUSTER_ROLE"),
 		"ClusterRole name for agent-executor caller RBAC; empty disables (optional).")
@@ -436,22 +449,31 @@ func main() {
 	}
 	triggerManager.SetEventTriggerAllowedNamespaces(eventTriggerAllowedNS)
 
+	containerStepAllowedImages := workflowexecutor.ParseAllowedImages(containerStepAllowedImagesFlag)
+	if containerStepMaxOutputBytes < 0 {
+		setupLog.Error(nil, "--container-step-max-output-bytes must not be negative")
+		os.Exit(1)
+	}
+
 	runnerConfig := workflowcontroller.RunnerConfig{
-		RunnerImage:                workflowRunnerImage,
-		RunnerServiceAccount:       workflowRunnerServiceAccount,
-		RunnerClusterRole:          workflowRunnerClusterRole,
-		AgentExecutorCallerRole:    agentExecutorCallerClusterRole,
-		RunnerConfigMapWriterRole:  runnerConfigMapWriterClusterRole,
-		AgentExecutorCASecret:      workflowRunnerAgentExecutorCASecret,
-		AgentExecutorNamespace:     agentExecutorNamespace,
-		SecretSourceNamespace:      secretSourceNamespace,
-		PrometheusURL:              prometheusURL,
-		ImagePullSecrets:           workflowRunnerImagePullSecrets,
-		ImagePullPolicy:            workflowRunnerImagePullPolicy,
-		PodLabelsPartOf:            workflowRunnerPodLabelsPartOf,
-		TTLSecondsAfterFinished:    int32(workflowRunnerTTLSecondsAfterFinished),
-		LLMCredentialsSecret:       workflowRunnerLLMCredentialsSecret,
-		SecretRefAllowedNamespaces: secretRefAllowedNamespaces,
+		RunnerImage:                 workflowRunnerImage,
+		RunnerServiceAccount:        workflowRunnerServiceAccount,
+		RunnerClusterRole:           workflowRunnerClusterRole,
+		AgentExecutorCallerRole:     agentExecutorCallerClusterRole,
+		RunnerConfigMapWriterRole:   runnerConfigMapWriterClusterRole,
+		RunnerJobWriterRole:         runnerJobWriterClusterRole,
+		ContainerStepAllowedImages:  containerStepAllowedImages,
+		ContainerStepMaxOutputBytes: containerStepMaxOutputBytes,
+		AgentExecutorCASecret:       workflowRunnerAgentExecutorCASecret,
+		AgentExecutorNamespace:      agentExecutorNamespace,
+		SecretSourceNamespace:       secretSourceNamespace,
+		PrometheusURL:               prometheusURL,
+		ImagePullSecrets:            workflowRunnerImagePullSecrets,
+		ImagePullPolicy:             workflowRunnerImagePullPolicy,
+		PodLabelsPartOf:             workflowRunnerPodLabelsPartOf,
+		TTLSecondsAfterFinished:     int32(workflowRunnerTTLSecondsAfterFinished),
+		LLMCredentialsSecret:        workflowRunnerLLMCredentialsSecret,
+		SecretRefAllowedNamespaces:  secretRefAllowedNamespaces,
 	}
 
 	// Shared CEL environment used to validate Workflow expressions at reconcile time.
@@ -519,6 +541,7 @@ func main() {
 		Handler: admission.WithValidator(scheme, &ottowebhook.WorkflowValidator{
 			Client:                        mgr.GetClient(),
 			EventTriggerAllowedNamespaces: eventTriggerAllowedNS,
+			ContainerStepAllowedImages:    containerStepAllowedImages,
 		}),
 	})
 	mgr.GetWebhookServer().Register(hookPathWorkflowRun, &ctrlwebhook.Admission{
