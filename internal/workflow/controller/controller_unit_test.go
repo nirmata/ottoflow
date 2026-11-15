@@ -3797,7 +3797,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_StaleCacheKeepsReplacementClus
 func TestWorkflowRunReconciler_EnsureRunnerConfigMapWriter_StaleCacheKeepsReplacement(t *testing.T) {
 	live := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
 	live.UID = liveBindingUID
-	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), live).Build()
 	r := cmWriterReconciler(staleUIDClient(base), cmWriterRole)
 	if err := r.ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); !errors.Is(err, errRequeueRunnerAccess) {
 		t.Fatalf("err = %v, want requeue sentinel", err)

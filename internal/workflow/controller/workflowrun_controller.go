@@ -667,8 +667,9 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: namespace}}
 	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}
 	existing := &rbacv1.RoleBinding{}
-	switch err := r.Get(ctx, key, existing); {
-	case err == nil:
+	getErr := r.Get(ctx, key, existing)
+	switch {
+	case getErr == nil:
 		if existing.Labels[partOfLabel] != ottoflowPartOf {
 			return fmt.Errorf("RoleBinding %s/%s exists but is not managed by OttoFlow (missing label %s=%s); refusing to update", key.Namespace, key.Name, partOfLabel, ottoflowPartOf)
 		}
@@ -684,14 +685,11 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 			existing.Subjects = subjects
 			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
 		}
-		// RoleRef is immutable: recreate.
-		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
-			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
-		}
-	case !apierrors.IsNotFound(err):
-		return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
+	case !apierrors.IsNotFound(getErr):
+		return classifyRunnerAccessErr(getErr, "ConfigMap writer RoleBinding", key)
 	}
 
+	// Checked before the drift delete below, so a refusal leaves the live binding in place.
 	if saUID == "" {
 		// Direct Get (SAs bypass the cache): the ownerRef needs the live UID.
 		sa := &corev1.ServiceAccount{}
@@ -704,6 +702,12 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 			return fmt.Errorf("runner ServiceAccount %q in namespace %q is missing label %s=%s: %w", serviceAccountName, namespace, partOfLabel, ottoflowPartOf, errRunnerServiceAccountNotManaged)
 		}
 		saUID = sa.UID
+	}
+	if getErr == nil {
+		// Only a stale binding gets here (other RoleRef, or owned by a previous SA incarnation); RoleRef is immutable: recreate.
+		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
+			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
+		}
 	}
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{

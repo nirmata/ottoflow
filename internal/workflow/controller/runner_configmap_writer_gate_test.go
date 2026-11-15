@@ -32,6 +32,25 @@ func writerBindingExists(t *testing.T, c client.Client, sa string) bool {
 	return err == nil
 }
 
+func expectWriterRefusalRecorded(t *testing.T, c client.Client, wr *ottoflowv1alpha1.WorkflowRun, rec *events.FakeRecorder) {
+	t.Helper()
+	got := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(wr), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Error("run failed")
+	}
+	select {
+	case evt := <-rec.Events:
+		if !strings.Contains(evt, "RunnerServiceAccountNotManaged") || !strings.Contains(evt, cmWriterSA) {
+			t.Errorf("event = %q, want RunnerServiceAccountNotManaged naming %s", evt, cmWriterSA)
+		}
+	default:
+		t.Error("expected a RunnerServiceAccountNotManaged Warning event")
+	}
+}
+
 func TestReconcile_ExistingJob_UnlabelledSA_NoWriterBindingEventRecorded(t *testing.T) {
 	wr, objs := existingJobFixture(batchv1.JobStatus{Active: 1})
 	objs[len(objs)-1].SetLabels(nil)
@@ -56,20 +75,45 @@ func TestReconcile_ExistingJob_UnlabelledSA_NoWriterBindingEventRecorded(t *test
 	if writerBindingExists(t, c, cmWriterSA) {
 		t.Error("writer RoleBinding created for an unlabelled ServiceAccount")
 	}
-	got := &ottoflowv1alpha1.WorkflowRun{}
-	if err := c.Get(context.Background(), client.ObjectKeyFromObject(wr), got); err != nil {
+	expectWriterRefusalRecorded(t, c, wr, rec)
+}
+
+func TestReconcile_ExistingJob_UnlabelledSA_RoleDrift_KeepsWriterBinding(t *testing.T) {
+	wr, objs := existingJobFixture(batchv1.JobStatus{Active: 1})
+	objs[len(objs)-1].SetLabels(nil)
+	objs = append(objs, managedWriterBinding("ClusterRole", "old-role", cmWriterUID))
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+	r := cmWriterReconciler(c, cmWriterRole)
+	rec := events.NewFakeRecorder(10)
+	r.EventRecorder = rec
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err != nil {
 		t.Fatal(err)
 	}
-	if got.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed {
-		t.Error("run failed")
+	rb, err := getWriterBinding(t, c)
+	if err != nil {
+		t.Fatalf("writer RoleBinding gone after role drift on an unlabelled ServiceAccount: %v", err)
 	}
-	select {
-	case evt := <-rec.Events:
-		if !strings.Contains(evt, "RunnerServiceAccountNotManaged") || !strings.Contains(evt, cmWriterSA) {
-			t.Errorf("event = %q, want RunnerServiceAccountNotManaged naming %s", evt, cmWriterSA)
-		}
-	default:
-		t.Error("expected a RunnerServiceAccountNotManaged Warning event")
+	if rb.RoleRef.Name != "old-role" {
+		t.Errorf("RoleRef.Name = %q, want old-role kept", rb.RoleRef.Name)
+	}
+	expectWriterRefusalRecorded(t, c, wr, rec)
+}
+
+func TestReconcile_ExistingJob_LabelledSA_RoleDrift_ReplacesWriterBinding(t *testing.T) {
+	wr, objs := existingJobFixture(batchv1.JobStatus{Active: 1})
+	objs = append(objs, managedWriterBinding("ClusterRole", "old-role", cmWriterUID))
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+	r := cmWriterReconciler(c, cmWriterRole)
+	r.EventRecorder = events.NewFakeRecorder(10)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err != nil {
+		t.Fatal(err)
+	}
+	rb, err := getWriterBinding(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rb.RoleRef.Name != cmWriterRole {
+		t.Errorf("RoleRef.Name = %q, want %s", rb.RoleRef.Name, cmWriterRole)
 	}
 }
 
