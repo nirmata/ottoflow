@@ -304,7 +304,9 @@ func TestReconcile_ExistingJob_EnsuresWriterBinding(t *testing.T) {
 
 // An ensure failure on an existing-Job reconcile must fall through to Job handling (a Failed Job still fails the run).
 func TestReconcile_ExistingJob_EnsureFails_StillHandlesFailedJob(t *testing.T) {
-	wr, objs := existingJobFixture(batchv1.JobStatus{Failed: 1})
+	wr, objs := existingJobFixture(batchv1.JobStatus{Failed: 1, Conditions: []batchv1.JobCondition{
+		{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+	}})
 	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).WithInterceptorFuncs(interceptor.Funcs{
 		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 			if _, ok := obj.(*rbacv1.RoleBinding); ok {

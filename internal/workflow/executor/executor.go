@@ -475,8 +475,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				}
 			}
 			if allDone {
-				e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
-				return nil
+				return e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
 			}
 
 			for _, step := range workflow.Spec.Steps {
@@ -484,7 +483,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				if status.Phase == ottoflowv1alpha1.StepPhaseFailed {
 					msg := fmt.Sprintf("Step %s failed: %s", step.Name, status.Error)
 					e.recordWorkflowFailure(workflow, workflowRun, msg)
-					return fmt.Errorf("workflow failed: step %s failed", step.Name)
+					return markIfLive(ctx.Err() == nil, fmt.Errorf("workflow failed: step %s failed", step.Name))
 				}
 			}
 
@@ -505,10 +504,13 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 			}
 
 			executedAny = true
+			// A re-run step drops the notes of an earlier attempt (the runner's interrupt marker).
+			stepStatus.Message, stepStatus.Error = "", ""
 
 			// Check matchConditions
 			shouldExecute, err := e.checkMatchConditions(ctx, *step)
 			if err != nil {
+				live := ctx.Err() == nil // before the progress callback, which can run past the signal
 				stepStatus.Phase = ottoflowv1alpha1.StepPhaseFailed
 				stepStatus.Error = fmt.Sprintf("matchCondition evaluation failed: %v", err)
 				workflowRun.Status.StepStatuses[stepName] = stepStatus
@@ -518,7 +520,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 					continue
 				}
 				e.recordWorkflowFailure(workflow, workflowRun, fmt.Sprintf("Step %s failed: %v", stepName, err))
-				return fmt.Errorf("matchCondition evaluation failed for step %s: %w", stepName, err)
+				return markIfLive(live, fmt.Errorf("matchCondition evaluation failed for step %s: %w", stepName, err))
 			}
 
 			if !shouldExecute {
@@ -578,6 +580,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 					// Propagate sentinel — runner main loop will exit with code 0
 					return err
 				}
+				live := ctx.Err() == nil // before the progress callback, which can run past the signal
 				stepStatus = workflowRun.Status.StepStatuses[stepName]
 				stepStatus.Phase = ottoflowv1alpha1.StepPhaseFailed
 				stepStatus.Error = err.Error()
@@ -595,7 +598,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 				}
 
 				e.recordWorkflowFailure(workflow, workflowRun, fmt.Sprintf("Step %s failed: %v", stepName, err))
-				return err
+				return markIfLive(live, err)
 			}
 			// Mark step as succeeded
 			// Re-read status to get the latest, but preserve StartTime
@@ -630,7 +633,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 		}
 	}
 	if allComplete {
-		e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
+		return e.recordWorkflowSuccess(ctx, workflow, workflowRun, workflowName, namespace)
 	}
 
 	return nil
@@ -669,6 +672,24 @@ func (e *WorkflowExecutor) evaluateWorkflowVariables(ctx context.Context, workfl
 	return nil
 }
 
+// ErrFailedBeforeCancel marks a run failure that happened while the run's ctx was still live, so the
+// cancel did not cause it. The runner keeps such a run Failed even when SIGTERM lands before
+// ExecuteWorkflow returns.
+var ErrFailedBeforeCancel = errors.New("failed before the run context was cancelled")
+
+type failedBeforeCancel struct{ error }
+
+func (f failedBeforeCancel) Unwrap() error      { return f.error }
+func (failedBeforeCancel) Is(target error) bool { return target == ErrFailedBeforeCancel }
+
+// markIfLive adds ErrFailedBeforeCancel to err when live; the error text is unchanged.
+func markIfLive(live bool, err error) error {
+	if !live {
+		return err
+	}
+	return failedBeforeCancel{err}
+}
+
 func (e *WorkflowExecutor) recordWorkflowFailure(
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
@@ -697,16 +718,20 @@ func (e *WorkflowExecutor) recordWorkflowSuccess(
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	workflowName, namespace string,
-) {
+) error {
+	// Outputs first: a cancel that cut evaluation short must not leave the run Succeeded with an output missing.
+	if err := e.evaluateWorkflowOutputs(ctx, workflow, workflowRun, workflowName, namespace); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		fmt.Printf("Warning: failed to evaluate workflow outputs: %v\n", err)
+	}
 	workflowRun.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
 	now := metav1.Now()
 	workflowRun.Status.CompletionTime = &now
 	e.emitWorkflowLevelEvent(workflow, workflowRun, "WorkflowSucceeded", corev1.EventTypeNormal, "Workflow run completed successfully")
-
-	if err := e.evaluateWorkflowOutputs(ctx, workflow, workflowRun, workflowName, namespace); err != nil {
-		fmt.Printf("Warning: failed to evaluate workflow outputs: %v\n", err)
-	}
 	e.invokeProgressCallback(workflowRun, workflow)
+	return nil
 }
 
 func (e *WorkflowExecutor) invokeProgressCallback(workflowRun *ottoflowv1alpha1.WorkflowRun, workflow *ottoflowv1alpha1.Workflow) {
@@ -1012,6 +1037,9 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 			result, err = e.celEvaluator.EvaluateOutputValue(ctx, valueData, vars)
 			if err != nil {
 				// Log error but continue with other outputs
+				if ctx.Err() != nil {
+					return err
+				}
 				fmt.Printf("Warning: failed to evaluate workflow output '%s' value: %v\n", outputDef.Name, err)
 				continue
 			}
@@ -1019,6 +1047,9 @@ func (e *WorkflowExecutor) evaluateWorkflowOutputs(ctx context.Context, workflow
 			result, err = e.celEvaluator.EvaluateExpression(ctx, outputDef.Expression, vars)
 			if err != nil {
 				// Log error but continue with other outputs
+				if ctx.Err() != nil {
+					return err
+				}
 				fmt.Printf("Warning: failed to evaluate workflow output '%s' expression: %v\n", outputDef.Name, err)
 				continue
 			}
@@ -1095,14 +1126,15 @@ func (e *WorkflowExecutor) loadCheckpointIfNeeded(ctx context.Context, workflowR
 
 // checkpointCleanup returns a deferred function that flushes writes and deletes the checkpoint on terminal state.
 func (e *WorkflowExecutor) saveCheckpoint(ctx context.Context, workflowRun *ottoflowv1alpha1.WorkflowRun, stepName string) {
-	if e.checkpointManager == nil {
+	// SaveAsync is a no-op when disabled; skip building the snapshot (clone of every step status) too.
+	if e.checkpointManager == nil || !e.checkpointManager.Enabled() {
 		return
 	}
 	e.checkpointManager.SaveAsync(ctx, CheckpointSnapshot{
 		Version:           1,
 		WorkflowRunUID:    string(workflowRun.UID),
 		LastCompletedStep: stepName,
-		StepStatuses:      workflowRun.Status.StepStatuses,
+		StepStatuses:      maps.Clone(workflowRun.Status.StepStatuses), // SaveAsync reads it off-goroutine
 		Context:           e.contextManager.GetContext(),
 		CompletionOrder:   e.contextManager.CompletionOrder(),
 	})
