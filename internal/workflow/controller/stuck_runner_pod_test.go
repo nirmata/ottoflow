@@ -626,6 +626,9 @@ func TestDetectStuckRunnerPod_FailedMountGating(t *testing.T) {
 		unscheduled  bool
 		scheduledAgo time.Duration
 		span         time.Duration
+		lastAgo      time.Duration
+		sandbox      bool
+		sandboxAgo   time.Duration
 		wantStuck    bool
 		wantLists    int
 	}{
@@ -633,6 +636,12 @@ func TestDetectStuckRunnerPod_FailedMountGating(t *testing.T) {
 		{name: "condition absent: detection is skipped", ready: "", span: 3 * stuckPodGracePeriod},
 		{name: "condition False and failing for the whole window", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod, wantStuck: true, wantLists: 1},
 		{name: "condition False and failing for less than the window", ready: corev1.ConditionFalse, span: 10 * time.Second, wantLists: 1},
+		{name: "condition False, but the Event stopped firing", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: stuckPodEventListInterval + stuckPodGracePeriod + time.Minute, wantLists: 1},
+		{name: "condition False, but sandbox setup failed after the last mount failure", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: time.Minute, sandbox: true, wantLists: 1},
+		{name: "condition False, and sandbox setup failed before the last mount failure", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: time.Minute, sandbox: true, sandboxAgo: 2 * time.Minute, wantStuck: true, wantLists: 1},
 		{name: "not scheduled", ready: corev1.ConditionFalse, unscheduled: true, span: 3 * stuckPodGracePeriod},
 		{name: "scheduled less than a window ago", ready: corev1.ConditionFalse, scheduledAgo: 10 * time.Second, span: 3 * stuckPodGracePeriod},
 	}
@@ -645,8 +654,18 @@ func TestDetectStuckRunnerPod_FailedMountGating(t *testing.T) {
 			if tt.scheduledAgo != 0 {
 				pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-tt.scheduledAgo))
 			}
+			ev := failedMountEvent(pod.Name)
+			last := time.Now().Add(-tt.lastAgo)
+			ev.FirstTimestamp, ev.LastTimestamp = metav1.NewTime(last.Add(-tt.span)), metav1.NewTime(last)
+			objs := []client.Object{ev}
+			if tt.sandbox {
+				sb := failedMountEvent(pod.Name)
+				sb.Name, sb.Reason = pod.Name+"-sandbox", "FailedCreatePodSandBox"
+				sb.LastTimestamp = metav1.NewTime(time.Now().Add(-tt.sandboxAgo))
+				objs = append(objs, sb)
+			}
 			lists := 0
-			c := interceptor.NewClient(fakeClientWithEventIndex(withFailingSpan(failedMountEvent(pod.Name), tt.span)), interceptor.Funcs{
+			c := interceptor.NewClient(fakeClientWithEventIndex(objs...), interceptor.Funcs{
 				List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 					if _, ok := list.(*corev1.EventList); ok {
 						lists++

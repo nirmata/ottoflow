@@ -962,7 +962,9 @@ the reason has persisted for `stuckPodGracePeriod`. For `FailedMount` it acts on
 that has been scheduled for that long, whose `PodReadyToStartContainers` condition is `False` (a
 `True` condition means every mount succeeded, so earlier mount Events are stale; an absent
 condition skips detection), and only on an Event whose kubelet-clock first-to-last span covers the
-same window. The Events list is uncached, so successful lists that find nothing stuck run at most once per pod per
+same window and that no `FailedCreatePodSandBox` Event postdates (the kubelet attempts the sandbox
+only after every volume mounts). Its last occurrence must also be within `stuckPodEventListInterval`
+plus that window, a backstop for a controller that looks late, e.g. after a restart. The Events list is uncached, so successful lists that find nothing stuck run at most once per pod per
 `stuckPodEventListInterval`, the cap of the kubelet's mount retry backoff.
 
 ---

@@ -327,8 +327,23 @@ func (r *WorkflowRunReconciler) detectStuckRunnerPod(ctx context.Context, pod *c
 			log.FromContext(ctx).Error(err, "failed to list pod events for stuck-pod detection", "pod", pod.Name)
 			return "", ""
 		}
+		// The kubelet attempts the pod sandbox only after every volume has mounted, so a sandbox failure newer
+		// than a FailedMount (both on the kubelet's clock) means the mount stopped failing.
+		var sandboxFailedAt time.Time
 		for _, ev := range events.Items {
-			if ev.Reason == "FailedMount" && ev.LastTimestamp.Sub(ev.FirstTimestamp.Time) >= stuckPodGracePeriod {
+			if ev.Reason == "FailedCreatePodSandBox" && ev.LastTimestamp.After(sandboxFailedAt) {
+				sandboxFailedAt = ev.LastTimestamp.Time
+			}
+		}
+		for _, ev := range events.Items {
+			// The recency term covers a controller that looks late (e.g. after a restart): a failing mount
+			// is retried at least every stuckPodEventListInterval, so an older last occurrence means it
+			// stopped, or that the event recorder's spam filter (one update per 5 minutes once engaged) held
+			// the update back; a list every stuckPodEventListInterval still lands inside the window after
+			// the next update. The added grace period absorbs node clock skew and a slow mount attempt.
+			if ev.Reason == "FailedMount" && ev.LastTimestamp.Sub(ev.FirstTimestamp.Time) >= stuckPodGracePeriod &&
+				ev.LastTimestamp.After(sandboxFailedAt) &&
+				now.Sub(ev.LastTimestamp.Time) <= stuckPodEventListInterval+stuckPodGracePeriod {
 				msg := fmt.Sprintf(
 					"runner pod %q failed to mount a volume (%s); this usually means a Secret or ConfigMap referenced "+
 						"by the pod does not exist in this namespace (native Secret/ConfigMap volumes are always "+
