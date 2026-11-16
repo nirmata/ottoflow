@@ -20,9 +20,9 @@ Samples are organized into three directories by purpose:
 
 Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../steptemplates/) directory. Workflows that use `stepTemplateRef` (e.g. `stale-image-check`, `cost-optimization`, `steptemplate-example`, `top-pods-cpu-analysis`) need those templates applied too — in local mode, pass the parent directory: `--workflow-dir samples`.
 
-### `production/` (17)
+### `production/` (18)
 
-`cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`
+`cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`, `cve-vex-assessment`
 
 ### `features/` (67)
 
