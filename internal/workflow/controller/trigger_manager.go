@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,20 +24,25 @@ import (
 	celgo "github.com/google/cel-go/cel"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 	"github.com/nirmata/ottoflow/internal/logging"
+	"github.com/nirmata/ottoflow/internal/metrics"
 )
 
 // getObjectKind extracts the Kind from an object, handling cases where TypeMeta might not be set
@@ -154,6 +160,35 @@ type TriggerManager struct {
 	// The nested structure lets unregisterEventTrigger prune all entries for a trigger in O(1).
 	dedupMu    sync.Mutex
 	dedupState map[string]map[string]dedupEntry
+	// Workflow namespaces allowed to watch other or all namespaces.
+	eventTriggerAllowedNamespaces []string
+}
+
+// SetEventTriggerAllowedNamespaces sets the Workflow namespaces exempt from the event-trigger watch scope.
+func (tm *TriggerManager) SetEventTriggerAllowedNamespaces(ns []string) {
+	tm.eventTriggerAllowedNamespaces = ns
+}
+
+// EventResourceInScope reports whether an event trigger of a Workflow in workflowNS may watch r: always when
+// workflowNS is allowed, otherwise only in workflowNS and for a well-formed kind that c's REST mapper resolves as
+// namespaced (a nil c skips the mapper check). The kind is resolved only when that can change the answer.
+func EventResourceInScope(c client.Client, workflowNS string, r ottoflowv1alpha1.EventResource, allowed []string) bool {
+	if slices.Contains(allowed, workflowNS) {
+		return true
+	}
+	if r.Namespace == "" || r.Namespace != workflowNS {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(r.APIVersion)
+	if err != nil || len(validation.IsDNS1035Label(strings.ToLower(r.Kind))) > 0 || len(validation.IsDNS1035Label(gv.Version)) > 0 ||
+		(gv.Group != "" && len(validation.IsDNS1123Subdomain(gv.Group)) > 0) {
+		return false
+	}
+	if c == nil {
+		return true
+	}
+	m, err := c.RESTMapper().RESTMapping(gv.WithKind(r.Kind).GroupKind(), gv.Version)
+	return err == nil && m.Scope.Name() != meta.RESTScopeNameRoot
 }
 
 // NewTriggerManager creates a new trigger manager without dynamic client
@@ -215,6 +250,35 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 		triggerCELEnv:    celEnv,
 		dedupState:       make(map[string]map[string]dedupEntry),
 	}, nil
+}
+
+// errStatusUpdateAfterCreate marks a WorkflowRun (event or cron trigger) that was created but
+// whose initial status could not be written. The run exists, so the trigger was not dropped.
+var errStatusUpdateAfterCreate = errors.New("WorkflowRun created but status update failed")
+
+// dropReasonAPIError is the `reason` label of WorkflowTriggerEventsDroppedTotal: the create
+// path returned an error.
+const dropReasonAPIError = "api_error"
+
+// createRetryBudget stops retrying once this long has passed since the first Create attempt, so
+// a slow failure (a hung admission webhook, 10s per call) is not repeated on the serial watch
+// goroutine. It is checked between attempts only; it never cancels an in-flight Create.
+// ponytail: var, not const, so a test can shrink it.
+var createRetryBudget = 2 * time.Second
+
+// isTransientCreateErr reports whether a WorkflowRun create failure is worth retrying:
+// transport errors client-go never retries for a POST, plus apiserver 500 and ServerTimeout.
+// Errors that carry a retry delay were already retried by client-go and are excluded.
+func isTransientCreateErr(err error) bool {
+	var status apierrors.APIStatus
+	if errors.As(err, &status) {
+		if d := status.Status().Details; d != nil && d.RetryAfterSeconds > 0 {
+			return false
+		}
+		return apierrors.IsInternalError(err) || apierrors.IsServerTimeout(err)
+	}
+	return utilnet.IsConnectionRefused(err) ||
+		utilnet.IsHTTP2ConnectionLost(err) || utilnet.IsProbableEOF(err) || utilnet.IsTimeout(err)
 }
 
 // RegisterWorkflow registers triggers for a workflow
@@ -323,15 +387,24 @@ func (tm *TriggerManager) registerEventTrigger(ctx context.Context, key string, 
 	// Set up watchers for each resource type.
 	// Pass key (the event key) separately so watchEvents can use it as the dedup scope —
 	// dedup state is keyed by event key, not the resource-specific key.
+	var watchErr error
 	for i, resource := range eventSpec.Resources {
+		if !EventResourceInScope(tm.client, workflow.Namespace, resource, tm.eventTriggerAllowedNamespaces) {
+			logger.Info("event trigger resource not watched: another namespace, all namespaces, or a cluster-scoped or unresolvable kind; list the Workflow namespace in --event-trigger-allowed-source-namespaces to opt in",
+				logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "resource", resource)
+			continue
+		}
+		if watchErr != nil {
+			continue // keep classifying so a watch failure does not hide a refusal
+		}
 		resourceKey := fmt.Sprintf("%s-resource-%d", key, i)
 		if err := tm.watchResource(ctx, resourceKey, key, workflow, resource, eventSpec); err != nil {
 			logger.Error(err, "failed to watch resource", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "resource", resource)
-			return err
+			watchErr = err
 		}
 	}
 
-	return nil
+	return watchErr
 }
 
 // watchResource sets up a watch for a specific resource type.
@@ -383,6 +456,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 
 	// Resolve the plural resource name via the REST mapper (authoritative, handles CRDs correctly).
 	// Fall back to lowercase Kind + "s" only if the mapper is unavailable or returns an error.
+	// Outside the event-trigger allowlist, EventResourceInScope has already resolved this kind, so only allowlisted Workflow namespaces reach the fallback.
 	var gvr schema.GroupVersionResource
 	if mapping, err := tm.client.RESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version); err == nil {
 		gvr = mapping.Resource
@@ -430,7 +504,13 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 	}
 
 	wctx, cancel := context.WithCancel(ctx)
-	openWatch := func() (watch.Interface, error) {
+	// openWatch opens a watch resuming from rv ("" = a fresh open, which replays existing
+	// objects as ADDED). Bookmarks are always requested; a server that sends none leaves rv
+	// empty, so every re-open there is fresh, as before this change.
+	openWatch := func(rv string) (watch.Interface, error) {
+		opts := opts
+		opts.ResourceVersion = rv
+		opts.AllowWatchBookmarks = true
 		if tm.watcherFactory != nil {
 			return tm.watcherFactory.Watch(wctx, gvr, resource.Namespace, opts)
 		}
@@ -442,7 +522,7 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 		}
 		return tm.dynamicClient.Resource(gvr).Watch(wctx, opts)
 	}
-	watcher, err := openWatch()
+	watcher, err := openWatch("")
 	if err != nil {
 		cancel()
 		return fmt.Errorf("failed to create watcher: %w", err)
@@ -464,9 +544,15 @@ func (tm *TriggerManager) watchResource(ctx context.Context, key string, eventKe
 // watchEvents watches for events and creates WorkflowRuns.
 // eventKey is the bare event key used as the dedup scope — scoped to the trigger,
 // not to a single resource watcher, so unregisterEventTrigger can clean it up.
-func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func() (watch.Interface, error)) {
+func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, workflow *ottoflowv1alpha1.Workflow, eventSpec *ottoflowv1alpha1.EventTrigger, watcher watch.Interface, stopChan <-chan struct{}, openWatch func(rv string) (watch.Interface, error)) {
 	logger := log.FromContext(ctx)
 	defer func() { watcher.Stop() }()
+
+	// rv is the resume point for a re-open, so existing objects are not replayed as ADDED.
+	// trusted is false on a fresh (RV-less) stream until its first BOOKMARK: the initial ADDED
+	// burst carries each object's own last-write RV in key order, not a resume point.
+	var rv string
+	trusted := false
 
 	for {
 		select {
@@ -476,12 +562,34 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 			return
 		case event, ok := <-watcher.ResultChan():
 			if !ok {
-				w, reopened := tm.reopenWatch(ctx, stopChan, openWatch, workflow)
+				if openWatch == nil {
+					return // only tests pass nil
+				}
+				w, reopened := tm.reopenWatch(ctx, stopChan, func() (watch.Interface, error) {
+					w, err := openWatch(rv)
+					// A 410 from the Watch call itself: drop rv so the retry (and trusted below) is fresh.
+					if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+						rv = ""
+					}
+					return w, err
+				}, workflow)
 				if !reopened {
 					return
 				}
 				watcher.Stop()
 				watcher = w
+				trusted = rv != ""
+				continue
+			}
+
+			// ERROR events carry a *metav1.Status. A 410 means rv is too old: drop it so the
+			// re-open after the stream closes is a fresh one. Other errors keep rv.
+			if event.Type == watch.Error {
+				err := apierrors.FromObject(event.Object)
+				logger.Info("watch ERROR event — skipping", "err", err)
+				if apierrors.IsResourceExpired(err) || apierrors.IsGone(err) {
+					rv = ""
+				}
 				continue
 			}
 
@@ -492,10 +600,23 @@ func (tm *TriggerManager) watchEvents(ctx context.Context, eventKey string, work
 				continue
 			}
 
+			if trusted || event.Type == watch.Bookmark {
+				rv = unstruct.GetResourceVersion()
+			}
+			if event.Type == watch.Bookmark {
+				trusted = true
+				continue
+			}
+
 			// Create WorkflowRun from event — use eventKey (not the resource-specific key)
 			// so dedup state is scoped to the trigger and cleaned up by unregisterEventTrigger.
 			if err := tm.CreateWorkflowRunFromEvent(ctx, eventKey, workflow, eventSpec, unstruct, event.Type); err != nil {
-				logger.Error(err, "failed to create WorkflowRun from event", logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "event", event.Type, "object", client.ObjectKeyFromObject(unstruct))
+				msg := "WorkflowRun created but its status update failed"
+				if !errors.Is(err, errStatusUpdateAfterCreate) {
+					msg = "failed to create WorkflowRun from event"
+					metrics.WorkflowTriggerEventsDroppedTotal.WithLabelValues(workflow.Name, workflow.Namespace, dropReasonAPIError).Inc()
+				}
+				logger.Error(err, msg, logging.KeyWorkflow, workflow.Name, logging.KeyNamespace, workflow.Namespace, "event", event.Type, "object", client.ObjectKeyFromObject(unstruct))
 			}
 		}
 	}
@@ -730,8 +851,32 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 
 	statusToSet := workflowRun.Status.DeepCopy()
 
-	if err := tm.client.Create(ctx, workflowRun); err != nil {
-		return err
+	// Retry only the Create, with the run name fixed so a Create that landed but lost its
+	// response is found as AlreadyExists on the next attempt and treated as success.
+	// createErr is kept outside OnError: for a context error (Canceled or DeadlineExceeded)
+	// OnError returns the last retriable error instead, or nil if there was none. Using its
+	// return value would record dedup and write status for a run that does not exist.
+	attempt := 0
+	start := time.Now()
+	retryWindowOpen := func() bool { return ctx.Err() == nil && time.Since(start) < createRetryBudget }
+	var createErr error
+	_ = retry.OnError(retry.DefaultBackoff, func(err error) bool {
+		return retryWindowOpen() && isTransientCreateErr(err)
+	}, func() error {
+		attempt++
+		// The predicate ran before the backoff sleep; recheck now so no Create starts after the
+		// budget or the caller's context ran out, keeping the previous attempt's error.
+		if attempt > 1 && !retryWindowOpen() {
+			return createErr
+		}
+		createErr = tm.client.Create(ctx, workflowRun.DeepCopy())
+		if attempt > 1 && apierrors.IsAlreadyExists(createErr) {
+			createErr = nil
+		}
+		return createErr
+	})
+	if createErr != nil {
+		return createErr
 	}
 
 	// Record dedup state only after a successful create so a failed create doesn't block the next event.
@@ -742,26 +887,36 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	tm.dedupState[triggerKey][objKey] = dedupEntry{key: currentDedupKey, createdAt: time.Now()}
 	tm.dedupMu.Unlock()
 
-	// The cached client may not see the object immediately after Create.
-	// Retry the Get+Status.Update with a short backoff.
-	wrKey := client.ObjectKeyFromObject(workflowRun)
+	return setStatusAfterCreate(ctx, tm.client, workflowRun, statusToSet)
+}
+
+// setStatusAfterCreate writes the trigger info of a just-created WorkflowRun, and its initial
+// phase if it has none. The reconciler may already have started the run (a retried Create that
+// found it as AlreadyExists, or a fast first reconcile), so the rest of the fetched status is kept.
+// The cached client may not see the object immediately after Create, so it retries
+// Get+Status.Update with a short backoff. A final failure wraps errStatusUpdateAfterCreate.
+func setStatusAfterCreate(ctx context.Context, c client.Client, workflowRun *ottoflowv1alpha1.WorkflowRun, statusToSet *ottoflowv1alpha1.WorkflowRunStatus) error {
+	key := client.ObjectKeyFromObject(workflowRun)
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {
 			time.Sleep(200 * time.Millisecond)
 		}
-		if err := tm.client.Get(ctx, wrKey, workflowRun); err != nil {
+		if err := c.Get(ctx, key, workflowRun); err != nil {
 			lastErr = err
 			continue
 		}
-		workflowRun.Status = *statusToSet
-		if err := tm.client.Status().Update(ctx, workflowRun); err != nil {
+		workflowRun.Status.Trigger = statusToSet.Trigger
+		if workflowRun.Status.Phase == "" {
+			workflowRun.Status.Phase = statusToSet.Phase
+		}
+		if err := c.Status().Update(ctx, workflowRun); err != nil {
 			lastErr = err
 			continue
 		}
 		return nil
 	}
-	return fmt.Errorf("failed to set WorkflowRun status after create: %w", lastErr)
+	return fmt.Errorf("%w: %s: %w", errStatusUpdateAfterCreate, key, lastErr)
 }
 
 // newTriggerCELEnv creates a minimal CEL environment for trigger-level expressions.
@@ -948,7 +1103,8 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 		tm.dedupMu.Unlock()
 	}
 
-	// Status update retry loop — mirrors CreateWorkflowRunFromEvent.
+	// Like setStatusAfterCreate, but stops on NotFound, ignores a final failure and replaces the
+	// whole status.
 	wrKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Name}
 	for attempt := 0; attempt < 5; attempt++ {
 		if attempt > 0 {

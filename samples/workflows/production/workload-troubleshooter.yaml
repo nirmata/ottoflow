@@ -82,6 +82,6 @@ spec:
   # LLAMACPP_HOST environment variable, NOT from spec.config -- the underlying client does
   # not read spec.config.endpoint. For ollama:
   #   LLAMACPP_HOST=http://127.0.0.1:11434/ ottoflow run <workflow> --model <your-model>
-  # Or switch modelProvider to openai / anthropic / azure-openai / google with credentials.
+  # Or switch modelProvider to openai / anthropic / google with credentials.
   outputExtraction:
     type: text

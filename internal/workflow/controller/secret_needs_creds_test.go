@@ -8,14 +8,17 @@ that can be found in the LICENSE.md file.
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -465,7 +468,7 @@ func TestWorkflowNeedsAgentExecutor_OpenAIAgentStillTrue(t *testing.T) {
 }
 
 // --- agentRefNeeds must read the Agent via the caller-supplied
-// agentReader, not the shared/cached client. The Agent exists ONLY behind the reader passed as
+// agentReader, not the walker's client. The Agent exists ONLY behind the reader passed as
 // agentReader, so if agentRefNeeds read through the cached client instead, this would wrongly
 // resolve as Agent-NotFound -> (false, nil).
 
@@ -693,5 +696,101 @@ func TestWorkflowNeedsNirmataLLMCredentials_AgentRefExplicitNamespace_True(t *te
 	}
 	if !got {
 		t.Error("an agentRef.Namespace override must resolve the Agent in that namespace, not effectiveNamespace")
+	}
+}
+
+func TestWalkers_GetErrorClassification(t *testing.T) {
+	gr := schema.GroupResource{Group: "ottoflow.nirmata.io", Resource: "things"}
+	errs := []struct {
+		name           string
+		err            error
+		wantTransient  bool
+		refName, refNS string
+	}{
+		{"NotFound stays terminal", apierrors.NewNotFound(gr, "x"), false, "", ""},
+		{"Forbidden stays terminal", apierrors.NewForbidden(gr, "x", errors.New("denied")), false, "", ""},
+		{"API server error requeues", apierrors.NewInternalError(errors.New("etcd unavailable")), true, "", ""},
+		{"error without an API status requeues", errors.New("connection reset by peer"), true, "", ""},
+		{"invalid name fails the run", errors.New("invalid resource name"), false, "bad/name", ""},
+		{"invalid namespace fails the run", errors.New("invalid namespace"), false, "", "bad/ns"},
+	}
+	run := testWorkflowRun("wf1")
+	sites := []struct {
+		name    string
+		step    func(name, ns string) ottoflowv1alpha1.Step
+		failing client.Object
+		walkers []string
+	}{
+		{"StepTemplate", func(name, ns string) ottoflowv1alpha1.Step {
+			return ottoflowv1alpha1.Step{Name: "s", StepTemplateRef: &ottoflowv1alpha1.StepTemplateRef{Name: cmp.Or(name, "tpl"), Namespace: ns}}
+		}, &ottoflowv1alpha1.StepTemplate{}, []string{"agentExecutor", "llmCreds", "secretRefs"}},
+		{"sub-Workflow", func(name, ns string) ottoflowv1alpha1.Step {
+			return ottoflowv1alpha1.Step{Name: "s", WorkflowRef: &ottoflowv1alpha1.StepWorkflowRef{Name: cmp.Or(name, "sub"), Namespace: ns}}
+		}, &ottoflowv1alpha1.Workflow{}, []string{"agentExecutor", "llmCreds", "secretRefs"}},
+		{"Agent", func(name, ns string) ottoflowv1alpha1.Step {
+			return ottoflowv1alpha1.Step{Name: "s", AgentRef: &ottoflowv1alpha1.StepAgentRef{Name: cmp.Or(name, "agent1"), Namespace: ns}}
+		}, &ottoflowv1alpha1.Agent{}, []string{"llmCreds", "secretRefs"}},
+		{"MCPServer", func(name, _ string) ottoflowv1alpha1.Step {
+			return ottoflowv1alpha1.Step{Name: "s", MCPToolCall: &ottoflowv1alpha1.StepMCPToolCall{Server: cmp.Or(name, "mcp1")}}
+		}, &ottoflowv1alpha1.MCPServer{}, []string{"secretRefs"}},
+	}
+	walk := map[string]func(client.Client, *ottoflowv1alpha1.Workflow) error{
+		"agentExecutor": func(c client.Client, wf *ottoflowv1alpha1.Workflow) error {
+			_, err := workflowNeedsAgentExecutor(context.Background(), c, wf, "ns1")
+			return err
+		},
+		"llmCreds": func(c client.Client, wf *ottoflowv1alpha1.Workflow) error {
+			_, err := workflowNeedsNirmataLLMCredentials(context.Background(), c, c, wf, "ns1")
+			return err
+		},
+		"secretRefs": func(c client.Client, wf *ottoflowv1alpha1.Workflow) error {
+			_, err := collectSecretRefs(context.Background(), c, wf, run)
+			return err
+		},
+	}
+	base := fake.NewClientBuilder().WithScheme(newSecretRefsTestScheme(t)).Build()
+	for _, site := range sites {
+		for _, tc := range errs {
+			if tc.refNS != "" && site.name == "MCPServer" {
+				continue // an mcpToolCall names no namespace
+			}
+			wf := &ottoflowv1alpha1.Workflow{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "wf1"},
+				Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{site.step(tc.refName, tc.refNS)}},
+			}
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if reflect.TypeOf(obj) == reflect.TypeOf(site.failing) {
+						return tc.err
+					}
+					return cl.Get(ctx, key, obj, opts...)
+				},
+			})
+			for _, w := range site.walkers {
+				if w == "llmCreds" && site.name == "Agent" && apierrors.IsNotFound(tc.err) {
+					continue
+				}
+				t.Run(site.name+"/"+w+"/"+tc.name, func(t *testing.T) {
+					err := walk[w](c, wf)
+					if err == nil {
+						t.Fatal("expected the Get error to abort the walk")
+					}
+					if got := isTransient(err); got != tc.wantTransient {
+						t.Errorf("transient = %v, want %v (err: %v)", got, tc.wantTransient, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestWalkGetError_InvalidNameOrNamespaceFailsTheRun(t *testing.T) {
+	for _, key := range []client.ObjectKey{{Name: ""}, {Name: "other-ns/server"}, {Name: ".."}, {Namespace: "team/a", Name: "server"}} {
+		if isTransient(walkGetError(key.Namespace, key.Name, errors.New("rejected before sending"))) {
+			t.Errorf("%v can never be fetched, so its error must fail the run, not requeue it", key)
+		}
+	}
+	if !isTransient(walkGetError("ns1", "server", errors.New("connection reset by peer"))) {
+		t.Error("a transient error on a valid name and namespace must requeue")
 	}
 }

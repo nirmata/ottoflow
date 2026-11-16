@@ -1,6 +1,7 @@
 {
   "$schema": "http://json-schema.org/schema#",
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "global": {
       "type": "object",
@@ -28,6 +29,7 @@
       "properties": {
         "image": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "registry": {
               "type": "string",
@@ -126,27 +128,47 @@
         }
       }
     },
-    "crds": {
+    "webhook": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "install": {
-          "type": "boolean",
-          "description": "Install CRDs"
+        "enabled": {
+          "type": "boolean"
         },
-        "mode": {
+        "caBundle": {
+          "type": "string"
+        },
+        "failurePolicy": {
           "type": "string",
-          "enum": ["install", "skip"],
-          "description": "CRD installation mode"
+          "enum": ["Fail", "Ignore"]
+        },
+        "timeoutSeconds": {
+          "type": "integer"
+        },
+        "annotations": {
+          "type": "object"
         }
       }
     },
+    "agentExecutor": {
+      "type": "object"
+    },
+    "workflowRunner": {
+      "type": "object"
+    },
+    "serveA2A": {
+      "type": "object"
+    },
+    "commonLabels": {
+      "type": "object"
+    },
+    "commonAnnotations": {
+      "type": "object"
+    },
     "namespace": {
       "type": "object",
+      "additionalProperties": false,
       "properties": {
-        "create": {
-          "type": "boolean",
-          "description": "Create namespace"
-        },
         "name": {
           "type": "string",
           "description": "Namespace name"

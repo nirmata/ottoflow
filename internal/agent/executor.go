@@ -66,7 +66,7 @@ func (e *nirmataUnavailableExecutor) ExecuteAgent(_ context.Context, agentCRD *o
 	}
 	return "", AgentTokenUsage{}, fmt.Errorf(
 		"modelProvider %q is not available in this build: the Nirmata LLM provider is part of the OttoFlow enterprise plugin; "+
-			"set an agent modelProvider of openai, anthropic, azure-openai, google/gemini, or local instead",
+			"set an agent modelProvider of openai, anthropic, google/gemini, or local instead",
 		provider,
 	)
 }

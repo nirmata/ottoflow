@@ -187,7 +187,7 @@ var _ = Describe("Trigger Manager", func() {
 			Expect(wr.Spec.InputValues).To(HaveKeyWithValue("slackWebhookUrl", "https://hooks.slack.com/test"))
 		})
 
-		It("should inject inputValuesFrom Secret in explicit namespace", func() {
+		It("should not resolve an inputValuesFrom Secret from another namespace", func() {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "secret-ns"}}
 			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
 			defer func() { _ = k8sClient.Delete(ctx, ns) }()
@@ -238,10 +238,14 @@ var _ = Describe("Trigger Manager", func() {
 					"ottoflow.nirmata.io/trigger":  "cron",
 				})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(workflowRunList.Items).NotTo(BeEmpty())
+			Expect(workflowRunList.Items).To(BeEmpty())
 
-			wr := workflowRunList.Items[len(workflowRunList.Items)-1]
-			Expect(wr.Spec.InputValues).To(HaveKeyWithValue("apiToken", "my-token-value"))
+			// Control: a cron fire for the same Workflow without the cross-namespace ref does create a run.
+			Expect(scheduler.AddSchedule("test-input-cross-ns-control", wf, &ottoflowv1alpha1.CronTrigger{Schedule: "*/1 * * * *"})).To(Succeed())
+			scheduler.handleCronFire("test-input-cross-ns-control")
+			Expect(k8sClient.List(ctx, workflowRunList, client.InNamespace("default"),
+				client.MatchingLabels{"ottoflow.nirmata.io/workflow": wf.Name, "ottoflow.nirmata.io/trigger": "cron"})).To(Succeed())
+			Expect(workflowRunList.Items).NotTo(BeEmpty())
 		})
 
 		It("should deep-copy Workflow execution spec into WorkflowRun", func() {

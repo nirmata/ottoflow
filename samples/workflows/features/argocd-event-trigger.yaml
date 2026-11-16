@@ -13,6 +13,11 @@
 #   You might expect to use fieldSelector: "status.sync.status=Synced" to filter at the
 #   Kubernetes watch level. This does NOT work for CRD status fields — the API server only
 #   indexes metadata.name and metadata.namespace for custom resources. Use celFilter instead.
+#
+# Watch scope:
+#   This Workflow is in `ottoflow` and watches `argocd`, so `ottoflow` must be listed in the
+#   Helm value controller.eventTriggerAllowedSourceNamespaces (flag
+#   --event-trigger-allowed-source-namespaces); otherwise admission rejects it.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:

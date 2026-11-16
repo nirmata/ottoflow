@@ -22,7 +22,7 @@
 | `events` | [EventConfig](#eventconfig) | No | Kubernetes event emission (enabled, level). |
 | `celCostLimit` | integer | No | Max CEL evaluation cost budget per expression (default: 2,097,152 units). |
 | `executionLimits` | object | No | `maxConcurrentSteps` (cap on ready-steps batch) and `outboundRequestsPerMinute` (token bucket on MCP/agent/A2A calls). |
-| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../tasks/installation.md#upgrading-default-run-history-cleanup)), `maxConcurrentRuns` (skip trigger-created runs when this many are active; default 10, 0 = no limit). |
+| `run` | object | No | Run policy: `retentionMinutes` (delete completed runs older than this; default 10080, i.e. 7 days; 0 = disable age-based deletion), `maxAllowed` (max completed runs kept; default 50; 0 = no limit; keeping all history requires both fields set to 0; see [Upgrading: default run-history cleanup](../../upgrades/default-run-history-cleanup.md)), `maxConcurrentRuns` (skip trigger-created runs when this many are active; default 10, 0 = no limit). |
 | `execution` | object | No | Default runner Job settings copied to trigger-created WorkflowRuns (see [WorkflowRun](workflowrun.md#workflowrunexecutionspec)). |
 
 ### Input
@@ -84,8 +84,8 @@ Each step has a unique **name** (camelCase) and exactly one execution type (expr
 | `expressions` | [][Expression](#expression) | No | CEL expressions for **expression steps only**. A step takes exactly one action: when a step has an action field (resourceQuery, agentRef, etc.), its `expressions` are **not** evaluated. |
 | `outputs` | [][Output](#output) | No | Key-value pairs written to shared context (readable as `variables.<name>` by later steps). Evaluated for all step types, including resourceQuery steps (in addition to `resourceQuery.outputs`). |
 | `matchConditions` | [][MatchCondition](#matchcondition) | No | Step runs only if ALL conditions evaluate to true. |
-| `retry` | [RetryPolicy](#retrypolicy) | No | Retry configuration. |
-| `timeout` | string | No | Max duration (e.g. `30s`, `5m`). |
+| `retry` | [RetryPolicy](#retrypolicy) | No | Accepted but not applied. |
+| `timeout` | string | No | Accepted but not applied. Applied timeouts are set separately, such as `waitForCallback.timeout` and `externalAgentRef.timeout`. |
 | `failurePolicy` | string | No | `Fail` (default) or `Continue`. Applies to the step it is declared on, not to following steps. |
 
 ### Expression
@@ -103,6 +103,8 @@ Each step has a unique **name** (camelCase) and exactly one execution type (expr
 | `expression` | string | Yes | CEL expression that must evaluate to true. |
 
 ### RetryPolicy
+
+The step-level `retry` field is accepted but not applied.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -124,7 +126,7 @@ No additional fields. Use `expressions` and `outputs` to compute and publish val
 |-------|------|----------|-------------|
 | `agentRef.name` | string | Yes | Name of the Agent CRD. |
 | `agentRef.namespace` | string | No | Namespace of the Agent (default: workflow namespace). |
-| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; can contain CEL. |
+| `agentRef.additionalPrompts` | []string | No | Prompts appended to agent system prompt; each entry is evaluated as one CEL expression (quote plain text as a CEL string). |
 
 #### mcpToolCall
 
@@ -158,6 +160,8 @@ The sub-workflow runs inline in the same process (no separate Job or WorkflowRun
 | `forEach.stepTemplateRef` | StepTemplateRef | No | StepTemplate to instantiate for each item. |
 
 Results: `steps.<stepName>.results`.
+
+On `forEach.step`, `matchConditions`, `failurePolicy`, `retry` and `timeout` have no effect; item failures are governed by `forEach.itemFailurePolicy`.
 
 #### resourceQuery
 
@@ -264,7 +268,7 @@ Pauses workflow execution at this step and waits for an external callback before
 |-------|------|----------|-------------|
 | `waitForCallback.timeout` | string | **Yes** | Maximum wait duration (e.g. `"24h"`, `"30m"`). Behavior at expiry depends on `failurePolicy` (below): the step fails, or resumes with empty outputs. |
 | `waitForCallback.callbackRef` | string | No | Human-readable label for the callback (used in logs and events). |
-| `waitForCallback.message` | string | No | Message shown in logs when the step pauses; can include instructions for the callback caller. |
+| `waitForCallback.message` | string | No | Message shown in logs when the step pauses; can include instructions for the callback caller. It is also the step's status message. |
 | `waitForCallback.outputSchema` | JSON Schema object | No | JSON Schema for callback payload validation. Required fields are enforced; missing required fields return 400. If absent, all payloads are accepted. |
 | `waitForCallback.failurePolicy` | `Fail` \| `Continue` | No | Behavior on timeout. `Fail` (default): workflow fails. `Continue`: on timeout the gate resumes with empty outputs and the workflow proceeds to downstream steps. |
 
@@ -278,9 +282,10 @@ Content-Type: application/json
 
 Responses:
 - `200 OK` — callback accepted; WorkflowRun will resume on next reconcile.
-- `400 Bad Request` — invalid JSON or schema validation failure.
+- `400 Bad Request` — invalid JSON, schema validation failure, or a malformed path or token.
 - `401 Unauthorized` — invalid token or expired.
 - `404 Not Found` — WorkflowRun not found or no pending callback.
+- `410 Gone` — the WorkflowRun is already in a terminal phase.
 
 **Status while waiting:**
 ```yaml
@@ -296,10 +301,7 @@ status:
     expiresAt: 1751285400
 ```
 
-> **Token delivery:** The plaintext callback token is available to subsequent steps as
-> `steps.awaitApproval.outputs.callbackToken` (in-memory only; never persisted to K8s status).
-> Use `${{ steps.awaitApproval.outputs.callbackToken }}` in a notification step to build the
-> callback URL for the external caller.
+> **Token delivery:** The plaintext token is issued once, when the step pauses. It is never written to WorkflowRun status, and a later step cannot read it (the runner exits at the pause, so `steps.*`/`variables.*` do not carry it). Deliver the callback URL to the external caller out of band.
 
 **Accessing callback outputs** in downstream steps:
 ```
@@ -364,14 +366,14 @@ When defined, triggers automatically create WorkflowRun instances. Multiple trig
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | string | Secret name. |
-| `namespace` | string | Secret namespace; if empty, the workflow's namespace is used. |
+| `namespace` | string | Secret namespace. Must be empty or the Workflow's namespace. |
 | `key` | string | Secret data key. |
 
 ### Event trigger
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. |
+| `event.resources` | []{apiVersion, kind, namespace} | Resource types to watch. A namespace other than the Workflow's, an empty one, a cluster-scoped kind or an unresolvable kind needs the Workflow's namespace allowlisted; see [Upgrading: event-trigger watch scope](../../upgrades/event-trigger-watch-scope.md). |
 | `event.operations` | []string | `CREATE`, `UPDATE`, `DELETE` (empty = all). |
 | `event.labelSelector` | object | Match labels (Kubernetes watch selector). |
 | `event.fieldSelector` | string | Match fields (Kubernetes watch selector; only API-server-indexed fields, e.g. `metadata.name`). |

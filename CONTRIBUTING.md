@@ -45,6 +45,9 @@ request and must pass before merging.
 
 ## Development workflow
 
+A breaking change gets its own upgrade note: one file in
+[`docs/user/upgrades/`](docs/user/upgrades/).
+
 See [DEVELOPER.md](DEVELOPER.md) for build/test commands, project structure,
 and the full PR checklist.
 

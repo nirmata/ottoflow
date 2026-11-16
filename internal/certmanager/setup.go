@@ -231,9 +231,10 @@ func deleteSecretWithUndecodableKey(ctx context.Context, secretClient corev1clie
 //
 // Verification is against EVERY stored CA certificate, not only the newest: on rotation the
 // renewer stores [oldCA, newCA] (reusing the CA key) and the full bundle is what clients trust,
-// so a leaf signed by the old cert still verifies everywhere and must not be churned. Signature
-// check only (CheckSignatureFrom), no expiry check — expiry-driven rotation stays the renewer's
-// job, and duplicating it here would regenerate the leaf on every pass inside the renewal window.
+// so a leaf signed by the old cert still verifies everywhere and must not be churned (pinned by
+// TestCARotation_LeafStaysVerifiable). Signature check only (CheckSignatureFrom), no expiry
+// check — expiry-driven rotation stays the renewer's job, and duplicating it here would
+// regenerate the leaf on every pass inside the renewal window.
 //
 // Conservative on anything unreadable: a missing/empty leaf is the renewer's create path, and
 // with no decodable CA certificate there is nothing trustworthy to verify against (and nothing

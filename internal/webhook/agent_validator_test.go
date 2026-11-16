@@ -27,10 +27,29 @@ func agentWithConfig(config map[string]string) *ottoflowv1alpha1.Agent {
 func TestAgentValidatorConfigWarnings(t *testing.T) {
 	tests := []struct {
 		name         string
+		provider     string
 		config       map[string]string
 		wantCount    int
 		wantContains []string
 	}{
+		{
+			name:         "azure-openai is reported as unsupported with no config",
+			provider:     "azure-openai",
+			wantCount:    1,
+			wantContains: []string{"azure-openai is not supported"},
+		},
+		{
+			name:         "azure-openai is reported as unsupported with config",
+			provider:     "azure-openai",
+			config:       map[string]string{"skipVerifySSL": "false"},
+			wantCount:    1,
+			wantContains: []string{"azure-openai is not supported"},
+		},
+		{
+			name:      "openai produces no warnings",
+			provider:  "openai",
+			wantCount: 0,
+		},
 		{
 			name:      "no config produces no warnings",
 			config:    nil,
@@ -51,7 +70,7 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			name:         "endpoint is reported as allowlist-gated",
 			config:       map[string]string{"endpoint": "https://llm.example.com"},
 			wantCount:    1,
-			wantContains: []string{"endpoint", "AGENT_LLM_ENDPOINT_ALLOWLIST", "origin-only", "FAIL"},
+			wantContains: []string{"endpoint", "AGENT_LLM_ENDPOINT_ALLOWLIST", "origin-only", "FAIL", "google, gemini"},
 		},
 		{
 			// The CRD doc-comment advertises apiKey/baseURL, but no executor in this build
@@ -78,7 +97,9 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 	v := &AgentValidator{}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			warnings, err := v.ValidateCreate(context.Background(), agentWithConfig(tc.config))
+			a := agentWithConfig(tc.config)
+			a.Spec.ModelProvider = tc.provider
+			warnings, err := v.ValidateCreate(context.Background(), a)
 			if err != nil {
 				t.Fatalf("ValidateCreate returned an error, want warnings only: %v", err)
 			}

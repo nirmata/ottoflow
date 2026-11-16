@@ -138,6 +138,14 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 	// verification. Both checks run before any client exists.
 	var opts []gollm.Option
 	if endpoint := agentCRD.Spec.Config["endpoint"]; endpoint != "" {
+		// gollm's gemini client never reads ClientOptions.URL.
+		if provider == providerGoogle || provider == providerGemini {
+			return nil, fmt.Errorf("agent endpoint rejected: spec.config.endpoint (%q) is not permitted for "+
+				"provider %s: %s", endpoint, provider,
+				fmt.Sprintf("spec.config.endpoint and %s have no effect for this provider — set "+
+					"GOOGLE_GEMINI_BASE_URL in the agent-executor process environment instead (Helm: "+
+					"agentExecutor.env)", AgentLLMEndpointAllowlistEnv))
+		}
 		parsed, err := allowedLLMEndpoint(endpoint)
 		if err != nil {
 			return nil, fmt.Errorf("agent endpoint rejected: spec.config.endpoint (%q) is not permitted for "+

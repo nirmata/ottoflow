@@ -40,7 +40,7 @@ func buildExecTestScheme() *k8sruntime.Scheme {
 }
 
 // newExecHandler creates an ExecHandler backed by a fake k8s client and mock executor.
-func newExecHandler(agentCRD *ottoflowv1alpha1.Agent, mock *agent.MockAgentExecutor) *ExecHandler {
+func newExecHandler(agentCRD *ottoflowv1alpha1.Agent, mock agent.AgentExecutor) *ExecHandler {
 	k8sClient := fake.NewClientBuilder().WithScheme(buildExecTestScheme()).WithObjects(agentCRD).Build()
 	oe := NewOttoFlowAgentExecutorWithAgentExecutor(k8sClient, mock)
 	return NewExecHandler(oe)
@@ -137,6 +137,17 @@ var _ = Describe("ExecHandler", func() {
 
 			Expect(rr.Code).To(Equal(http.StatusOK))
 		})
+
+		It("never installs a key outside LLMEnvAllowlist into the override map", func() {
+			GinkgoT().Setenv("NIRMATA_LLM_ADDRESS", "")
+			rec := &llmEnvRecorder{}
+			h := newExecHandler(agentCRD, rec)
+			rr := doExecPOST(h, fmt.Sprintf("/%s/%s", ns, agentName), ExecRequest{Prompt: "x"},
+				map[string]string{"NIRMATA_LLM_TOKEN": "tok", "NIRMATA_LLM_ADDRESS": "https://unlisted.example"})
+			Expect(rr.Code).To(Equal(http.StatusOK))
+			Expect(rec.seenListed).To(Equal("tok"))
+			Expect(rec.seenUnlisted).To(BeEmpty())
+		})
 	})
 
 	Describe("error handling", func() {
@@ -210,6 +221,15 @@ var _ = Describe("ExecHandler", func() {
 	})
 })
 
+// llmEnvRecorder records what the agent sees through GetLLMEnv for one listed and one unlisted key.
+type llmEnvRecorder struct{ seenUnlisted, seenListed string }
+
+func (r *llmEnvRecorder) ExecuteAgent(ctx context.Context, _ *ottoflowv1alpha1.Agent, _ string, _ map[string]interface{}, _ string) (string, agent.AgentTokenUsage, error) {
+	r.seenUnlisted = agent.GetLLMEnv(ctx, "NIRMATA_LLM_ADDRESS")
+	r.seenListed = agent.GetLLMEnv(ctx, "NIRMATA_LLM_TOKEN")
+	return "ok", agent.AgentTokenUsage{}, nil
+}
+
 var _ = Describe("ParseLLMEnvHeader", func() {
 	It("returns nil for empty header", func() {
 		Expect(ParseLLMEnvHeader("")).To(BeNil())
@@ -223,10 +243,10 @@ var _ = Describe("ParseLLMEnvHeader", func() {
 		Expect(ParseLLMEnvHeader(base64.StdEncoding.EncodeToString([]byte("{bad")))).To(BeNil())
 	})
 
-	It("decodes a valid header", func() {
-		data, _ := json.Marshal(map[string]string{"KEY": "val"})
+	It("decodes a valid header, dropping keys not in LLMEnvAllowlist", func() {
+		data, _ := json.Marshal(map[string]string{"NIRMATA_LLM_TOKEN": "tok", "NIRMATA_LLM_ADDRESS": "https://unlisted.example"})
 		result := ParseLLMEnvHeader(base64.StdEncoding.EncodeToString(data))
-		Expect(result).To(HaveKeyWithValue("KEY", "val"))
+		Expect(result).To(Equal(map[string]string{"NIRMATA_LLM_TOKEN": "tok"}))
 	})
 })
 

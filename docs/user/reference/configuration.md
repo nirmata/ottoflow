@@ -103,6 +103,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-cluster-role` | `WORKFLOW_RUNNER_CLUSTER_ROLE` | required (controller refuses to start if unset); the Helm chart sets `<fullname>-runner-role` (narrowed, runner-only role) | ClusterRole name for runner Job RBAC |
 | `--agent-executor-caller-cluster-role` | `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` | (empty) | ClusterRole for agent-executor caller RBAC; empty disables |
 | `--workflow-runner-agent-executor-ca-secret` | | (empty) | Name of the agent-executor CA Secret in `--agent-executor-namespace` (internal TLS). Its certificate is published as a ConfigMap of the same name in each namespace that runs a workflow with an agent step and mounted into those runner Jobs; empty disables the CA mount |
+| `--secret-ref-allowed-namespaces` | `SECRET_REF_ALLOWED_NAMESPACES` | (empty) | Comma-separated namespaces, besides the WorkflowRun's own, that an `agentRef` step's MCP tool credential Secret may live in. A kubeconfig, an `externalAgentRef` CA or auth Secret and a directly-called MCPServer's auth and env Secrets must be in the run's namespace whatever this says |
 | `--secret-source-namespace` | | (empty) | Namespace to copy runner Secret-backed volumes from when missing |
 | `--workflow-runner-image-pull-secrets` | `WORKFLOW_RUNNER_IMAGE_PULL_SECRETS` | (empty) | Comma-separated Secret names for runner pod `imagePullSecrets` |
 | `--workflow-runner-image-pull-policy` | `WORKFLOW_RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | Runner container `imagePullPolicy` |
@@ -110,6 +111,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-ttl-seconds-after-finished` | | `0` (= 3600) | Seconds before finished runner Jobs are deleted |
 | `--workflow-runner-llm-credentials-secret` | `WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET` | (empty) | Secret for LLM credential injection into runner Jobs; empty disables |
 | `--webhook-trigger-addr` | | (empty) | Address for the webhook-trigger HTTP server; empty disables |
+| `--event-trigger-allowed-source-namespaces` | `EVENT_TRIGGER_ALLOWED_SOURCE_NAMESPACES` | (empty) | Comma-separated Workflow namespaces whose event triggers may watch another namespace, all namespaces, a cluster-scoped kind, or a kind the API server cannot resolve. Empty limits every event trigger to its Workflow's own namespace (Helm `controller.eventTriggerAllowedSourceNamespaces`). Listing a namespace lets every Workflow in it watch any resource the controller can watch, in any namespace. List only namespaces whose Workflow authors you would trust with that read access |
 
 Two more env vars are read directly by the controller (not exposed as flags):
 `WEBHOOK_SERVICE_NAME` (default `ottoflow-webhook`) and `WEBHOOK_CONFIG_NAME`
@@ -158,7 +160,7 @@ The agent executor is the HTTPS service that runs agent steps on behalf of the w
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--tls-port` | `8443` | TLS server port |
-| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `configmaps/agent-executor-caller` in this namespace) |
+| `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in this namespace) |
 | `-v` | `0` | klog verbosity level (e.g. `-v=2` for troubleshooting, `-v=4` for deep debugging). See [Logging](logging.md). |
 
 Nirmata credentials for LLM are used by the **workflow runner** when it executes agent steps (set via env vars in the runner pod), not by the agent-executor binary itself.

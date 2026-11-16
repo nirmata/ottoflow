@@ -12,33 +12,67 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
+	workflowcontroller "github.com/nirmata/ottoflow/internal/workflow/controller"
 	"github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
 // WorkflowValidator validates Workflow resources at admission time.
 type WorkflowValidator struct {
 	Client client.Client
+	// Workflow namespaces allowed to watch other or all namespaces.
+	EventTriggerAllowedNamespaces []string
 }
 
 // ValidateCreate implements admission.Validator.
 func (v *WorkflowValidator) ValidateCreate(ctx context.Context, w *ottoflowv1alpha1.Workflow) (admission.Warnings, error) {
+	if err := v.validateEventScope(w); err != nil {
+		return nil, err
+	}
 	return v.validate(ctx, w)
 }
 
 // ValidateUpdate implements admission.Validator.
 func (v *WorkflowValidator) ValidateUpdate(ctx context.Context, oldW, w *ottoflowv1alpha1.Workflow) (admission.Warnings, error) {
+	if oldW == nil || !equality.Semantic.DeepEqual(oldW.Spec.Triggers, w.Spec.Triggers) {
+		if err := v.validateEventScope(w); err != nil {
+			return nil, err
+		}
+	}
 	return v.validate(ctx, w)
 }
 
 // ValidateDelete implements admission.Validator.
 func (v *WorkflowValidator) ValidateDelete(ctx context.Context, w *ottoflowv1alpha1.Workflow) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// validateEventScope rejects event resources that EventResourceInScope refuses, unless allowlisted.
+func (v *WorkflowValidator) validateEventScope(w *ottoflowv1alpha1.Workflow) error {
+	if w == nil {
+		return nil
+	}
+	for i, t := range w.Spec.Triggers {
+		if t.Event == nil {
+			continue
+		}
+		for j, r := range t.Event.Resources {
+			if !workflowcontroller.EventResourceInScope(v.Client, w.Namespace, r, v.EventTriggerAllowedNamespaces) {
+				return field.Invalid(
+					field.NewPath("spec", "triggers").Index(i).Child("event", "resources").Index(j).Child("namespace"),
+					r.Namespace,
+					fmt.Sprintf("event trigger resources must be well-formed, resolvable namespaced kinds in the Workflow namespace %q unless it is listed in the controller's --event-trigger-allowed-source-namespaces (Helm controller.eventTriggerAllowedSourceNamespaces)", w.Namespace),
+				)
+			}
+		}
+	}
+	return nil
 }
 
 func (v *WorkflowValidator) validate(ctx context.Context, w *ottoflowv1alpha1.Workflow) (admission.Warnings, error) {

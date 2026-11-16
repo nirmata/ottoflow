@@ -76,8 +76,8 @@ both meant to target that tenant namespace, not the install namespace.
 
 ## Features that break by default, and how to turn each one on
 
-Each of these reads a Secret and therefore does nothing until you grant access to the
-specific Secret it uses. The Secret must live in the namespace the feature reads it from
+Each of these reads a Secret through the Kubernetes API and therefore does nothing until you
+grant access to the specific Secret it uses. The Secret must live in the namespace the feature reads it from
 (usually the WorkflowRun's own namespace; for cron and webhook triggers, the Workflow's
 namespace; for the well-known LLM credentials Secret, the run's namespace unless overridden).
 
@@ -89,7 +89,15 @@ namespace; for the well-known LLM credentials Secret, the run's namespace unless
 | Runner Secret volume copy (`spec.execution.job.volumes` referencing a Secret) | The referenced Secret | If the Secret already lives in the run namespace, only `secrets get` there is needed. If it lives in a **different** namespace, the controller also has to `create` a copy in the run namespace — see the cross-namespace note below. Either way, denial fails the WorkflowRun **Failed** with an actionable message naming what to grant. |
 | Cron trigger `inputValuesFrom` | The Secret backing each cron input | The scheduled fire logs an actionable error and does not create the run for that tick; the schedule keeps ticking. |
 | Webhook trigger HMAC verification | The HMAC signing-key Secret | Every delivery returns `401 Unauthorized`. |
-| Agent / MCP server credentials, external-agent auth, cluster kubeconfig | The referenced auth Secret | The step fails when it tries to use the credential. |
+| An `agentRef` step's MCP tool credentials (the MCPServers named in the Agent's `mcpTools`) | The referenced auth Secret, read by the agent-executor | The step fails when it tries to use the credential. |
+
+The following do not break by default and need **no grant**: the controller mounts the Secret into the runner Job as a native volume that the
+kubelet reads, so the Secret must live in the WorkflowRun's own namespace (a cross-namespace reference is
+always rejected, whatever `--secret-ref-allowed-namespaces` says).
+
+- the auth and env Secrets of an MCPServer that a step calls directly (`mcpToolCall`)
+- a step's `externalAgentRef` CA and auth Secrets
+- a WorkflowRun's `clusterRef.kubeConfigSecretRef`
 
 ### The remediation Role
 
@@ -288,6 +296,10 @@ is required — no `create` grant needed. Use the cross-namespace copy only when
 genuinely has to be sourced from elsewhere (e.g. it's centrally managed) and you've accepted the
 broader `create` grant that entails.
 
+The copy never takes a `kubernetes.io/tls` Secret out of the namespaces set by `--namespace` and
+`--agent-executor-namespace` (both the install namespace by default); a run that asks for one fails,
+and the Secret must be created in the run's namespace.
+
 ## The Helm shortcut
 
 If you install with the chart, you don't have to hand-write the manifest above. Each component
@@ -327,8 +339,8 @@ the install namespace" above). One entry per namespace per component; the chart 
 > Every one of them reaches the controller's own identity: the core, additional and view lists
 > render into ClusterRoles the controller's aggregated ClusterRole selects, so a grant there lands
 > on its ServiceAccount directly; the runner and view lists render into runner-aggregated
-> ClusterRoles, and the controller keeps `create`/`update` on ClusterRoleBindings plus `bind` on
-> the runner role (needed for the roleRef-immutability migration), so a grant there is one it
+> ClusterRoles, and the controller keeps `create`/`delete`/`update` on ClusterRoleBindings plus
+> `bind` on the runner role (needed because roleRef is immutable), so a grant there is one it
 > could bind to its own ServiceAccount. Either way the cluster-wide access this hardening removed
 > would silently re-open. Grant Secret access only through `rbac.secretAccess` above (named,
 > namespaced, `get`-only).
@@ -380,12 +392,13 @@ install namespace, and no Secret access is granted anywhere else — so the runn
 Secret and the controller never copies it. Instead, before it creates the runner Job, the
 controller publishes the CA **certificate only** (`tls.crt`; never `tls.key`) as a ConfigMap in
 the WorkflowRun's namespace, named after the CA Secret
-(`--workflow-runner-agent-executor-ca-secret`, chart value `workflowRunner.agentExecutorCASecret`,
-default `<agent-executor>.<install-namespace>.svc.tls-ca`), and mounts that ConfigMap into the
+(`--workflow-runner-agent-executor-ca-secret`, which the chart sets to
+`<agent-executor>.<install-namespace>.svc.tls-ca`; the chart value
+`workflowRunner.agentExecutorCASecret` is retired and fails the render when set with internal TLS; see [Upgrading: `workflowRunner.agentExecutorCASecret` is retired](upgrades/retired-agent-executor-ca-secret-value.md)), and mounts that ConfigMap into the
 runner Job as `ca.crt`. A certificate is public material; a ConfigMap needs none of the Secret
 RBAC this document is about, and the controller's ClusterRole already lets it create, read and
 update ConfigMaps. Nothing has to be created or granted in the tenant namespace. A workflow
-without an agent step gets neither the ConfigMap nor the mount.
+without an agent step gets neither the ConfigMap nor the mount. Every runner Job reserves the volume name `agent-executor-ca`; see [Upgrading: the `agent-executor-ca` volume name is reserved](upgrades/reserved-agent-executor-ca-volume-name.md).
 
 The ConfigMap is labelled `app.kubernetes.io/part-of: ottoflow` and has no owner: it is shared by
 every run in the namespace and stays until the namespace goes. The controller rewrites it

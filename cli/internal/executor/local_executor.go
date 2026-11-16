@@ -509,17 +509,18 @@ func (e *LocalWorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflowNam
 			ag := &ottoflowv1alpha1.Agent{}
 			agKey := client.ObjectKey{Name: step.AgentRef.Name, Namespace: agentNs}
 			if err := e.controlClient.Get(ctx, agKey, ag); err == nil {
+				const validProviders = "nirmata, openai, anthropic, azure-openai (unsupported), google, gemini, local"
 				if e.providerOverride == "" && !agent.IsValidProvider(ag.Spec.ModelProvider) {
 					if ag.Spec.ModelProvider == "" {
 						return nil, fmt.Errorf(
 							"agent %q: spec.modelProvider is required (step %q); valid values: "+
-								"nirmata, openai, anthropic, azure-openai, google, gemini, local",
+								validProviders,
 							ag.Name, step.Name,
 						)
 					}
 					return nil, fmt.Errorf(
 						"agent %q has unknown provider %q (step %q); valid providers: "+
-							"nirmata, openai, anthropic, azure-openai, google, gemini, local",
+							validProviders,
 						ag.Name, ag.Spec.ModelProvider, step.Name,
 					)
 				}

@@ -42,13 +42,13 @@ want free-form agents, use one of those instead.
 ## ✨ Key Features
 
 - ✅ **Declarative Kubernetes-native workflows** — define workflows as CRDs in YAML.
-- ✅ **Fast DAG execution** — explicit dependency resolution with parallel step batches.
+- ✅ **Fast DAG execution** — explicit dependency resolution, with concurrent `forEach` fan-out.
 - ✅ **Multi-provider LLM support** — use OpenAI, Anthropic, etc. or local models with vLLM.
 - ✅ **Kubernetes and CNCF integrations** — query API resources, PromQL, Kagent using A2A, otel, and more.
 - ✅ **Compiled CEL expressions** — sandboxed execution with full K8s and [Kyverno CEL](https://github.com/kyverno/sdk) library support
 - ✅ **Multiple step types** — ResourceQuery, AgentRef, MCPToolCall, and more ([full list](docs/user/reference/api/workflow.md#step-types-one-per-step)).
 - ✅ **Context optimization** — agent steps receive aggregated computed summaries, never raw data dumps.
-- ✅ **Retry & conditional execution** — retry policies and `matchConditions` gating per step.
+- ✅ **Conditional execution** — `matchConditions` gating per step.
 - ✅ **CLI with local mode** — execute workflows locally against your kubecontext.
 - ✅ **Extensive samples** — ready-to-run workflows under [`samples/`](samples/).
 
@@ -140,15 +140,16 @@ Point `LLAMACPP_HOST` at any llama.cpp-compatible server — llama.cpp, ollama,
 vLLM, or LM Studio. The local run above produces the transcript shown below.
 
 Agent steps need an LLM: set `modelProvider` on the `Agent` CRD to `openai`,
-`anthropic`, `azure-openai`, `google`/`gemini`, or `local` (any llama.cpp-compatible
+`anthropic`, `google`/`gemini`, or `local` (any llama.cpp-compatible
 server), or override it per run with `--provider`/`--model` as shown above. API
 keys come from the **process environment** — `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
-`GEMINI_API_KEY`, `AZURE_OPENAI_API_KEY` — not from `Agent.spec.config`. In-cluster,
+`GEMINI_API_KEY` — not from `Agent.spec.config`. In-cluster,
 set them on the agent-executor pod via `agentExecutor.env` in the Helm chart; in
 local mode they come from your shell. Because those keys are shared by every Agent,
 an Agent's `spec.config.endpoint` is accepted only for an origin the operator lists in
 `AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`; in local
-mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. See
+mode, your shell), and `spec.config.skipVerifySSL: "true"` is rejected. List only origins you
+control that do not redirect to another origin. See
 `samples/workflows/features/agent-custom-endpoint.yaml`.
 
 <!-- demo GIF: images/demo.gif — not committed yet; record it with `make demo`

@@ -13,6 +13,11 @@
 #   kind: HelmRelease (apiVersion: helm.toolkit.fluxcd.io/v2)
 #   celFilter: 'object.status.conditions.exists(c, c.type == "Ready" && c.status == "True")'
 #   (OttoFlow auto-detects status.lastAttemptedRevision for HelmRelease dedup)
+#
+# Watch scope:
+#   This Workflow is in `ottoflow` and watches `flux-system`, so `ottoflow` must be listed in the
+#   Helm value controller.eventTriggerAllowedSourceNamespaces (flag
+#   --event-trigger-allowed-source-namespaces); otherwise admission rejects it.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:

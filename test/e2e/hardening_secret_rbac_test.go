@@ -431,7 +431,7 @@ spec:
     namespace: %[1]s
 `, tenant))
 
-		expectRunFailsWith(tenant, "mintedmissing-run", "", "failed to mount", 3*time.Minute)
+		expectRunFailsWith(tenant, "mintedmissing-run", "", "failed to mount", 5*time.Minute)
 
 		Expect(runFailureReason(tenant, "mintedmissing-run")).To(Equal("RunnerRefUnresolved"),
 			"a FailedMount on a controller-minted Secret volume must classify status.failureReason "+

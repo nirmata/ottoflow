@@ -32,6 +32,16 @@ func kubectl(args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
+// agentExecutorCAPEM returns the agent-executor CA certificate published in its Secret.
+func agentExecutorCAPEM() []byte {
+	GinkgoHelper()
+	caB64, err := kubectl("get", "secret", agentExecutorCASecretDefault, "-n", namespace, "-o", `jsonpath={.data.tls\.crt}`)
+	Expect(err).NotTo(HaveOccurred(), caB64)
+	caPEM, err := base64.StdEncoding.DecodeString(caB64)
+	Expect(err).NotTo(HaveOccurred())
+	return caPEM
+}
+
 // kubectlIgnoreErr runs kubectl and discards failures. For cleanup only.
 func kubectlIgnoreErr(args ...string) string {
 	out, _ := kubectl(args...)
@@ -103,9 +113,14 @@ func mustCreateSecret(ns, name string, data map[string]string) {
 // TokenRequest API. The token is what a tenant would hand a run through a Secret: a
 // credential that is NOT any OttoFlow identity, so anything done with it cannot have been
 // done with OttoFlow's own RBAC.
-func serviceAccountToken(ns, sa string) string {
+func serviceAccountToken(ns, sa string, audiences ...string) string {
 	GinkgoHelper()
-	token, err := kubectl("create", "token", sa, "-n", ns, "--duration=1h")
+	args := make([]string, 0, 5+len(audiences))
+	args = append(args, "create", "token", sa, "-n", ns, "--duration=1h")
+	for _, a := range audiences {
+		args = append(args, "--audience="+a)
+	}
+	token, err := kubectl(args...)
 	Expect(err).NotTo(HaveOccurred(), "minting a token for ServiceAccount %s/%s: %s", ns, sa, token)
 	Expect(token).NotTo(BeEmpty(), "kubectl create token returned an empty token for %s/%s", ns, sa)
 	return token

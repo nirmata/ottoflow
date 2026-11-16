@@ -20,17 +20,17 @@ Samples are organized into three directories by purpose:
 
 Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../steptemplates/) directory. Workflows that use `stepTemplateRef` (e.g. `stale-image-check`, `cost-optimization`, `steptemplate-example`, `top-pods-cpu-analysis`) need those templates applied too — in local mode, pass the parent directory: `--workflow-dir samples`.
 
-### `production/` (17)
+### `production/` (18)
 
-`cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`
+`cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`, `cve-vex-assessment`
 
 ### `features/` (67)
 
 - **Basics:** `hello-world`, `simple-greeting`, `expressions-workflow`, `step-dependencies`, `complex-workflow`, `conditional-execution`, `workflow-variables`, `workflow-reference`, `foreach-example`, `json-output-example`, `steptemplate-example`
-- **Agents / LLM providers:** `agent-basic`, `agent-step`, `agent-config`, `agent-openai`, `agent-azure-openai`, `agent-gemini`, `agent-local-llamacpp`, `agent-custom-endpoint`, `agent-mcp-combined`, `simple-agent-question`, `pod-diagnostics-agent`, `pod-diagnostics-with-mcp`, `kagent-integration`
+- **Agents / LLM providers:** `agent-basic`, `agent-step`, `agent-config`, `agent-openai`, `agent-azure-openai` (azure-openai is not supported), `agent-gemini`, `agent-local-llamacpp`, `agent-custom-endpoint`, `agent-mcp-combined`, `simple-agent-question`, `pod-diagnostics-agent`, `pod-diagnostics-with-mcp`, `kagent-integration`
 - **MCP:** `mcpserver-config`, `mcpserver-auth-variants`, `mcp-tool-call`, `mcp-with-auth`, `mcp-oauth2-auth`
 - **Triggers:** `cron-trigger`, `cron-trigger-timezone`, `cron-trigger-replace`, `event-trigger`, `complex-triggers`, `argocd-event-trigger`, `fluxcd-event-trigger`, `github-actions-webhook`
-- **Retries:** `retry-exponential-backoff`, `retry-linear-backoff`, `retry-max-attempts`, `retry-with-conditions`, `complex-workflow-with-retry`
+- **Retries** (step-level `retry` is accepted but not applied): `retry-exponential-backoff`, `retry-linear-backoff`, `retry-max-attempts`, `retry-with-conditions`, `complex-workflow-with-retry`
 - **Resource queries & metrics:** `resource-query-example`, `resource-list`, `crd-resource-query`, `advanced-field-paths`, `resource-metrics-example`, `gpu-metrics-example`, `pod-health-metrics`, `prometheus-query-example`, `prometheus-query-simple`, `namespace-resource-summary`, `pod-health-check`, `pod-restart-analysis`, `pod-resource-analysis`, `top-pods-cpu-analysis`
 - **CEL:** `kubernetes-cel-libraries`, `kyverno-cel-libraries`, `practical-cel-examples`
 - **Other step types & patterns:** `mutate-step-example`, `open-report-example`, `wait-for-callback`, `argocd-cluster-discovery`, `multi-cluster-workflowrun`, `multi-cluster-workflowrun-filepath`, `multi-cluster-workflowrun-csi`, `job-customized-workflowrun`
@@ -68,7 +68,7 @@ kubectl apply -f expressions-workflow.yaml
 ### 3. Step Dependencies (`step-dependencies.yaml`)
 Demonstrates:
 - Step output references
-- Parallel step execution (step-b and step-c both depend on step-a)
+- Dependency ordering (step-b and step-c both depend on step-a; steps run one at a time, only `forEach` items run concurrently)
 - Multiple dependencies (step-d depends on both step-b and step-c)
 
 **Usage:**
@@ -118,6 +118,8 @@ ottoflow run conditional-execution --input environment=prod --input deploy-featu
 ```
 
 ### 7. Retry with Exponential Backoff (`retry-exponential-backoff.yaml`)
+Step-level `retry` and `timeout` are accepted but not applied, so this sample does not retry yet.
+
 Demonstrates:
 - Retry configuration with exponential backoff
 - Resource existence checking with retries
@@ -129,6 +131,8 @@ kubectl apply -f retry-exponential-backoff.yaml
 ```
 
 ### 8. Retry with Linear Backoff (`retry-linear-backoff.yaml`)
+Step-level `retry` and `timeout` are accepted but not applied, so this sample does not retry yet.
+
 Demonstrates:
 - Retry with linear (fixed interval) backoff
 - Transient error handling
@@ -140,6 +144,8 @@ kubectl apply -f retry-linear-backoff.yaml
 ```
 
 ### 9. Retry with Conditions (`retry-with-conditions.yaml`)
+Step-level `retry` and `timeout` are accepted but not applied, so this sample does not retry yet.
+
 Demonstrates:
 - Retry only on specific error types
 - Error message pattern matching
@@ -151,6 +157,8 @@ kubectl apply -f retry-with-conditions.yaml
 ```
 
 ### 10. Retry Max Attempts (`retry-max-attempts.yaml`)
+Step-level `retry` and `timeout` are accepted but not applied, so this sample does not retry yet.
+
 Demonstrates:
 - Maximum retry attempts
 - Failure policy (Continue)
@@ -162,6 +170,8 @@ kubectl apply -f retry-max-attempts.yaml
 ```
 
 ### 11. Complex Workflow with Retry (`complex-workflow-with-retry.yaml`)
+Step-level `retry` and `timeout` are accepted but not applied, so this sample does not retry yet.
+
 Demonstrates:
 - Combining retry logic with conditional execution
 - Multiple retry strategies in one workflow
@@ -331,7 +341,7 @@ Demonstrates:
 - `modelProvider: local`, so it runs against a llama.cpp-compatible server
   (llama.cpp, ollama, vLLM, LM Studio) without a cloud API key
 
-For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml`,
+For per-provider configuration see `agent-openai.yaml`, `agent-azure-openai.yaml` (azure-openai is not supported),
 `agent-gemini.yaml`, `agent-local-llamacpp.yaml`, and `agent-custom-endpoint.yaml`
 (which documents exactly which `spec.config` fields each provider honours, and that
 `spec.config.endpoint` needs its origin on the operator's `AGENT_LLM_ENDPOINT_ALLOWLIST`).
@@ -462,7 +472,7 @@ kubectl get workflowruns -w
 - **Restart Detection**: Checks for restart counts and recently terminated containers
 - **Event Filtering**: Focuses on restart-related events (Started, Created, Killing, BackOff, CrashLoop)
 - **Root Cause Analysis**: Agent prompt specifically focuses on identifying restart root causes
-- **Namespace Flexibility**: Can watch all namespaces (empty namespace) or specific namespaces
+- **Namespace scope**: Watches the Workflow's own namespace; another namespace, or all namespaces (empty `namespace`), needs the Workflow's namespace in `controller.eventTriggerAllowedSourceNamespaces`
 - **Label Filtering**: Optional label selector to only monitor specific pods (commented out in example)
 
 **Note:** This workflow will trigger on ANY pod UPDATE event. To filter for only restarts, you can:

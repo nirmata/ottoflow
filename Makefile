@@ -184,7 +184,7 @@ test-e2e-kind: ## Ensure a kind cluster exists, then run e2e tests with webhooks
 	$(MAKE) test-e2e
 
 .PHONY: lint
-lint: golangci-lint ## Run golangci-lint linter & yamllint
+lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run
 
 .PHONY: lint-fix

@@ -234,13 +234,15 @@ make build-cli
 make test
 
 # Run specific test package
-go test ./internal/executor/...
+go test ./internal/workflow/executor/...
 
 # Run with verbose output
-go test -v ./internal/executor/...
+go test -v ./internal/workflow/executor/...
 
-# Run integration tests (requires cluster)
-make test-integration
+# Ensure a kind cluster exists, then run the e2e suite (about 10 minutes).
+# The suite uses the current kube-context. If the kind cluster already existed,
+# select it first, e.g. `kubectl config use-context kind-kind`.
+SKIP_PROMETHEUS_OPERATOR=1 make test-e2e-kind
 ```
 
 ### What CI does
@@ -397,10 +399,10 @@ func GetResourceMacroOptions(...) ([]celapi.EnvOption, error) {
 
 ```bash
 # Run executor tests
-go test ./internal/executor/...
+go test ./internal/workflow/executor/...
 
 # Run controller tests
-go test ./internal/controller/...
+go test ./internal/workflow/controller/...
 
 # Run with coverage
 go test -cover ./...
@@ -409,8 +411,10 @@ go test -cover ./...
 ### Integration Tests
 
 ```bash
-# Requires running Kubernetes cluster
-make test-integration
+# Ensure a kind cluster exists, then run the e2e suite (about 10 minutes).
+# The suite uses the current kube-context. If the kind cluster already existed,
+# select it first, e.g. `kubectl config use-context kind-kind`.
+SKIP_PROMETHEUS_OPERATOR=1 make test-e2e-kind
 
 # Test specific workflow (Workflow must exist in cluster)
 ./bin/ottoflow run test-native-types --namespace default

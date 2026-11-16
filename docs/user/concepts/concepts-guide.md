@@ -121,7 +121,7 @@ DAG
 3. Run DFS cycle detection → return error if cycle found
 ```
 
-> **Critical constraint:** Dependencies are determined **only** by explicit `dependsOn` field values. Referencing `steps.foo.bar` in a CEL expression does NOT implicitly create an ordering dependency — you must also declare `dependsOn: [foo]`.
+> **Critical constraint:** Dependencies are determined **only** by explicit `dependsOn` field values. Referencing `variables.bar` (an output of step `foo`) in a CEL expression does NOT implicitly create an ordering dependency — you must also declare `dependsOn: [foo]`.
 
 ### Execution Loop (`ExecuteWorkflow`, `executor.go`)
 
@@ -135,7 +135,7 @@ LOOP (max len(steps)*2 iterations as a safety cap):
     if all done → recordWorkflowSuccess → return nil
     if any failed → recordWorkflowFailure → return error
 
-  for each readyStep:
+  for each readyStep (one at a time):
     check matchConditions (CEL bool) → mark Skipped if false
     mark Running → executeStep() → mark Succeeded or Failed
     save checkpoint after each step
@@ -270,7 +270,7 @@ Stdio MCP servers (e.g. `uvx`-backed tools) spawn child processes on first use. 
 spec:
   executionLimits:
     maxConcurrentSteps: 3          # cap ready-steps batch per DAG iteration
-    outboundRequestsPerMinute: 60  # token bucket on MCP/agent calls
+    outboundRequestsPerMinute: 60  # token bucket on MCP/agent/A2A calls
 ```
 
 The rate limiter is constructed fresh per `ExecuteWorkflow()` call (and torn down with `defer`). Burst capacity is `rpm/6 + 1` to allow short bursts while protecting downstream services.
@@ -281,12 +281,13 @@ The rate limiter is constructed fresh per `ExecuteWorkflow()` call (and torn dow
 
 **Source:** `WorkflowSpec.Triggers`, `internal/workflow/controller/`
 
-Two trigger types automatically create `WorkflowRun` objects:
+Three trigger types automatically create `WorkflowRun` objects:
 
 | Type | Mechanism | Implementation |
 |------|-----------|----------------|
 | **Cron** | Schedule expression | `robfig/cron/v3`, timezone-aware, leader-elected |
 | **Event** | K8s resource watch | Dynamic informer on target resource GVK |
+| **Webhook** | Signed `POST /webhooks/{namespace}/{workflowName}` | See [Webhook triggers](../tasks/triggers.md#webhook-triggers) |
 
 `RunPolicy.MaxConcurrentRuns` prevents trigger storms — if active runs ≥ limit, new run creation is skipped.
 
@@ -321,11 +322,11 @@ The `localExecutionMode=true` flag in `WorkflowExecutor` gates the in-process ag
 |------|-----------------|
 | Executor | Core execution engine, all step executors, CEL, DAG |
 | Controller | WorkflowRun/Workflow reconcilers, TriggerManager, Scheduler |
-| Webhook | Admission webhooks for Workflow/WorkflowRun validation |
-| Rbac | RBAC generation (`ottoflow generate rbac`) |
+| Webhook | Admission webhooks for Workflow, WorkflowRun, Agent and MCPServer validation |
+| Rbac | RBAC generation (`ottoflow validate --generate-rbac`) |
 | Workflow-runner | In-Job binary — fetches WorkflowRun and drives executor |
 | Agent | Agent executor, MCPClientManager, OutputExtractor |
-| Cmd | CLI entry points (run, generate, validate) |
+| Cmd | CLI entry points (run, status, validate, version) |
 | Metrics | Prometheus metric definitions |
 | Display | CLI streaming display, markdown rendering |
 | Agent-executor | A2A protocol server with SubjectAccessReview auth |
@@ -368,7 +369,7 @@ ExecuteWorkflow(ctx, workflow, workflowRun)
           executeStep()              → dispatch by step type
             Expression / ResourceQuery / AgentRef / MCPToolCall /
             WorkflowRef / ForEach / ExternalAgentRef / ...
-          WriteStepOutputs() → context (available as steps.<name>.*)
+          WriteStepOutputs() → context (available as variables.<key>; steps.<name>.* only for agentRef and forEach)
           saveCheckpoint()
       evaluateWorkflowOutputs()
       WorkflowRun.Status.Phase = Succeeded

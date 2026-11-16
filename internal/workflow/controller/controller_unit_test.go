@@ -83,11 +83,13 @@ type fakeWatcherFactory struct {
 	mu       sync.Mutex
 	watchers []*fakeWatch
 	lastOpts metav1.ListOptions
+	nss      []string // namespace of every Watch call
 }
 
-func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, _ string, opts metav1.ListOptions) (watch.Interface, error) {
+func (f *fakeWatcherFactory) Watch(_ context.Context, _ schema.GroupVersionResource, ns string, opts metav1.ListOptions) (watch.Interface, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.nss = append(f.nss, ns)
 	w := &fakeWatch{ch: make(chan watch.Event)}
 	f.watchers = append(f.watchers, w)
 	f.lastOpts = opts
@@ -644,6 +646,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_WithWatcherFactory(t *test
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -667,6 +670,7 @@ func TestTriggerManager_RegisterWorkflow_EventTrigger_InvalidAPIVersion(t *testi
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	err := tm.RegisterWorkflow(ctx, wf)
 	if err == nil {
 		t.Fatal("expected error for invalid APIVersion")
@@ -862,42 +866,16 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_StaleCacheKeepsR
 	ns := defaultNamespace
 	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
 	live := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: "new-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: bindingName, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}, UID: liveBindingUID},
 		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "agent-caller"},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "my-sa", Namespace: ns}},
 	}
 	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(live).Build()
-	fakeClient := interceptor.NewClient(base, interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if err := c.Get(ctx, key, obj, opts...); err != nil {
-				return err
-			}
-			if crb, ok := obj.(*rbacv1.ClusterRoleBinding); ok {
-				crb.UID = "old-uid"
-				crb.RoleRef.Name = "old-role"
-			}
-			return nil
-		},
-		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-			do := &client.DeleteOptions{}
-			do.ApplyOptions(opts)
-			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != "new-uid" {
-				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), errors.New("uid precondition"))
-			}
-			return c.Delete(ctx, obj, opts...)
-		},
-	})
-	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme}
 	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); !errors.Is(err, errRequeueRunnerAccess) {
 		t.Fatalf("err = %v, want requeue sentinel", err)
 	}
-	got := &rbacv1.ClusterRoleBinding{}
-	if err := base.Get(ctx, types.NamespacedName{Name: bindingName}, got); err != nil {
-		t.Fatal(err)
-	}
-	if got.UID != "new-uid" {
-		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.UID)
-	}
+	assertNotRecreated(t, base, live)
 }
 
 func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_NoUpdate(t *testing.T) {
@@ -1393,7 +1371,7 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_CRBExistsNotManaged_ReturnsErr
 		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
 	}
 	clusterRole := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}}
-	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "controller-manager", Namespace: ns}}
+	sa := runnerServiceAccount("controller-manager", ns)
 	mainCRBName := workflowRunnerRoleBindingName(ns, "controller-manager")
 	mainCRB := &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: mainCRBName}, // no part-of label - not managed by us
@@ -1466,6 +1444,265 @@ func TestWorkflowRunReconciler_EnsureRunnerAccess_OwnsRunnerSAByWorkflow(t *test
 	owner := sa.OwnerReferences[0]
 	if owner.Kind != "Workflow" || owner.Name != wf.Name || owner.Controller == nil || !*owner.Controller {
 		t.Errorf("unexpected owner reference: %+v", owner)
+	}
+	if sa.Labels["app.kubernetes.io/part-of"] != ottoflowPartOf {
+		t.Errorf("created ServiceAccount labels = %v, want part-of=ottoflow", sa.Labels)
+	}
+}
+
+// runnerServiceAccount builds a runner ServiceAccount fixture that carries the part-of=ottoflow
+// label ensureRunnerAccess requires before it binds an existing derived or shared account.
+func runnerServiceAccount(name, namespace string) *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: map[string]string{"app.kubernetes.io/part-of": "ottoflow"}},
+	}
+}
+
+func newUnmanagedRunnerAccessFixture(t *testing.T, extra ...client.Object) (*WorkflowRunReconciler, client.Client, *ottoflowv1alpha1.WorkflowRun) {
+	t.Helper()
+	ns := defaultNamespace
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+		Status:     ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhasePending},
+	}
+	objs := append([]client.Object{wf, wr}, extra...)
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme, EventRecorder: events.NewFakeRecorder(10),
+		RunnerConfig: RunnerConfig{RunnerClusterRole: "ottoflow-role", AgentExecutorCallerRole: "ottoflow-caller"}}
+	return r, c, wr
+}
+
+func unmanagedRunnerSA() *corev1.ServiceAccount {
+	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "wf-runner", Namespace: defaultNamespace}}
+}
+
+func TestEnsureRunnerAccess_UnlabelledDerivedServiceAccount_NotBound(t *testing.T) {
+	ctx := context.Background()
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+
+	err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false)
+	if !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	}
+	for _, name := range []string{workflowRunnerRoleBindingName(defaultNamespace, "wf-runner"), agentExecutorCallerRoleBindingName(defaultNamespace, "wf-runner")} {
+		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); !apierrors.IsNotFound(getErr) {
+			t.Errorf("ClusterRoleBinding %s must not exist, Get err = %v", name, getErr)
+		}
+	}
+}
+
+func TestEnsureRunnerAccess_UnlabelledAccount_ExplicitExempt(t *testing.T) {
+	ctx := context.Background()
+	r, _, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", true); err != nil {
+		t.Fatalf("explicit account must pass: %v", err)
+	}
+}
+
+func TestReconcile_UnlabelledSharedAccount_FailsRunAndKeepsBindings(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	managed := func(name string) *rbacv1.ClusterRoleBinding {
+		return buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+	}
+	names := []string{workflowRunnerRoleBindingName(ns, "shared-runner"), agentExecutorCallerRoleBindingName(ns, "shared-runner")}
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "shared-runner", Namespace: ns}}
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, sa, managed(names[0]), managed(names[1]))
+	r.RunnerConfig.RunnerServiceAccount = "shared-runner"
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected an error for an unlabelled shared ServiceAccount")
+	}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Fatalf("Phase = %v, want Failed", updated.Status.Phase)
+	}
+	if evts := drain(t, r.EventRecorder.(*events.FakeRecorder)); len(evts) == 0 || !strings.Contains(evts[0], "RunnerServiceAccountNotManaged") {
+		t.Errorf("events = %q, want a RunnerServiceAccountNotManaged Warning first", evts)
+	}
+	requireBindings(t, c, true, names...)
+}
+
+func TestEnsureRunnerAccess_LabelledSharedAccount_Bound(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, runnerServiceAccount("shared-runner", ns))
+	r.RunnerConfig.RunnerServiceAccount = "shared-runner"
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "shared-runner", false); err != nil {
+		t.Fatalf("labelled shared account must pass: %v", err)
+	}
+	for _, name := range []string{workflowRunnerRoleBindingName(ns, "shared-runner"), agentExecutorCallerRoleBindingName(ns, "shared-runner")} {
+		if getErr := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); getErr != nil {
+			t.Errorf("ClusterRoleBinding %s must exist: %v", name, getErr)
+		}
+	}
+}
+
+// An account created between the controller's read and its own create is checked as the server
+// holds it, not as the controller would have created it.
+func TestEnsureRunnerAccess_AccountCreatedAfterRead_Unlabelled_NotBound(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	r, base, wr := newUnmanagedRunnerAccessFixture(t)
+	r.RunnerConfig.RunnerConfigMapWriterRole = cmWriterRole
+	r.Client = interceptor.NewClient(base.(client.WithWatch), interceptor.Funcs{
+		Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+			if sa, ok := obj.(*corev1.ServiceAccount); ok {
+				if err := cl.Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: sa.Name, Namespace: sa.Namespace}}); err != nil {
+					return err
+				}
+				return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "serviceaccounts"}, sa.Name)
+			}
+			return cl.Create(ctx, obj, opts...)
+		},
+	})
+
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "wf-runner", false); !errors.Is(err, errRunnerServiceAccountNotManaged) {
+		t.Fatalf("err = %v, want errRunnerServiceAccountNotManaged", err)
+	}
+	requireBindings(t, base, false, workflowRunnerRoleBindingName(ns, "wf-runner"), agentExecutorCallerRoleBindingName(ns, "wf-runner"))
+	if getErr := base.Get(ctx, types.NamespacedName{Namespace: ns, Name: runnerConfigMapWriterBindingName("wf-runner")}, &rbacv1.RoleBinding{}); !apierrors.IsNotFound(getErr) {
+		t.Errorf("writer RoleBinding must not exist, Get err = %v", getErr)
+	}
+}
+
+func TestReconcile_UnlabelledDerivedServiceAccount_FailsRunWithEvent(t *testing.T) {
+	ctx := context.Background()
+	r, c, wr := newUnmanagedRunnerAccessFixture(t, unmanagedRunnerSA())
+	recorder := events.NewFakeRecorder(10)
+	r.EventRecorder = recorder
+
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(wr)}); err == nil {
+		t.Fatal("expected an error for an unlabelled derived ServiceAccount")
+	}
+	updated := &ottoflowv1alpha1.WorkflowRun{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(wr), updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed {
+		t.Fatalf("Phase = %v, want Failed", updated.Status.Phase)
+	}
+	var jobs batchv1.JobList
+	if err := c.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs.Items) != 0 {
+		t.Errorf("no runner Job may exist for an unmanaged account, got %d", len(jobs.Items))
+	}
+	select {
+	case evt := <-recorder.Events:
+		if !strings.Contains(evt, "RunnerServiceAccountNotManaged") || !strings.Contains(evt, "wf-runner") {
+			t.Errorf("event = %q, want reason RunnerServiceAccountNotManaged naming wf-runner", evt)
+		}
+	default:
+		t.Error("expected a Warning event")
+	}
+}
+
+func TestDeleteRunnerBindingsFor_DeletesOnlyMatchingOttoFlowBindings(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	mk := func(name string, labelled bool, subjectNS string) *rbacv1.ClusterRoleBinding {
+		b := buildRunnerClusterRoleBinding(name, "ottoflow-role", "wf-runner", subjectNS)
+		if !labelled {
+			b.Labels = nil
+		}
+		return b
+	}
+	runnerName := workflowRunnerRoleBindingName(ns, "wf-runner")
+	callerName := agentExecutorCallerRoleBindingName(ns, "wf-runner")
+
+	cases := []struct {
+		name        string
+		runner      *rbacv1.ClusterRoleBinding
+		caller      *rbacv1.ClusterRoleBinding
+		wantRunner  bool
+		wantCallers bool
+	}{
+		{"labelled and matching subject are deleted", mk(runnerName, true, ns), mk(callerName, true, ns), false, false},
+		{"labelled with a different subject namespace is kept", mk(runnerName, true, "other"), mk(callerName, true, "other"), true, true},
+		{"unlabelled with matching subject is kept", mk(runnerName, false, ns), mk(callerName, false, ns), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, c, _ := newUnmanagedRunnerAccessFixture(t, tc.runner, tc.caller)
+			r.deleteRunnerBindingsFor(ctx, ns, "wf-runner")
+			for name, want := range map[string]bool{runnerName: tc.wantRunner, callerName: tc.wantCallers} {
+				err := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{})
+				if want && err != nil {
+					t.Errorf("binding %s should be kept: %v", name, err)
+				}
+				if !want && !apierrors.IsNotFound(err) {
+					t.Errorf("binding %s should be deleted, Get err = %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteRunnerBindingsFor_BindingChangedAfterRead_NotDeleted(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	name := workflowRunnerRoleBindingName(ns, "shared-runner")
+	crb := buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(crb).Build()
+	c := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := cl.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			if got, ok := obj.(*rbacv1.ClusterRoleBinding); ok && key.Name == name {
+				changed := got.DeepCopy()
+				changed.Subjects[0].Name = "someone-else"
+				return cl.Update(ctx, changed)
+			}
+			return nil
+		},
+	})
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+
+	r.deleteRunnerBindingsFor(ctx, ns, "shared-runner")
+
+	if err := base.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); err != nil {
+		t.Fatalf("binding changed after the read must not be deleted, Get err = %v", err)
+	}
+}
+
+func TestDeleteRunnerBindingsFor_NotSingleSubject_Preserved(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	sa := rbacv1.Subject{Kind: "ServiceAccount", Name: "shared-runner", Namespace: ns}
+	other := rbacv1.Subject{Kind: "User", Name: "alice", APIGroup: rbacv1.GroupName}
+	subjects := map[string][]rbacv1.Subject{"no subjects": nil, "matching SA then another": {sa, other}}
+	names := map[string]string{
+		"runner":     workflowRunnerRoleBindingName(ns, "shared-runner"),
+		"agent-exec": agentExecutorCallerRoleBindingName(ns, "shared-runner"),
+	}
+	for sname, subs := range subjects {
+		for bname, name := range names {
+			t.Run(sname+"/"+bname, func(t *testing.T) {
+				crb := buildRunnerClusterRoleBinding(name, "ottoflow-role", "shared-runner", ns)
+				crb.Subjects = subs
+				c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(crb).Build()
+				r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+
+				r.deleteRunnerBindingsFor(ctx, ns, "shared-runner")
+
+				if err := c.Get(ctx, types.NamespacedName{Name: name}, &rbacv1.ClusterRoleBinding{}); err != nil {
+					t.Fatalf("binding with %d subjects must be preserved, Get err = %v", len(subs), err)
+				}
+			})
+		}
 	}
 }
 
@@ -3501,6 +3738,125 @@ func secretGetErrorReader(base client.WithWatch, match func(key client.ObjectKey
 	})
 }
 
+// The runner Job states its grace period and passes the runner its hard stop; an author's
+// spec.execution.job.env entry of the same name comes last, so it wins.
+func TestBuildWorkflowRunnerJob_ShutdownGraceAndHardStop(t *testing.T) {
+	for name, tc := range map[string]struct {
+		authorEnv []corev1.EnvVar
+		want      string
+	}{
+		"default":         {want: executor.RunnerShutdownHardStop.String()},
+		"author override": {authorEnv: []corev1.EnvVar{{Name: executor.RunnerShutdownHardStopEnv, Value: "20s"}}, want: "20s"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "grace-run", Namespace: defaultNamespace},
+				Spec: ottoflowv1alpha1.WorkflowRunSpec{
+					WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf"},
+					Execution: &ottoflowv1alpha1.WorkflowRunExecutionSpec{
+						Job: &ottoflowv1alpha1.WorkflowRunJobSpec{Env: tc.authorEnv},
+					},
+				},
+			}
+			r := &WorkflowRunReconciler{
+				Client:       fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr).Build(),
+				Scheme:       unitTestScheme,
+				RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager"},
+			}
+			job, err := r.buildWorkflowRunnerJob(context.Background(), wr, &ottoflowv1alpha1.Workflow{})
+			if err != nil {
+				t.Fatalf("buildWorkflowRunnerJob: %v", err)
+			}
+			// A pod being deleted must not count as failed until it has exited, or the retry Job starts
+			// while the interrupted runner is still writing its status.
+			if p := job.Spec.PodReplacementPolicy; p == nil || *p != batchv1.Failed {
+				t.Errorf("podReplacementPolicy = %v, want %s", p, batchv1.Failed)
+			}
+			spec := job.Spec.Template.Spec
+			if g := spec.TerminationGracePeriodSeconds; g == nil ||
+				*g != int64(executor.RunnerTerminationGracePeriod/time.Second) {
+				t.Errorf("terminationGracePeriodSeconds = %v, want %d", g, int64(executor.RunnerTerminationGracePeriod/time.Second))
+			}
+			got := ""
+			for _, e := range spec.Containers[0].Env {
+				if e.Name == executor.RunnerShutdownHardStopEnv {
+					got = e.Value // the container environment keeps the last entry of a name
+				}
+			}
+			if got != tc.want {
+				t.Errorf("%s = %q, want %q", executor.RunnerShutdownHardStopEnv, got, tc.want)
+			}
+		})
+	}
+}
+
+const liveBindingUID types.UID = "new-uid"
+
+// staleUIDClient serves the binding as an old incarnation (old UID, old roleRef) while the
+// live object is liveBindingUID, and rejects deletes whose UID precondition does not match it.
+func staleUIDClient(base client.WithWatch) client.Client {
+	return interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			switch b := obj.(type) {
+			case *rbacv1.ClusterRoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			case *rbacv1.RoleBinding:
+				b.UID, b.RoleRef.Name = "old-uid", "old-role"
+			}
+			return nil
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			do := &client.DeleteOptions{}
+			do.ApplyOptions(opts)
+			if do.Preconditions != nil && do.Preconditions.UID != nil && *do.Preconditions.UID != liveBindingUID {
+				return apierrors.NewConflict(rbacv1.Resource("bindings"), obj.GetName(), errors.New("uid precondition"))
+			}
+			return c.Delete(ctx, obj, opts...)
+		},
+	})
+}
+
+func assertNotRecreated(t *testing.T, c client.Client, live client.Object) {
+	t.Helper()
+	got := live.DeepCopyObject().(client.Object)
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(live), got); err != nil {
+		t.Fatal(err)
+	}
+	if got.GetUID() != liveBindingUID {
+		t.Errorf("replacement binding was deleted and recreated, uid = %q", got.GetUID())
+	}
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerAccess_StaleCacheKeepsReplacementClusterRoleBinding(t *testing.T) {
+	ctx := context.Background()
+	ns := defaultNamespace
+	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns}}
+	sa := runnerServiceAccount("my-sa", ns)
+	crbName := workflowRunnerRoleBindingName(ns, "my-sa")
+	live := buildRunnerClusterRoleBinding(crbName, "ottoflow-new-role", "my-sa", ns)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wr, sa, live).Build()
+	r := &WorkflowRunReconciler{Client: staleUIDClient(base), Scheme: unitTestScheme, RunnerConfig: RunnerConfig{RunnerClusterRole: "ottoflow-new-role"}}
+	if err := r.ensureRunnerAccess(ctx, wr, nil, "my-sa", false); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
+}
+
+func TestWorkflowRunReconciler_EnsureRunnerConfigMapWriter_StaleCacheKeepsReplacement(t *testing.T) {
+	live := managedWriterBinding("ClusterRole", cmWriterRole, cmWriterUID)
+	live.UID = liveBindingUID
+	base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), live).Build()
+	r := cmWriterReconciler(staleUIDClient(base), cmWriterRole)
+	if err := r.ensureRunnerConfigMapWriter(context.Background(), cmWriterNS, cmWriterSA, ""); !errors.Is(err, errRequeueRunnerAccess) {
+		t.Fatalf("err = %v, want requeue sentinel", err)
+	}
+	assertNotRecreated(t, base, live)
+}
+
 func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	ctx := context.Background()
 	wf := &ottoflowv1alpha1.Workflow{
@@ -3515,6 +3871,7 @@ func TestTriggerManager_WatchReopensAfterResultChanClosed(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3568,6 +3925,7 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(wf).Build()
 	factory := &stallingWatcherFactory{blocked: make(chan struct{}), released: make(chan struct{})}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3587,6 +3945,8 @@ func TestTriggerManager_UnregisterCancelsStalledReopen(t *testing.T) {
 	}
 }
 
+// eventTestWorkflow builds a Workflow in "default". Tests that register it against the fake client's default (empty)
+// REST mapper allowlist "default", since every kind would otherwise be refused as unresolvable.
 func eventTestWorkflow(name string, triggers ...ottoflowv1alpha1.Trigger) *ottoflowv1alpha1.Workflow {
 	return &ottoflowv1alpha1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
@@ -3618,6 +3978,7 @@ func TestWorkflowReconciler_Reconcile_NotFound_StopsEventWatchers(t *testing.T) 
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).Build()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fakeClient, unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, wf); err != nil {
 		t.Fatal(err)
 	}
@@ -3639,6 +4000,7 @@ func TestTriggerManager_RegisterWorkflow_ShrunkTriggers_StopsRemovedIndex(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger(), podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3657,6 +4019,7 @@ func TestTriggerManager_RegisterWorkflow_EventReplacedByCron_StopsWatcher(t *tes
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("wf", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3673,6 +4036,7 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 	ctx := context.Background()
 	factory := &fakeWatcherFactory{}
 	tm := NewTriggerManagerWithWatcherFactory(fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), unitTestScheme, nil, factory)
+	tm.SetEventTriggerAllowedNamespaces([]string{"default"})
 	if err := tm.RegisterWorkflow(ctx, eventTestWorkflow("a", podEventTrigger())); err != nil {
 		t.Fatal(err)
 	}
@@ -3684,5 +4048,19 @@ func TestTriggerManager_RegisterWorkflow_DoesNotStopPrefixCollidingWorkflow(t *t
 	}
 	if _, ok := tm.eventWatchers["default/a-event-0-x-event-0-resource-0"]; !ok || watchClosed(factory.get(1)) {
 		t.Fatal("re-registering a stopped the watcher of a-event-0-x")
+	}
+}
+
+func TestWebhookServer_StartListenError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	s := NewWebhookServer(ln.Addr().String(), logr.Discard(), nil, nil)
+	if err := s.Start(ctx); err == nil {
+		t.Fatal("Start on a bound address should return an error")
 	}
 }

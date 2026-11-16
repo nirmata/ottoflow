@@ -11,7 +11,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,9 +24,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
@@ -32,7 +36,7 @@ import (
 // fakeClientWithEventIndex builds a fake client with the field indexes detectStuckRunnerPod's
 // event List needs ("involvedObject.name"/".kind"): the controller-runtime fake client only
 // serves a field selector for an explicitly registered index.
-func fakeClientWithEventIndex(objs ...client.Object) client.Client {
+func fakeClientWithEventIndex(objs ...client.Object) client.WithWatch {
 	return fake.NewClientBuilder().WithScheme(unitTestScheme).
 		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
 			return []string{o.(*corev1.Event).InvolvedObject.Name}
@@ -43,15 +47,54 @@ func fakeClientWithEventIndex(objs ...client.Object) client.Client {
 		WithObjects(objs...).Build()
 }
 
+var testPodSeq atomic.Int64
+
+func testPodUID() types.UID {
+	return types.UID(fmt.Sprintf("stuck-test-pod-%d", testPodSeq.Add(1)))
+}
+
+func stuckWaitingSeen(pod *corev1.Pod) *corev1.Pod {
+	pod.UID = testPodUID()
+	var keys []string
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting != nil {
+			keys = append(keys, waitingKey(cs))
+		}
+	}
+	stuckPods.observeWaiting(pod.UID, keys, time.Now().Add(-2*stuckPodGracePeriod))
+	return pod
+}
+
+func pendingPodWithMountState(namespace, name string, ready corev1.ConditionStatus) *corev1.Pod {
+	conds := []corev1.PodCondition{{
+		Type: corev1.PodScheduled, Status: corev1.ConditionTrue,
+		LastTransitionTime: metav1.NewTime(time.Now().Add(-5 * stuckPodGracePeriod)),
+	}}
+	if ready != "" {
+		conds = append(conds, corev1.PodCondition{Type: corev1.PodReadyToStartContainers, Status: ready})
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: testPodUID()},
+		Status:     corev1.PodStatus{Phase: corev1.PodPending, Conditions: conds},
+	}
+}
+
+func withFailingSpan(ev *corev1.Event, span time.Duration) *corev1.Event {
+	now := time.Now()
+	ev.FirstTimestamp = metav1.NewTime(now.Add(-span))
+	ev.LastTimestamp = metav1.NewTime(now)
+	return ev
+}
+
 // failedMountEvent returns a FailedMount Event referencing the named pod in defaultNamespace —
 // every caller in this package operates in defaultNamespace, so the namespace is not a parameter.
 func failedMountEvent(podName string) *corev1.Event {
-	return &corev1.Event{
+	return withFailingSpan(&corev1.Event{
 		ObjectMeta:     metav1.ObjectMeta{Name: podName + "-evt", Namespace: defaultNamespace},
 		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: podName, Namespace: defaultNamespace},
 		Reason:         "FailedMount",
 		Message:        `MountVolume.SetUp failed for volume "secret-0": secret "missing" not found`,
-	}
+	}, 3*stuckPodGracePeriod)
 }
 
 func TestDetectStuckRunnerPod_CreateContainerConfigError(t *testing.T) {
@@ -78,6 +121,7 @@ func TestDetectStuckRunnerPod_CreateContainerConfigError(t *testing.T) {
 			},
 		},
 	}
+	stuckWaitingSeen(pod)
 	msg, reason := r.detectStuckRunnerPod(context.Background(), pod)
 	if msg == "" {
 		t.Fatal("expected a non-empty stuck-pod message")
@@ -138,14 +182,15 @@ func TestDetectStuckRunnerPod_CreateContainerError_ReasonEmpty(t *testing.T) {
 	}
 }
 
-func TestDetectStuckRunnerPod_WithinGracePeriod_NotStuck(t *testing.T) {
+func TestDetectStuckRunnerPod_FirstSighting_NotStuck(t *testing.T) {
 	ns := defaultNamespace
 	r := &WorkflowRunReconciler{Client: fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), Scheme: unitTestScheme}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "run-1-runner-abcde",
 			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now()), // just created
+			UID:               testPodUID(),
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Hour)),
 		},
 		Status: corev1.PodStatus{
 			Phase: corev1.PodPending,
@@ -158,7 +203,7 @@ func TestDetectStuckRunnerPod_WithinGracePeriod_NotStuck(t *testing.T) {
 		},
 	}
 	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg != "" {
-		t.Errorf("expected no stuck-pod message within the grace period, got: %s", msg)
+		t.Errorf("expected no stuck-pod message on the first sighting of a reason, got: %s", msg)
 	}
 }
 
@@ -209,6 +254,7 @@ func TestWorkflowRunReconciler_Reconcile_StuckPod_FailsRunWithActionableMessage(
 			},
 		},
 	}
+	stuckWaitingSeen(pod)
 	clusterRole := &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}}
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "controller-manager", Namespace: ns}}
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).
@@ -235,18 +281,11 @@ func TestWorkflowRunReconciler_Reconcile_StuckPod_FailsRunWithActionableMessage(
 	}
 }
 
-// TestDetectStuckRunnerPod_RunningPodStaleFailedMount_NotStuck proves a healthy Running pod
-// carrying a stale FailedMount event (from a mount attempt that later succeeded) is NOT failed.
+// TestDetectStuckRunnerPod_RunningPodStaleFailedMount_NotStuck proves a Running pod
+// carrying a stale FailedMount event is NOT failed.
 func TestDetectStuckRunnerPod_RunningPodStaleFailedMount_NotStuck(t *testing.T) {
-	ns := defaultNamespace
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "run-1-runner-abcde",
-			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodRunning},
-	}
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
+	pod.Status.Phase = corev1.PodRunning
 	r := &WorkflowRunReconciler{
 		Client: fakeClientWithEventIndex(failedMountEvent(pod.Name)),
 		Scheme: unitTestScheme,
@@ -260,15 +299,7 @@ func TestDetectStuckRunnerPod_RunningPodStaleFailedMount_NotStuck(t *testing.T) 
 // (past grace, with a FailedMount event) is still detected — the Pending gate must not disable
 // legitimate detection.
 func TestDetectStuckRunnerPod_PendingPodFailedMount_Stuck(t *testing.T) {
-	ns := defaultNamespace
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "run-1-runner-abcde",
-			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodPending},
-	}
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
 	r := &WorkflowRunReconciler{
 		Client: fakeClientWithEventIndex(failedMountEvent(pod.Name)),
 		Scheme: unitTestScheme,
@@ -290,21 +321,9 @@ func TestDetectStuckRunnerPod_PendingPodFailedMount_Stuck(t *testing.T) {
 // corev1.Volume, so a mount failure can be about a volume type (e.g. an unbound
 // PersistentVolumeClaim) that has nothing to do with a Secret or ConfigMap reference.
 func TestDetectStuckRunnerPod_FailedMountUnrelatedVolume_ReasonEmpty(t *testing.T) {
-	ns := defaultNamespace
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "run-1-runner-abcde",
-			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodPending},
-	}
-	evt := &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{Name: pod.Name + "-evt", Namespace: ns},
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: pod.Name, Namespace: ns},
-		Reason:         "FailedMount",
-		Message:        `MountVolume.SetUp failed for volume "data-0": PersistentVolumeClaim is not bound`,
-	}
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
+	evt := failedMountEvent(pod.Name)
+	evt.Message = `MountVolume.SetUp failed for volume "data-0": PersistentVolumeClaim is not bound`
 	r := &WorkflowRunReconciler{
 		Client: fakeClientWithEventIndex(evt),
 		Scheme: unitTestScheme,
@@ -322,7 +341,7 @@ func TestDetectStuckRunnerPod_FailedMountUnrelatedVolume_ReasonEmpty(t *testing.
 // container stuck Waiting on the given reason/message — the shared shape behind wedgedPod and
 // createContainerErrorPod, which differ only in which Waiting.Reason detectStuckRunnerPod sees.
 func waitingReasonPod(namespace, name, reason, message string) *corev1.Pod {
-	return &corev1.Pod{
+	return stuckWaitingSeen(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              name,
 			Namespace:         namespace,
@@ -342,7 +361,7 @@ func waitingReasonPod(namespace, name, reason, message string) *corev1.Pod {
 				},
 			},
 		},
-	}
+	})
 }
 
 // wedgedPod returns a Pending pod, past the stuck-pod grace period, with a container stuck in
@@ -474,14 +493,7 @@ func TestHandleStuckRunnerPod_FailureReasonClassification(t *testing.T) {
 		{
 			name: "FailedMount event classifies RunnerRefUnresolved",
 			buildPod: func(ns, name string) *corev1.Pod {
-				return &corev1.Pod{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:              name,
-						Namespace:         ns,
-						CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-					},
-					Status: corev1.PodStatus{Phase: corev1.PodPending},
-				}
+				return pendingPodWithMountState(ns, name, corev1.ConditionFalse)
 			},
 			withEvent:  true,
 			wantReason: ottoflowv1alpha1.WorkflowRunFailureReasonRunnerRefUnresolved,
@@ -565,20 +577,9 @@ func TestHandleStuckRunnerPod_FailedMount_AttributesGeneratedVolume(t *testing.T
 			Annotations: map[string]string{generatedSecretVolumeOriginsAnnotation: string(originsJSON)},
 		},
 	}
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:              "run-1-runner-abcde",
-			Namespace:         ns,
-			CreationTimestamp: metav1.NewTime(time.Now().Add(-time.Minute)),
-		},
-		Status: corev1.PodStatus{Phase: corev1.PodPending},
-	}
-	evt := &corev1.Event{
-		ObjectMeta:     metav1.ObjectMeta{Name: pod.Name + "-evt", Namespace: ns},
-		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: pod.Name, Namespace: ns},
-		Reason:         "FailedMount",
-		Message:        `MountVolume.SetUp failed for volume "ottoflow-secret-0": secret "missing" not found`,
-	}
+	pod := pendingPodWithMountState(ns, "run-1-runner-abcde", corev1.ConditionFalse)
+	evt := failedMountEvent(pod.Name)
+	evt.Message = `MountVolume.SetUp failed for volume "ottoflow-secret-0": secret "missing" not found`
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).
 		WithIndex(&corev1.Event{}, "involvedObject.name", func(o client.Object) []string {
 			return []string{o.(*corev1.Event).InvolvedObject.Name}
@@ -615,5 +616,247 @@ func TestHandleStuckRunnerPod_FailedMount_AttributesGeneratedVolume(t *testing.T
 	getErr := fakeClient.Get(context.Background(), types.NamespacedName{Name: job.Name, Namespace: ns}, got)
 	if !apierrors.IsNotFound(getErr) {
 		t.Errorf("expected the stuck Job to be deleted, got err=%v", getErr)
+	}
+}
+
+func TestDetectStuckRunnerPod_FailedMountGating(t *testing.T) {
+	tests := []struct {
+		name         string
+		ready        corev1.ConditionStatus
+		unscheduled  bool
+		scheduledAgo time.Duration
+		span         time.Duration
+		lastAgo      time.Duration
+		sandbox      bool
+		sandboxAgo   time.Duration
+		wantStuck    bool
+		wantLists    int
+	}{
+		{name: "condition True: the recovered mount's Events are stale", ready: corev1.ConditionTrue, span: 3 * stuckPodGracePeriod},
+		{name: "condition absent: detection is skipped", ready: "", span: 3 * stuckPodGracePeriod},
+		{name: "condition False and failing for the whole window", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod, wantStuck: true, wantLists: 1},
+		{name: "condition False and failing for less than the window", ready: corev1.ConditionFalse, span: 10 * time.Second, wantLists: 1},
+		{name: "condition False, but the Event stopped firing", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: stuckPodEventListInterval + stuckPodGracePeriod + time.Minute, wantLists: 1},
+		{name: "condition False, but sandbox setup failed after the last mount failure", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: time.Minute, sandbox: true, wantLists: 1},
+		{name: "condition False, and sandbox setup failed before the last mount failure", ready: corev1.ConditionFalse, span: 3 * stuckPodGracePeriod,
+			lastAgo: time.Minute, sandbox: true, sandboxAgo: 2 * time.Minute, wantStuck: true, wantLists: 1},
+		{name: "not scheduled", ready: corev1.ConditionFalse, unscheduled: true, span: 3 * stuckPodGracePeriod},
+		{name: "scheduled less than a window ago", ready: corev1.ConditionFalse, scheduledAgo: 10 * time.Second, span: 3 * stuckPodGracePeriod},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", tt.ready)
+			if tt.unscheduled {
+				pod.Status.Conditions[0].Status = corev1.ConditionFalse
+			}
+			if tt.scheduledAgo != 0 {
+				pod.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-tt.scheduledAgo))
+			}
+			ev := failedMountEvent(pod.Name)
+			last := time.Now().Add(-tt.lastAgo)
+			ev.FirstTimestamp, ev.LastTimestamp = metav1.NewTime(last.Add(-tt.span)), metav1.NewTime(last)
+			objs := []client.Object{ev}
+			if tt.sandbox {
+				sb := failedMountEvent(pod.Name)
+				sb.Name, sb.Reason = pod.Name+"-sandbox", "FailedCreatePodSandBox"
+				sb.LastTimestamp = metav1.NewTime(time.Now().Add(-tt.sandboxAgo))
+				objs = append(objs, sb)
+			}
+			lists := 0
+			c := interceptor.NewClient(fakeClientWithEventIndex(objs...), interceptor.Funcs{
+				List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*corev1.EventList); ok {
+						lists++
+					}
+					return cl.List(ctx, list, opts...)
+				},
+			})
+			r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+			msg, _ := r.detectStuckRunnerPod(context.Background(), pod)
+			if (msg != "") != tt.wantStuck {
+				t.Errorf("stuck = %v, want %v (msg %q)", msg != "", tt.wantStuck, msg)
+			}
+			if lists != tt.wantLists {
+				t.Errorf("Events lists = %d, want %d", lists, tt.wantLists)
+			}
+		})
+	}
+}
+
+func TestStuckPodMemory(t *testing.T) {
+	t0 := time.Now()
+	keys := []string{"workflow-runner/CreateContainerConfigError"}
+	newMemory := func() *stuckPodMemory { return &stuckPodMemory{pods: map[types.UID]*stuckPodEntry{}} }
+
+	t.Run("a pod with nothing waiting gets no entry", func(t *testing.T) {
+		m := newMemory()
+		m.observeWaiting("a", nil, t0)
+		if len(m.pods) != 0 {
+			t.Errorf("a pod with nothing waiting was recorded: %v", m.pods)
+		}
+	})
+	t.Run("the first sighting is kept until a reconcile no longer sees the reason", func(t *testing.T) {
+		m := newMemory()
+		if got := m.observeWaiting("a", keys, t0)[keys[0]]; !got.Equal(t0) {
+			t.Errorf("first sighting = %v, want %v", got, t0)
+		}
+		if got := m.observeWaiting("a", keys, t0.Add(30*time.Second))[keys[0]]; !got.Equal(t0) {
+			t.Errorf("a later sighting moved the first one to %v", got)
+		}
+		m.observeWaiting("a", nil, t0.Add(40*time.Second))
+		if got := m.observeWaiting("a", keys, t0.Add(50*time.Second))[keys[0]]; !got.Equal(t0.Add(50 * time.Second)) {
+			t.Errorf("a reason that came back kept its old first sighting %v", got)
+		}
+	})
+	t.Run("Events are listed once per interval per pod", func(t *testing.T) {
+		m := newMemory()
+		if !m.listDue("a", t0) {
+			t.Error("the first list of a pod must be due")
+		}
+		m.markListed("a", t0)
+		if m.listDue("a", t0.Add(stuckPodEventListInterval-time.Second)) {
+			t.Error("a second list inside the interval must not be due")
+		}
+		if !m.listDue("b", t0.Add(time.Second)) {
+			t.Error("another pod's first list must be due")
+		}
+		if !m.listDue("a", t0.Add(stuckPodEventListInterval)) {
+			t.Error("a list one interval later must be due")
+		}
+	})
+	t.Run("a pod no reconcile touched within the TTL is forgotten", func(t *testing.T) {
+		m := newMemory()
+		m.observeWaiting("old", keys, t0)
+		m.observeWaiting("new", keys, t0.Add(stuckPodMemoryTTL+time.Second))
+		if _, ok := m.pods["old"]; ok {
+			t.Error("the stale pod entry was kept")
+		}
+		if _, ok := m.pods["new"]; !ok {
+			t.Error("the fresh pod entry was dropped")
+		}
+	})
+}
+
+func TestDetectStuckRunnerPod_FailedEventsListIsRetriedOnTheNextReconcile(t *testing.T) {
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
+	lists := 0
+	c := interceptor.NewClient(fakeClientWithEventIndex(failedMountEvent(pod.Name)), interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.EventList); ok {
+				lists++
+				if lists == 1 {
+					return apierrors.NewInternalError(errors.New("etcd unavailable"))
+				}
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	})
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+
+	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg != "" {
+		t.Fatalf("a failed Events list must not fail the run, got: %s", msg)
+	}
+	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg == "" {
+		t.Error("the reconcile after a failed Events list must list again and find the mount failure")
+	}
+}
+
+func TestDetectStuckRunnerPod_StuckResultIsReportedAgainOnTheNextReconcile(t *testing.T) {
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
+	r := &WorkflowRunReconciler{Client: fakeClientWithEventIndex(failedMountEvent(pod.Name)), Scheme: unitTestScheme}
+
+	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg == "" {
+		t.Fatal("a qualifying FailedMount Event must report the pod stuck")
+	}
+	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg == "" {
+		t.Error("the reconcile after a failed status write must list again and report the pod stuck again")
+	}
+}
+
+func TestDetectStuckRunnerPod_EventsListedOncePerInterval(t *testing.T) {
+	pod := pendingPodWithMountState(defaultNamespace, "run-1-runner-abcde", corev1.ConditionFalse)
+	lists := 0
+	c := interceptor.NewClient(fakeClientWithEventIndex(withFailingSpan(failedMountEvent(pod.Name), 10*time.Second)), interceptor.Funcs{
+		List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if _, ok := list.(*corev1.EventList); ok {
+				lists++
+			}
+			return cl.List(ctx, list, opts...)
+		},
+	})
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+	for range 3 {
+		if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg != "" {
+			t.Fatalf("an Event that failed for less than the window must not fail the run, got: %s", msg)
+		}
+	}
+	if lists != 1 {
+		t.Errorf("Events lists over three reconciles = %d, want 1", lists)
+	}
+}
+
+func TestDetectStuckRunnerPod_FinishedPodForgotten(t *testing.T) {
+	pod := wedgedPod(defaultNamespace, "run-1-runner-abcde")
+	pod.Status.Phase = corev1.PodSucceeded
+	r := &WorkflowRunReconciler{Client: fake.NewClientBuilder().WithScheme(unitTestScheme).Build(), Scheme: unitTestScheme}
+	if msg, _ := r.detectStuckRunnerPod(context.Background(), pod); msg != "" {
+		t.Fatalf("a finished pod is never stuck, got: %s", msg)
+	}
+	stuckPods.mu.Lock()
+	_, kept := stuckPods.pods[pod.UID]
+	stuckPods.mu.Unlock()
+	if kept {
+		t.Error("a finished pod's memory was kept")
+	}
+}
+
+func TestHandleStuckRunnerPod_RetriesJobDeleteInPlace(t *testing.T) {
+	tests := []struct {
+		name     string
+		failures int
+		wantErr  bool
+	}{
+		{name: "the delete recovers within the retries", failures: retry.DefaultBackoff.Steps - 1},
+		{name: "the delete keeps failing", failures: retry.DefaultBackoff.Steps + 10, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns := defaultNamespace
+			wr := &ottoflowv1alpha1.WorkflowRun{
+				ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+				Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+				Status:     ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning},
+			}
+			job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: "run-1-runner", Namespace: ns}}
+			base := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wr, job).Build()
+			attempts := 0
+			c := interceptor.NewClient(base, interceptor.Funcs{
+				Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					attempts++
+					if attempts <= tt.failures {
+						return apierrors.NewInternalError(errors.New("etcd unavailable"))
+					}
+					return cl.Delete(ctx, obj, opts...)
+				},
+			})
+			r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: wr.Name, Namespace: ns}}
+
+			handled, err := r.handleStuckRunnerPod(context.Background(), req, wr, job, wedgedPod(ns, "run-1-runner-abcde"))
+			if !handled {
+				t.Fatal("expected handled=true")
+			}
+			if (err != nil) != tt.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if attempts != retry.DefaultBackoff.Steps {
+				t.Errorf("delete attempts = %d, want %d", attempts, retry.DefaultBackoff.Steps)
+			}
+			if gone := apierrors.IsNotFound(base.Get(context.Background(), client.ObjectKeyFromObject(job), &batchv1.Job{})); gone == tt.wantErr {
+				t.Errorf("Job gone = %v, want %v", gone, !tt.wantErr)
+			}
+		})
 	}
 }

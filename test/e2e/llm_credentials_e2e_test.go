@@ -10,6 +10,7 @@ that can be found in the LICENSE.md file.
 package e2e
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -276,19 +277,46 @@ spec:
 	})
 
 	Context("Agent step with spec.execution.llmCredentialsSecret opt-in (no spec.execution.job.env)", func() {
-		// Note: this test uses namespace="ottoflow" (same as the controller) which means a regression
-		// where the controller reads from its own namespace instead of workflowRun.Namespace would not
+		// Note: this test uses its own tenant namespace, not the controller's, which means a regression
+		// where the controller reads from its own namespace instead of workflowRun.Namespace would
 		// be caught here. Namespace isolation is covered by unit test
 		// TestBuildWorkflowRunnerJob_InjectsWellKnownLLMCredentials.
 		It("injects credentials when explicitly opted in via spec.execution.llmCredentialsSecret", func() {
-			applyManifestAndAssertCredentialsForwarded(
-				"creating Secret, Agent, Workflow, and WorkflowRun (opted in via spec, no LLM env)",
-				"ottoflow-e2e-wk-*.yaml",
-				`apiVersion: v1
+			const (
+				tenant = "e2e-llm-optin"
+				run    = "e2e-wk-run"
+			)
+			ensureNamespace(tenant)
+			mustApplyYAML(fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: e2e-wk-creds-reader
+  namespace: %[1]s
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["e2e-wk-creds"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: e2e-wk-creds-reader
+  namespace: %[1]s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: e2e-wk-creds-reader
+subjects:
+  - kind: ServiceAccount
+    name: %[2]s
+    namespace: %[3]s
+`, tenant, controllerServiceAccount, namespace))
+			mustApplyYAML(fmt.Sprintf(`apiVersion: v1
 kind: Secret
 metadata:
   name: e2e-wk-creds
-  namespace: ottoflow
+  namespace: %[1]s
 type: Opaque
 stringData:
   NIRMATA_LLM_TOKEN: "e2e-wellknown-placeholder-token"
@@ -297,7 +325,7 @@ apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Agent
 metadata:
   name: e2e-wk-agent
-  namespace: ottoflow
+  namespace: %[1]s
 spec:
   prompt: "You are helpful."
   modelProvider: nirmata
@@ -306,32 +334,45 @@ apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:
   name: e2e-wk-workflow
-  namespace: ottoflow
+  namespace: %[1]s
 spec:
   steps:
     - name: agentstep
       agentRef:
         name: e2e-wk-agent
-        namespace: ottoflow
+        namespace: %[1]s
       expressions:
         - name: result
           expression: '"ok"'
----
-apiVersion: ottoflow.nirmata.io/v1alpha1
+`, tenant))
+
+			By("waiting for the grant to take effect: a denied read is terminal, so it must precede the run")
+			Eventually(func() string {
+				return canI("get", "secrets/e2e-wk-creds", tenant, namespace, controllerServiceAccount)
+			}, time.Minute, time.Second).Should(Equal("yes"))
+
+			mustApplyYAML(fmt.Sprintf(`apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: WorkflowRun
 metadata:
-  name: e2e-wk-run
-  namespace: ottoflow
+  name: %[2]s
+  namespace: %[1]s
 spec:
   workflowRef:
     name: e2e-wk-workflow
-    namespace: ottoflow
+    namespace: %[1]s
   execution:
     llmCredentialsSecret:
       name: e2e-wk-creds
-`,
-				"e2e-wk-run",
-			)
+`, tenant, run))
+
+			By("waiting for the run to fail at the agent step (placeholder token), not at the credentials read")
+			Eventually(func() string { return runPhase(tenant, run) }, 3*time.Minute, 2*time.Second).
+				Should(Equal("Failed"), lazyRunDiagnostics(tenant, run, "WorkflowRun %s/%s did not fail.", tenant, run))
+			Expect(stepMessage(tenant, run, "agentstep")).NotTo(BeEmpty(),
+				lazyRunDiagnostics(tenant, run, "the run failed before its agent step ran, so the opted-in Secret was never injected."))
+			Expect(runFailureReason(tenant, run)).NotTo(Equal("SecretAccessDenied"), lazyRunDiagnostics(tenant, run, ""))
+			Expect(runMessage(tenant, run)).NotTo(ContainSubstring("Nirmata LLM credentials required"),
+				"credentials must have reached the agent-executor")
 		})
 	})
 

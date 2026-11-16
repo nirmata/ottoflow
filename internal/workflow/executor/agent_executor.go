@@ -122,7 +122,7 @@ func (e *WorkflowExecutor) executeAgentStep(ctx context.Context, workflowRun *ot
 	// Start with agent's base prompt (static, no CEL evaluation)
 	promptParts := []string{agentCRD.Spec.Prompt}
 
-	// Evaluate and append additional prompts from step (can contain CEL expressions)
+	// Evaluate and append additional prompts from step (each entry is evaluated as one CEL expression)
 	if len(agentRef.AdditionalPrompts) > 0 {
 		for _, additionalPromptTemplate := range agentRef.AdditionalPrompts {
 			// Evaluate each additional prompt with workflow context

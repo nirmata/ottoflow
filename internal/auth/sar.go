@@ -21,12 +21,21 @@ import (
 	"k8s.io/klog/v2"
 )
 
-// AgentExecutorCallerResourceName is the name of the virtual ConfigMap used for RBAC.
-// A ClusterRole that grants "get" on configmaps with this name is bound to runner SAs;
+// CallerAPIGroup, CallerResource and CallerVerb name a virtual permission on a resource nothing
+// serves, in a group reserved for it (never add a CRD there): a rule grants it only if its
+// apiGroups, resources and verbs each list the value or "*".
+const (
+	CallerAPIGroup = "gate.ottoflow.nirmata.io"
+	CallerResource = "callers"
+	CallerVerb     = "invoke"
+)
+
+// AgentExecutorCallerResourceName is the resourceName of the caller permission for the agent executor.
+// A ClusterRole that grants "invoke" on callers.gate.ottoflow.nirmata.io with this name is bound to runner SAs;
 // the agent executor uses SubjectAccessReview against this permission to allow callers.
 const AgentExecutorCallerResourceName = "agent-executor-caller"
 
-// MCPCallerResourceName is the virtual ConfigMap name behind "who may invoke a
+// MCPCallerResourceName is the resourceName behind "who may invoke a
 // workflow as an MCP tool". It is deliberately not AgentExecutorCallerResourceName:
 // calling the agent executor and running any workflow in the cluster are
 // different grants, and one ClusterRole for both would make the narrower one
@@ -40,20 +49,17 @@ const serviceAccountContextKey contextKey = "serviceAccount"
 // TokenReviewAndSARAuthenticator authenticates by validating the bearer token (TokenReview)
 // and then checking that the identity has a specific RBAC permission (SubjectAccessReview).
 // This allows operators to manage "who can call the agent executor" via Kubernetes RBAC
-// (ClusterRole + ClusterRoleBindings) instead of an explicit allowlist in the binary.
+// (a ClusterRole or Role, bound in the checked namespace) instead of an explicit allowlist in the binary.
 type TokenReviewAndSARAuthenticator struct {
 	k8sClient      kubernetes.Interface
 	checkNamespace string
-	checkResource  string // ConfigMap name to check (e.g. AgentExecutorCallerResourceName)
+	checkResource  string // caller resourceName to check (e.g. AgentExecutorCallerResourceName)
 	// audiences is sent as TokenReview.spec.audiences. Nil/empty omits the field, so the
 	// apiserver validates against its own audience (the behaviour every pre-existing caller has).
 	audiences []string
 }
 
-// NewTokenReviewAndSARAuthenticator creates an authenticator that allows any identity
-// which has "get" on configmaps named checkResource in checkNamespace (typically the
-// ottoflow release namespace). Bind a ClusterRole with that rule to runner and
-// controller ServiceAccounts so they can call the agent executor.
+// NewTokenReviewAndSARAuthenticator allows identities with "invoke" on callers.gate.ottoflow.nirmata.io/checkResource in checkNamespace.
 func NewTokenReviewAndSARAuthenticator(k8sClient kubernetes.Interface, checkNamespace, checkResource string) *TokenReviewAndSARAuthenticator {
 	if checkResource == "" {
 		checkResource = AgentExecutorCallerResourceName
@@ -110,16 +116,16 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 		return "", fmt.Errorf("invalid service account format: %s", saName)
 	}
 
-	// 2) SubjectAccessReview: can this identity get the caller ConfigMap in the check namespace?
+	// 2) SubjectAccessReview: can this identity invoke the caller resource in the check namespace?
 	sar := &authorizationv1.SubjectAccessReview{
 		Spec: authorizationv1.SubjectAccessReviewSpec{
 			User:   saName,
 			Groups: result.Status.User.Groups,
 			ResourceAttributes: &authorizationv1.ResourceAttributes{
 				Namespace: a.checkNamespace,
-				Verb:      "get",
-				Group:     "",
-				Resource:  "configmaps",
+				Verb:      CallerVerb,
+				Group:     CallerAPIGroup,
+				Resource:  CallerResource,
 				Name:      a.checkResource,
 			},
 		},
@@ -130,7 +136,8 @@ func (a *TokenReviewAndSARAuthenticator) AuthenticateRequest(r *http.Request) (s
 		return "", fmt.Errorf("permission check failed: %w", err)
 	}
 	if !sarResult.Status.Allowed {
-		klog.Warningf("ServiceAccount %s not allowed to call agent executor (SAR denied)", saName)
+		klog.Warningf("ServiceAccount %s denied: no %s on %s.%s/%s in namespace %s (SAR denied)",
+			saName, CallerVerb, CallerResource, CallerAPIGroup, a.checkResource, a.checkNamespace)
 		return "", fmt.Errorf("service account %s not allowed", saName)
 	}
 

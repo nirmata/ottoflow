@@ -4,11 +4,12 @@ OttoFlow exposes Prometheus metrics for workflow execution observability. Metric
 
 ## Built-in Metrics
 
-The controller emits the following metrics for all workflow executions:
+The controller emits the following metrics for workflow executions and event triggers:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `ottoflow_workflow_runs_total` | Counter | `workflow`, `namespace`, `phase` | Total WorkflowRuns by phase (`succeeded`, `failed`) |
+| `ottoflow_workflow_trigger_events_dropped_total` | Counter | `workflow`, `namespace`, `reason` | Event-trigger events dropped on a WorkflowRun create-path error (`reason`: `api_error`) |
 | `ottoflow_workflow_run_duration_seconds` | Histogram | `workflow`, `namespace` | Duration from workflow start to completion |
 | `ottoflow_workflow_steps_total` | Counter | `workflow`, `namespace`, `step`, `phase` | Total step executions by phase (`succeeded`, `failed`, `skipped`) |
 | `ottoflow_workflow_step_duration_seconds` | Histogram | `workflow`, `namespace`, `step` | Step execution duration |
@@ -20,6 +21,7 @@ The controller emits the following metrics for all workflow executions:
 - **namespace**: WorkflowRun namespace
 - **step**: Step name (for step-level metrics)
 - **phase**: `succeeded`, `failed`, or `skipped`
+- **reason**: why an event-trigger event was dropped (`api_error`: the WorkflowRun create path returned an error)
 
 ### Example Queries
 

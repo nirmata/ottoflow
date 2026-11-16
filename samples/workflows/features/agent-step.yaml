@@ -40,7 +40,7 @@ spec:
         name: analysis-agent
         namespace: ottoflow
         # Optional: add additional prompts that are appended to the agent's system prompt
-        # Each prompt can contain CEL expressions that reference workflow context like inputs, variables, and step outputs
+        # Each prompt is evaluated as one CEL expression that can reference inputs, variables, and step outputs
         additionalPrompts:
           - >-
             format("Analyze this Kubernetes deployment:\nName: %s\nNamespace: %s\nReplicas: %d\nImage: %s\n\nProvide optimization recommendations.",

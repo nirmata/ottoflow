@@ -12,3 +12,6 @@ controller:
   # targets the named container port, so the endpoint above is unchanged.
   mcp:
     enabled: true
+# Renders ottoflow-a2a-caller for the caller-gate spec.
+serveA2A:
+  enabled: true

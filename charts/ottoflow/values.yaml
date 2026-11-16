@@ -19,8 +19,6 @@ controller:
     repository: controller
     # When empty, chart uses .Chart.AppVersion (fixed tag for released charts)
     tag: ""
-    # Override image name if needed
-    nameOverride: ""
     # Override full image if needed
     fullOverride: ""
 
@@ -96,6 +94,10 @@ controller:
   # Command arguments
   args:
     - --leader-elect
+
+  # Workflow namespaces whose event triggers may watch other or all namespaces (empty: own namespace only).
+  # Each listed namespace's Workflows get the controller's watch access in every namespace.
+  eventTriggerAllowedSourceNamespaces: []
 
   # Callback server for waitForCallback steps (POST /api/v1/workflow-runs/.../callback/...).
   callback:
@@ -272,7 +274,7 @@ agentExecutor:
   # Pod labels
   podLabels: {}
 
-  # Namespace used for RBAC auth (SubjectAccessReview checks get configmaps/agent-executor-caller in this namespace).
+  # Namespace used for RBAC auth (SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace).
   # Defaults to release namespace.
   callerNamespace: ""
 
@@ -287,7 +289,7 @@ agentExecutor:
   # Listing an origin trusts it with this pod's LLM credentials: any Agent may name a listed
   # origin, and every provider client that uses the endpoint (with the pinned gollm,
   # azure-openai) sends its credential there together with the full prompt. Do not list a host
-  # you do not control.
+  # you do not control. List only origins that do not redirect to another origin.
   #
   # Matching: scheme exact; host case-insensitive, trailing dot ignored; default ports :443 and
   # :80 folded. No wildcards. The Agent's endpoint must itself be origin-only (a trailing "/" is
@@ -295,7 +297,8 @@ agentExecutor:
   # azure-openai additionally requires an https:// endpoint.
   #
   # Upgrade note: Agents that set spec.config.endpoint ran before this setting existed and now
-  # fail until their origin is listed here.
+  # fail until their origin is listed here. See docs/user/upgrades/llm-endpoint-allowlist.md
+  # (also covers skipVerifySSL).
   llmEndpointAllowlist: []
 
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
@@ -345,6 +348,8 @@ workflowRunner:
   # Default service account name for runner Jobs.
   # When empty, the controller derives a per-workflow "{workflow-name}-runner" service account
   # bound to the narrowed runner ClusterRole (see rbac.runnerClusterRole below).
+  # An existing derived or shared account must carry the label app.kubernetes.io/part-of: ottoflow,
+  # or runs on it fail and nothing is bound. Use a dedicated name, never "default".
   # Setting this to the controller's own service account re-grants full controller privileges
   # to every runner Job — only do this if you understand the privilege-escalation trade-off.
   serviceAccountName: ""
@@ -375,14 +380,13 @@ workflowRunner:
   # Set to a Secret name to enable cluster-level injection, or use spec.execution.llmCredentialsSecret per run.
   llmCredentialsSecret: ""
 
-  # Name of the agent-executor CA Secret in the install namespace. For a workflow that has an agent step, the
+  # The agent-executor CA Secret in the install namespace is named by the controller's certificate manager when
+  # agent executor TLS is internal. For a workflow that has an agent step, the
   # controller publishes that Secret's certificate (tls.crt only, never the private key) as a ConfigMap of the
   # same name in the WorkflowRun's namespace and mounts it into the runner Job (as ca.crt at
   # /etc/ottoflow/agent-executor-ca) so the runner can verify agent-executor TLS. Nothing has to be created or
   # granted in that namespace: the controller's ClusterRole already lets it create and update ConfigMaps. A
-  # runner whose workflow has no agent step never calls the agent-executor and does not mount it. Defaults to
-  # the CA Secret name the controller's certificate manager uses when agent executor TLS is internal.
-  agentExecutorCASecret: ""
+  # runner whose workflow has no agent step never calls the agent-executor and does not mount it.
 
 # serve-a2a exposure configuration.
 # When enabled, the controller publishes Workflows with spec.expose.kagent set as kagent BYO
@@ -416,7 +420,7 @@ serveA2A:
 
   # Caller authentication on serve-a2a pods. By default every call except the public agent card
   # needs a bearer ServiceAccount token minted with --audience=ottoflow-a2a (checked with
-  # TokenReview) whose ServiceAccount holds "get configmaps/a2a-caller" in the Workflow's
+  # TokenReview) whose ServiceAccount holds "invoke callers.gate.ottoflow.nirmata.io/a2a-caller" in the Workflow's
   # namespace (checked with SubjectAccessReview). The chart creates the ClusterRoles
   # <fullname>-a2a-token-reviewer and <fullname>-a2a-caller; the operator binds them (see
   # docs/user/tasks/workflows-as-a2a-agents.md).
@@ -450,7 +454,7 @@ rbac:
   # Opt-in named-Secret access (break-by-default).
   # OttoFlow ships with ZERO cluster-wide Secret access for every component. Features that read a
   # Secret — automatic LLM credential injection, webhook HMAC verification, cron inputValuesFrom,
-  # agent/MCP server credentials, external-agent auth — DO NOT WORK until an operator grants access
+  # an agent step's MCP tool credentials — DO NOT WORK until an operator grants access
   # to the specific Secrets they use. Each component takes a LIST of {namespace, secretNames}
   # entries — one entry per TENANT namespace — so a multi-tenant release grants access for every
   # tenant from one values file. For each entry the chart renders a Role+RoleBinding in that
@@ -620,14 +624,6 @@ networkPolicy:
       - protocol: TCP
         port: 4317
 
-# CRD installation
-crds:
-  # Specifies whether CRDs should be installed
-  install: true
-  # CRD installation mode: "install" (default) or "skip"
-  # Use "skip" if CRDs are managed outside of Helm
-  mode: install
-
 # Namespace configuration
 namespace:
   # Namespace name (if not set, uses Release.Namespace from helm -n)
@@ -636,6 +632,3 @@ namespace:
 # Labels and annotations
 commonLabels: {}
 commonAnnotations: {}
-
-# Additional resources (for advanced users)
-additionalResources: []

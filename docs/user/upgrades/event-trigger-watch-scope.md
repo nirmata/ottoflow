@@ -1,0 +1,9 @@
+# Upgrading: event-trigger watch scope
+
+After the controller restarts, an event trigger watches only its Workflow's namespace. A resource in another namespace, with an empty namespace (all namespaces), of a cluster-scoped kind, or of a kind the API server cannot resolve at that moment is skipped unless the Workflow's namespace is in `controller.eventTriggerAllowedSourceNamespaces`. With the admission webhook enabled, such triggers are rejected on create, and on update when the triggers change. A skipped resource is reported once when the Workflow is registered and is not retried until the Workflow is next reconciled: make any change to the Workflow, or restart the controller, once the kind exists (for example a CRD installed later); the periodic resync (10 hours by default) also picks it up. With the admission webhook disabled, a Workflow applied before its CRD is stored and then skipped in the same way. Cron `inputValuesFrom` and webhook `secretRef` entries whose `namespace` differs from the Workflow's stop resolving. Nothing is deleted, and existing WorkflowRuns keep their values.
+
+The runtime signals are a controller log line for a skipped event resource, a `CronInputSecretInvalid` Warning Event on the Workflow for a cron trigger, and a 401 with an `hmac_failure` count for a webhook trigger, so list affected Workflows before upgrading:
+
+```bash
+kubectl get workflows.ottoflow.nirmata.io -A -o json | jq -r '.items[] | .metadata as $m | (.spec.triggers // [])[] | ((.event.resources // [])[] | select((.namespace // "") != $m.namespace) | "event-resource"), ((.cron.inputValuesFrom // [])[] | select((.secretRef.namespace // "") != "" and .secretRef.namespace != $m.namespace) | "cron-secret"), (select((.webhook.secretRef.namespace // "") != "" and .webhook.secretRef.namespace != $m.namespace) | "webhook-secret") | "Workflow \($m.namespace)/\($m.name): \(.)"'
+```

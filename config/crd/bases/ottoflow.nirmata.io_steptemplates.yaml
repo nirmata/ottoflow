@@ -88,8 +88,9 @@ spec:
                       additionalPrompts:
                         description: |-
                           AdditionalPrompts is an optional list of prompts that are appended to the agent's system prompt
-                          Each prompt can contain CEL expressions that are evaluated in the workflow context
-                          The prompts are evaluated and concatenated with the agent's base prompt
+                          Each prompt is evaluated as a single CEL expression in the workflow context, so a plain
+                          string must be a quoted CEL string literal (use + to concatenate values)
+                          The results are concatenated with the agent's base prompt
                           Useful for adding step-specific context or instructions to the agent
                         items:
                           type: string
@@ -220,7 +221,7 @@ spec:
                       prompt:
                         description: |-
                           Prompt is a CEL expression evaluated in the workflow context; the result is sent as the task message.
-                          Can reference inputs, variables, and previous step outputs (e.g. '"Analyze: " + steps.prev.report').
+                          Can reference inputs, variables, and previous step outputs (e.g. '"Analyze: " + variables.report').
                         type: string
                       protocol:
                         default: a2a

@@ -72,7 +72,7 @@ The following table lists the configurable parameters and their default values:
 |-----------|-------------|---------|
 | `controller.image.registry` | Controller image registry | `ghcr.io/nirmata/ottoflow` |
 | `controller.image.repository` | Controller image repository | `controller` |
-| `controller.image.tag` | Controller image tag | `latest` |
+| `controller.image.tag` | Controller image tag | `""` (defaults to `v<appVersion>`) |
 | `controller.image.fullOverride` | Override full image name | `""` |
 | `controller.replicaCount` | Number of controller replicas | `1` |
 | `controller.nameOverride` | Override controller name | `""` |
@@ -103,18 +103,26 @@ The following table lists the configurable parameters and their default values:
 | `controller.metrics.port` | Port the controller serves `/metrics` on | `8080` |
 | `controller.metrics.serviceMonitor.enabled` | Enable ServiceMonitor | `false` |
 | `controller.prometheusURL` | Prometheus URL for CEL `prometheusMetrics()`; passed to workflow runner Jobs | `""` |
+| `controller.eventTriggerAllowedSourceNamespaces` | Workflow namespaces whose event triggers may watch other or all namespaces (Workflows there get the controller's watch access in every namespace); passed as `--event-trigger-allowed-source-namespaces` | `[]` |
 
-Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role` and (for internal TLS) `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
+Controller configuration is passed via **command-line flags** (args). The chart injects `--workflow-runner-image`, `--workflow-runner-service-account`, `--workflow-runner-cluster-role`, and when agent-executor is enabled, `--agent-executor-caller-cluster-role`, `--agent-executor-service-name` and `--agent-executor-namespace`. Pass additional flags via `controller.args` (e.g. `--secret-source-namespace`). **Prometheus URL:** set `controller.prometheusURL`; the controller uses it and passes it to every workflow runner Job, so it is environment-specific and does not need to be in the workflow. See [Configuration Reference](../../docs/user/reference/configuration.md) for all controller flags.
 
-**Runner Job secrets**: If the runner Job references Secret-backed volumes (e.g. `ottoflow-agent-executor.*.svc.tls-ca` for agent-executor TLS) that exist in another namespace, the controller copies those secrets into the WorkflowRun's namespace before creating the Job. By default the source namespace is the Workflow's namespace. To copy from a fixed namespace (e.g. the OttoFlow install namespace) instead, pass `--secret-source-namespace=<namespace>` in `controller.args`.
+**Runner Job secrets**: If the runner Job references Secret-backed volumes that exist in another namespace, the controller copies those secrets into the WorkflowRun's namespace before creating the Job. By default the source namespace is the Workflow's namespace. To copy from a fixed namespace instead, pass `--secret-source-namespace=<namespace>` in `controller.args`. Secrets of type `kubernetes.io/tls` in the namespaces set by `--namespace` and `--agent-executor-namespace` (both the install namespace by default) are never copied; the run fails, so create that Secret in the run's namespace instead.
 
 ### Workflow Runner Parameters
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `workflowRunner.serviceAccountName` | ServiceAccount for runner Jobs. When empty, the controller derives a per-workflow `{workflow-name}-runner` ServiceAccount bound to the narrowed `ottoflow-runner-role` | `""` |
+| `workflowRunner.serviceAccountName` | ServiceAccount for runner Jobs. When empty, the controller derives a per-workflow `{workflow-name}-runner` ServiceAccount bound to the narrowed `ottoflow-runner-role`. An existing derived or shared account must carry `app.kubernetes.io/part-of: ottoflow` (see [Runner ServiceAccount label](#runner-serviceaccount-label)); use a dedicated name, never `default` | `""` |
 | `workflowRunner.clusterRole` | ClusterRole bound to runner ServiceAccounts | `""` (defaults to `<fullname>-runner-role`) |
 | `workflowRunner.imagePullSecrets` | Image pull secrets for the runner Job pod | `[]` (falls back to `global.imagePullSecrets`) |
+| `workflowRunner.image.registry` | Runner image registry | `ghcr.io/nirmata/ottoflow` |
+| `workflowRunner.image.repository` | Runner image repository | `workflow-runner` |
+| `workflowRunner.image.tag` | Runner image tag | `""` (defaults to `v<appVersion>`) |
+| `workflowRunner.image.fullOverride` | Override the full runner image name | `""` |
+| `workflowRunner.podLabelsPartOf` | Override the `app.kubernetes.io/part-of` label on runner pods (e.g. for a policy exemption) | `""` (controller default) |
+| `workflowRunner.ttlSecondsAfterFinished` | Seconds after a runner Job completes before it is deleted. Lower it for high-frequency cron to avoid pod buildup | `0` (controller default, 3600) |
+| `workflowRunner.llmCredentialsSecret` | Name of a Secret looked up in each WorkflowRun's namespace; only allowlisted `NIRMATA_*` keys are injected. See [Multi-Tenant LLM Credentials](../../docs/dev/DESIGN.md#multi-tenant-llm-credentials). A run can override it with `spec.execution.llmCredentialsSecret` | `""` (no injection) |
 
 Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, separate from the controller's own `ottoflow-role`, so a workflow step cannot escalate to controller-level privileges (writing ServiceAccounts, ClusterRoleBindings, or ValidatingWebhookConfigurations). See [RBAC Customization](#rbac-customization) below to add resources to the runner role, and [RBAC-GENERATION.md](../../docs/dev/RBAC-GENERATION.md) for the full runner RBAC model.
 
@@ -128,15 +136,16 @@ Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, sepa
 | `agentExecutor.replicaCount` | Number of agent-executor replicas | `1` |
 | `agentExecutor.image.registry` | Agent executor image registry | `ghcr.io/nirmata/ottoflow` |
 | `agentExecutor.image.repository` | Agent executor image repository | `agent-executor` |
-| `agentExecutor.image.tag` | Agent executor image tag | `latest` |
+| `agentExecutor.image.tag` | Agent executor image tag | `""` (defaults to `v<appVersion>`) |
 | `agentExecutor.image.fullOverride` | Override full image name | `""` |
 | `agentExecutor.serviceAccount.create` | Create service account | `true` |
 | `agentExecutor.serviceAccount.name` | Service account name | `""` (auto-generated) |
 | `agentExecutor.service.type` | Service type | `ClusterIP` |
 | `agentExecutor.service.port` | Service port | `8443` |
-| `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks get configmaps/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
+| `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
 | `agentExecutor.tls.internal.enabled` | Use internal cert controller (kyverno/pkg) to provision self-signed TLS | `true` |
 | `agentExecutor.tls.secretName` | Use existing TLS Secret instead of internal cert generation | `""` |
+| `agentExecutor.llmCredentialsSecret` | Secret injected into the agent-executor pod via `envFrom` (LLM provider keys) for steps using `agentRef` | `""` (no injection) |
 | `agentExecutor.resources` | Resource limits and requests | `{}` (defaults provided) |
 
 **Note**: The agent-executor serves HTTPS and requires TLS certs. By default, the internal certificate controller (kyverno/pkg) provisions self-signed CA and TLS certs—no cert-manager required.
@@ -161,9 +170,47 @@ agentExecutor:
 
 Runner ServiceAccounts hold ConfigMap `get`/`list`/`watch` cluster-wide but can write ConfigMaps (checkpoints, audit snapshots, `mutate` steps) only in the namespace of their run: the controller binds each runner ServiceAccount to `ottoflow-runner-configmap-writer` with a RoleBinding in that namespace. A `mutate` step that writes a ConfigMap in another namespace is denied unless you add a ConfigMap `update`/`patch` rule to `rbac.runnerClusterRole.extraResources` (see the example in `values.yaml`). With `rbac.create=false` the chart renders no such role and the controller creates no binding. The controller flag `--runner-configmap-writer-cluster-role` is new: an older controller image pinned through `controller.image.tag` exits at flag parse, so upgrade the image with the chart.
 
+#### Runner ServiceAccount label
+
+The controller binds a runner ServiceAccount (the derived `{workflow-name}-runner` or the shared `workflowRunner.serviceAccountName`) to the runner ClusterRole, the agent-executor caller ClusterRole and the ConfigMap-writer role only when the account carries the label `app.kubernetes.io/part-of: ottoflow`. A missing derived account is created with that label, as before. An existing account without it fails the run with a `RunnerServiceAccountNotManaged` Warning event and gets no binding. Nothing is removed at that point: the sweep removes the account's bindings once no live run uses it. A run paused in a callback wait, or retrying after a runner pod failure, on such an account fails when it resumes or retries, so label every runner account you created yourself before upgrading. On a run whose runner Job already exists, the controller checks the label only when it has to create, replace, or change the subjects of the ConfigMap-writer RoleBinding. If the account is unlabelled at that point, it records the same event, creates no RoleBinding and leaves an existing one's subjects as they are, but does not fail the run. If the RoleBinding already exists for the same role and names only that account, it records nothing, even when the label was removed after the run started. If it exists for a different role (the ConfigMap-writer role setting changed) and the account is unlabelled, the controller records the same event and leaves the RoleBinding on its old role; the sweep removes it after the run. An explicit `spec.execution.job.serviceAccountName` is not affected: the controller binds nothing to it, and the operator who names it manages its RBAC.
+
+The controller also removes its runner and agent-executor caller ClusterRoleBindings, and with them the account's ConfigMap-writer RoleBinding, once their ServiceAccount no longer exists, or exists without the label and no live run uses it. The sweep finds accounts through those ClusterRoleBindings, so a writer RoleBinding whose ClusterRoleBindings are already gone stays until the next run on that account or until the account is deleted. A sweep runs when a controller replica becomes leader and every 10 minutes after, so a binding is removed within about 10 minutes plus one pass after its ServiceAccount, or that ServiceAccount's namespace, is deleted. The sweep keeps a binding to an unlabelled ServiceAccount while a non-terminal run uses it, so a stuck run keeps it until the run reaches a terminal phase or its runner Job and pod finish. The sweep counts a run as using an account only through the run's own runner Job (or a pod of it) whose pod template runs as that account, so changing the `workflowRunner.serviceAccountName` setting does not drop the bindings of a run that is still running. See the [upgrade note](../../docs/user/upgrades/runner-serviceaccount-label.md).
+
+The sweep finds accounts only through ClusterRoleBindings labelled `app.kubernetes.io/part-of: ottoflow` with no `app.kubernetes.io/component` label, one ServiceAccount subject and a name of the form `ottoflow-runner-<namespace>-<sa>` or `ottoflow-agent-executor-caller-<namespace>-<sa>`. When it removes an account's bindings, it deletes each binding of those two names, and the account's ConfigMap-writer RoleBinding, that is labelled `app.kubernetes.io/part-of: ottoflow` and has that account as its only subject. At that step it does not check the `app.kubernetes.io/component` label, so that label keeps a binding out of the search for accounts but does not stop its deletion. Do not hand-create bindings of those names with the `part-of` label, for example for an explicit `spec.execution.job.serviceAccountName`. With `rbac.create=false`, the controller's role must grant these for the sweep to work: `list`, `watch` and `delete` on ClusterRoleBindings, `get` on ServiceAccounts, `list` and `get` on Jobs, `list` on Pods, and `get` on WorkflowRuns. If you pass `--runner-configmap-writer-cluster-role` yourself, it also needs `list`, `watch` and `delete` on RoleBindings.
+
+**Breaking change:** the agent-executor and MCP caller gates check `invoke` on `callers.gate.ottoflow.nirmata.io/<name>` instead of `get` on `configmaps/<name>`; the new serve-a2a gate checks `invoke` only.
+- Chart roles: for this release the MCP and agent-executor caller ClusterRoles grant both rules, so a server still on an older image keeps accepting chart-bound callers while it rolls; new images ignore the `configmaps` rule. The `configmaps` rule is removed in the next release.
+- serve-a2a: images in v0.1.1, v0.1.2 and v5.0.0-rc.1 accepted unauthenticated A2A calls. After upgrading, every caller gets 401 until it presents a token and is bound to `a2a-caller`, and a pinned `serveA2A.image.tag` (or `fullOverride`) keeps the older image without the gate. Pods roll when the controller re-upserts the Agent (controller start or within 10 minutes).
+- Pinned images: before upgrading to the next release, make sure no `image.tag` or `image.fullOverride` under `controller` or `agentExecutor` pins an image older than this release, because an older image still checks `configmaps/<name>`.
+- Hand-written Roles on `configmaps/<caller>` must be re-granted with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
+- Creating a RoleBinding to a caller ClusterRole needs `bind` on that ClusterRole or every permission it grants. A namespace `admin` lacks `invoke`, so a cluster administrator creates the binding (the controller makes the agent-executor runner bindings itself).
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: my-a2a-caller
+rules:
+  - apiGroups: ["gate.ottoflow.nirmata.io"]
+    resources: ["callers"]
+    resourceNames: ["a2a-caller"]
+    verbs: ["invoke"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: my-a2a-caller
+  namespace: <workflow-namespace>
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: my-a2a-caller}
+subjects:
+  - {kind: ServiceAccount, name: <caller-sa>, namespace: <caller-sa-namespace>}
+```
+
+For MCP and agent-executor, bind `<fullname>-mcp-caller` or `<fullname>-agent-executor-caller` the same way, but put the RoleBinding in the namespace the server checks: the release namespace (`agentExecutor.callerNamespace` defaults to it; MCP uses `--mcp-caller-namespace`), not the Workflow's namespace.
+
 None of the four `extraResources` lists may grant `secrets` (or `*`): the chart fails the render, because each list reaches the controller's own identity. Grant Secret access through `rbac.secretAccess.<component>` instead (see `docs/user/rbac-secret-access.md`).
 
-The controller's `ottoflow-role:core` ClusterRole grants `delete` on ClusterRoleBindings (needed to migrate a runner's binding when its target role changes — RoleRef is immutable, so migration is delete-and-recreate) and `bind` scoped to the runner ClusterRole name (needed so the controller can create ClusterRoleBindings referencing it, including when `rbac.runnerClusterRole.extraResources` grants verbs the controller itself doesn't hold — Kubernetes' RBAC escalation check allows `bind` as an alternative to holding every referenced permission). **Blast radius:** the `delete` grant on ClusterRoleBindings is cluster-wide, so a compromised controller could delete any ClusterRoleBinding in the cluster; it is a temporary grant needed only for this role migration, and is slated for removal once https://github.com/nirmata/ottoflow/issues/25 is resolved.
+The controller's `ottoflow-role:core` ClusterRole grants `delete` on ClusterRoleBindings (needed to recreate a managed binding when its role changes — RoleRef is immutable, so a role change is delete-and-recreate) and `bind` scoped to the runner ClusterRole name (needed so the controller can create ClusterRoleBindings referencing it, including when `rbac.runnerClusterRole.extraResources` grants verbs the controller itself doesn't hold — Kubernetes' RBAC escalation check allows `bind` as an alternative to holding every referenced permission). **Blast radius:** the `delete` grant on ClusterRoleBindings is cluster-wide, so a compromised controller could delete any ClusterRoleBinding in the cluster; it is a standing grant (the controller checks the part-of label in code), used to migrate a managed binding and to remove the bindings of a runner ServiceAccount that no longer exists or lacks the `app.kubernetes.io/part-of: ottoflow` label, and no removal is planned.
 
 #### RBAC Customization
 
@@ -281,13 +328,6 @@ helm upgrade ottoflow ./charts/ottoflow -n ottoflow --set webhook.enabled=false
 | `networkPolicy.create` | Create NetworkPolicy | `true` |
 | `networkPolicy.egress` | Egress rules (Helm replaces this list; see [Network Policy egress](#network-policy-egress)) | See values.yaml |
 
-### CRD Parameters
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `crds.install` | Install CRDs | `true` |
-| `crds.mode` | CRD installation mode | `install` |
-
 ### Namespace Parameters
 
 | Parameter | Description | Default |
@@ -393,32 +433,27 @@ networkPolicy:
           port: 6443
 ```
 
-### Skip CRD Installation
-
-```yaml
-crds:
-  install: false
-  mode: skip
-```
-
 ## Upgrading
 
 ```bash
-# Upgrade with default values
+# Upgrade, keeping the release's stored values
 helm upgrade ottoflow ottoflow/ottoflow --namespace ottoflow
 
 # Upgrade with custom values
 helm upgrade ottoflow ./charts/ottoflow -f my-values.yaml --namespace ottoflow
 ```
 
+Upgrading from an earlier chart version? Read the [upgrade notes](../../docs/user/upgrades/), starting with [stricter chart values schema](../../docs/user/upgrades/stricter-chart-values-schema.md).
+
 ### Runner RBAC change (least-privilege runner role)
 
 Workflow runner Jobs now default to a per-workflow ServiceAccount bound to a narrowed `<release>-runner-role` ClusterRole, instead of the controller's own ServiceAccount and `<release>-role`. This is a **breaking change** for any install that relied on runner Jobs implicitly holding full controller privileges (for example, custom steps that write ServiceAccounts or ClusterRoleBindings).
 
-- **Escape hatch**: to restore the previous behavior, set **both** `workflowRunner.serviceAccountName` to the controller's ServiceAccount name **and** `workflowRunner.clusterRole=<release>-role`. Setting the ServiceAccount name alone is not enough for runners in other namespaces: the controller's existing ClusterRoleBinding to `<release>-role` names a subject by ServiceAccount name *and* namespace (the controller's own install namespace), so it only auto-applies when the runner SA of the same name happens to live in that same namespace — everywhere else you also need `workflowRunner.clusterRole=<release>-role` so the controller binds the runner SA to it explicitly.
+- **Escape hatch**: to restore the previous behavior, set **both** `workflowRunner.serviceAccountName` to the controller's ServiceAccount name **and** `workflowRunner.clusterRole=<release>-role`. Setting the ServiceAccount name alone is not enough for runners in other namespaces: the controller's existing ClusterRoleBinding to `<release>-role` names a subject by ServiceAccount name *and* namespace (the controller's own install namespace), so it only auto-applies when the runner SA of the same name happens to live in that same namespace — everywhere else you also need `workflowRunner.clusterRole=<release>-role` so the controller binds the runner SA to it explicitly. That account must carry `app.kubernetes.io/part-of: ottoflow` (see the [upgrade note](../../docs/user/upgrades/runner-serviceaccount-label.md)).
 - **In-flight runner Jobs**: the controller keeps the legacy binding while a live (non-terminal) WorkflowRun in the binding's `<namespace>` still has a runner pod or unfinished runner Job using that ServiceAccount, re-checks only when it starts, and logs the binding, the pods and the Jobs; remove it with `kubectl delete clusterrolebinding <name from that log line>` once those runs finish. So one long-running run keeps it across every leader start while the run is live. Another release's idle binding of the same name on the same role is still deleted, and that release recreates it on its next run.
-- **Legacy ClusterRoleBinding is removed by the controller at startup when it can be identified safely; otherwise clean it up manually.** Before this change, the default runner ServiceAccount was the controller's own `controller-manager`; after it, the default is a per-workflow `<workflow>-runner` name. The pre-upgrade binding (e.g. `ottoflow-runner-<namespace>-controller-manager`) matches no derived name anymore and is never revisited by the reconciler. The elected leader deletes it once at startup only when all of these hold: the chart passed `--legacy-runner-cluster-role` and `--legacy-runner-service-account`, the binding is not a chart-managed one (label `app.kubernetes.io/component=rbac`), the binding's roleRef is exactly `<release>-role`, its single subject is the controller's own ServiceAccount (`controller.serviceAccount.name`, default `controller-manager`) with binding name `ottoflow-runner-<namespace>-<serviceAccount>`, and that subject is not the configured `workflowRunner.serviceAccountName`, no live run uses that subject (see the in-flight bullet). Anything else (non-chart installs, `rbac.create=false`, an older controller image) stays on the review-then-delete command below. With `rbac.create=false` the chart does not pass these flags, so the cleanup is off. With `rbac.create=true` the chart passes them, so an older controller image pinned through `controller.image.tag` exits at flag parse; upgrade the image with the chart. To keep the old binding (for example for audit), remove its `app.kubernetes.io/part-of=ottoflow` label, or set its `app.kubernetes.io/component` label to `rbac`, before upgrading.
-- **Orphaned RBAC objects**: in the common case (a per-workflow ServiceAccount in the same namespace as its Workflow, with no `workflowRunner.serviceAccountName` override), the runner ServiceAccount now carries an `ownerReference` to its Workflow and is garbage-collected automatically when the Workflow is deleted. The ClusterRoleBinding remains cluster-scoped and is never owned by a namespaced Workflow, so it is never garbage-collected. Runner ServiceAccounts for Workflows in a different namespace than their WorkflowRuns, or when `workflowRunner.serviceAccountName` is set to a shared name, are also not owned and still accumulate.
+- **Legacy ClusterRoleBinding is removed by the controller at startup when it can be identified safely; otherwise clean it up manually.** Before this change, the default runner ServiceAccount was the controller's own `controller-manager`; after it, the default is a per-workflow `<workflow>-runner` name. The pre-upgrade binding (e.g. `ottoflow-runner-<namespace>-controller-manager`) matches no derived name anymore and is never revisited by the reconciler. The elected leader deletes it once at startup only when all of these hold: the chart passed `--legacy-runner-cluster-role` and `--legacy-runner-service-account`, the binding is not a chart-managed one (label `app.kubernetes.io/component=rbac`), the binding's roleRef is exactly `<release>-role`, its single subject is the controller's own ServiceAccount (`controller.serviceAccount.name`, default `controller-manager`) with binding name `ottoflow-runner-<namespace>-<serviceAccount>`, and that subject is not the configured `workflowRunner.serviceAccountName`, no live run uses that subject (see the in-flight bullet). Anything else (non-chart installs, `rbac.create=false`, an older controller image) stays on the review-then-delete command below, unless the runner binding sweep removes it (see [Runner ServiceAccount label](#runner-serviceaccount-label)). With `rbac.create=false` the chart does not pass these flags, so the cleanup is off. With `rbac.create=true` the chart passes them, so an older controller image pinned through `controller.image.tag` exits at flag parse; upgrade the image with the chart. To keep the old binding (for example for audit), remove its `app.kubernetes.io/part-of=ottoflow` label, or set its `app.kubernetes.io/component` label to `rbac`, before upgrading.
+- **Orphaned RBAC objects**: in the common case (a per-workflow ServiceAccount in the same namespace as its Workflow, with no `workflowRunner.serviceAccountName` override), the runner ServiceAccount now carries an `ownerReference` to its Workflow and is garbage-collected automatically when the Workflow is deleted. The ClusterRoleBinding remains cluster-scoped and is never owned by a namespaced Workflow; the runner binding sweep removes it after its ServiceAccount is deleted (see [Runner ServiceAccount label](#runner-serviceaccount-label)). Runner ServiceAccounts for Workflows in a different namespace than their WorkflowRuns, or when `workflowRunner.serviceAccountName` is set to a shared name, are also not owned and still accumulate.
+- **Label existing runner ServiceAccounts before upgrading.** A derived or shared runner account you created yourself must carry `app.kubernetes.io/part-of: ottoflow`, or runs on it fail with `RunnerServiceAccountNotManaged`; see the [upgrade note](../../docs/user/upgrades/runner-serviceaccount-label.md).
 
 #### Cleaning up runner RBAC objects
 
@@ -490,6 +525,15 @@ after upgrading:
 If a custom role's rules are missing from the output, it is not labeled for this
 release.
 
+### Runner Secret copies of TLS Secrets
+
+A run whose Secret volume names a `kubernetes.io/tls` Secret that is only found in
+a namespace set by `--namespace` or `--agent-executor-namespace` now fails with
+`Failed to prepare runner secrets`. Either create your own Secret in the run's
+namespace, or remove the volume if it names one of OttoFlow's certificate Secrets.
+For copies left in run namespaces by earlier releases, see
+[the agent-executor CA reaches tenant namespaces as a ConfigMap, not a Secret](../../docs/user/rbac-secret-access.md#the-agent-executor-ca-reaches-tenant-namespaces-as-a-configmap-not-a-secret).
+
 ## CRD Management
 
 CRDs are included in the `crds/` directory and will be installed automatically when you install the chart. 
@@ -518,17 +562,7 @@ make sync-crds
 
 ### Skip CRD Installation
 
-If CRDs are managed separately (e.g., via GitOps or another tool), you can skip CRD installation:
-
-```yaml
-crds:
-  install: false
-  mode: skip
-```
-
-### Manual CRD Installation
-
-If you prefer to install CRDs manually:
+Helm installs everything in `crds/` by default, and there is no chart value to turn that off. If CRDs are managed separately (e.g., via GitOps or by hand), apply them yourself and pass Helm's own flag:
 
 ```bash
 # Install CRDs manually from source
@@ -537,9 +571,9 @@ kubectl apply -f config/crd/bases/
 # Or from chart (after syncing)
 kubectl apply -f charts/ottoflow/crds/
 
-# Then install chart with CRDs disabled
+# Then install chart, skipping the crds/ directory
 helm install ottoflow ./charts/ottoflow --namespace ottoflow --create-namespace \
-  --set crds.install=false
+  --skip-crds
 ```
 
 ## Uninstallation
@@ -590,4 +624,4 @@ For issues and questions:
 
 ## License
 
-Apache License 2.0
+BUSL-1.1, see [LICENSE.md](../../LICENSE.md) and [LICENSING-FAQ.md](../../LICENSING-FAQ.md).

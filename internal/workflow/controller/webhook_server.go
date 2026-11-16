@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -148,13 +149,23 @@ func (s *WebhookServer) Start(ctx context.Context) error {
 		IdleTimeout:       60 * time.Second, // prevent keep-alive connection accumulation
 		MaxHeaderBytes:    1 << 16,          // 64 KiB headers max
 	}
+	ln, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("webhook trigger server listen on %s: %w", s.addr, err)
+	}
+	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			s.logger.Error(err, "webhook trigger server error")
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
 		}
 	}()
 	s.logger.Info("webhook trigger server started", "addr", s.addr)
-	<-ctx.Done()
+	select {
+	case err := <-errCh:
+		_ = srv.Close()
+		return fmt.Errorf("webhook trigger server error: %w", err)
+	case <-ctx.Done():
+	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
@@ -360,16 +371,15 @@ func verifyHMAC(secret []byte, timestamp, path string, body []byte, sigHeader st
 }
 
 // fetchSecret reads the HMAC signing key from a Kubernetes Secret.
-// Namespace defaults to workflowNamespace when SecretRef.Namespace is empty.
+// The Secret is read only in workflowNamespace; a ref naming another namespace is refused.
 // All errors map to 401 in the caller — callers must not distinguish not-found
 // from wrong-secret to avoid secret existence leakage.
 func (s *WebhookServer) fetchSecret(ctx context.Context, ref ottoflowv1alpha1.WebhookSecretRef, workflowNamespace string) ([]byte, error) {
-	ns := ref.Namespace
-	if ns == "" {
-		ns = workflowNamespace
+	if ns := ref.Namespace; ns != "" && ns != workflowNamespace {
+		return nil, fmt.Errorf("webhook secretRef %s/%s: Secret references are resolved only in the Workflow's namespace %q", ns, ref.Name, workflowNamespace)
 	}
 	var secret corev1.Secret
-	if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: ref.Name}, &secret); err != nil {
+	if err := s.kubeClient.Get(ctx, types.NamespacedName{Namespace: workflowNamespace, Name: ref.Name}, &secret); err != nil {
 		return nil, err
 	}
 	keyName := ref.Key

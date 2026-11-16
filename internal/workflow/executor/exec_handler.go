@@ -13,7 +13,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -171,7 +173,8 @@ func writeExecError(w http.ResponseWriter, msg string, code int) {
 }
 
 // ParseLLMEnvHeader decodes the X-LLM-Env header (base64-encoded JSON map of
-// string→string). Returns nil when the header is absent or malformed.
+// string→string) and keeps only the keys in LLMEnvAllowlist. Returns nil when
+// the header is absent or malformed.
 func ParseLLMEnvHeader(header string) map[string]string {
 	if header == "" {
 		return nil
@@ -185,6 +188,11 @@ func ParseLLMEnvHeader(header string) map[string]string {
 	if err := json.Unmarshal(decoded, &m); err != nil {
 		klog.V(4).InfoS("Invalid X-LLM-Env header (JSON)", "error", err)
 		return nil
+	}
+	n := len(m)
+	maps.DeleteFunc(m, func(k, _ string) bool { return !slices.Contains(LLMEnvAllowlist, k) })
+	if dropped := n - len(m); dropped > 0 {
+		klog.V(2).InfoS("Dropped X-LLM-Env keys not in LLMEnvAllowlist", "count", dropped)
 	}
 	return m
 }

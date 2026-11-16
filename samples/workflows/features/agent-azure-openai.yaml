@@ -1,5 +1,7 @@
 # Agent step using the Azure OpenAI provider (gollm provider id: azopenai).
 #
+# azure-openai is accepted but is not supported; see docs/user/reference/api/agent.md.
+#
 # Credential mechanism (verified against source, not assumed):
 #   - gollm's azopenai provider reads its API key from the
 #     AZURE_OPENAI_API_KEY process environment variable INSIDE the
@@ -25,6 +27,18 @@
 # `spec.config.endpoint`, once the operator has allowlisted its origin via
 # AGENT_LLM_ENDPOINT_ALLOWLIST — see agent-custom-endpoint.yaml for that
 # pattern and its caveats, e.g. the endpoint having to be https://).
+apiVersion: ottoflow.nirmata.io/v1alpha1
+kind: Agent
+metadata:
+  name: azure-openai-agent
+  namespace: ottoflow
+spec:
+  prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
+  modelProvider: azure-openai
+  modelName: gpt-4o
+  outputExtraction:
+    type: text
+---
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:
@@ -60,15 +74,3 @@ spec:
     name: agent-azure-openai-workflow
   inputValues:
     question: "Explain Kubernetes in simple terms"
----
-apiVersion: ottoflow.nirmata.io/v1alpha1
-kind: Agent
-metadata:
-  name: azure-openai-agent
-  namespace: ottoflow
-spec:
-  prompt: "You are a helpful AI assistant. Answer questions clearly and concisely."
-  modelProvider: azure-openai
-  modelName: gpt-4o
-  outputExtraction:
-    type: text

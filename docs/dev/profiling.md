@@ -154,7 +154,7 @@ kubectl -n ottoflow port-forward pod/<agent-executor-pod> 6060:6060
 curl -s http://localhost:6060/debug/pprof/heap -o heap-baseline.pprof
 
 # Terminal 3 — drive load by running workflows against the cluster
-# e.g. ./bin/ottoflow run cost-optimization --workflow-dir samples/workflows
+# e.g. ./bin/ottoflow run cost-optimization --workflow-dir samples
 
 # Terminal 2 — post-load snapshot, then diff
 curl -s http://localhost:6060/debug/pprof/heap -o heap-loaded.pprof
