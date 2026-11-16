@@ -134,6 +134,7 @@ jobs:
           version: '~> v2'
           args: release --clean
         env:
+          CHART_NAME: ottoflow
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Cross-repo token for nirmata/homebrew-tap, minted from the
           # nirmata-internal-app installation (same app as the enterprise

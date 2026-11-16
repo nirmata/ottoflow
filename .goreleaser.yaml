@@ -40,6 +40,14 @@ changelog:
 
 release:
   prerelease: auto
+  footer: |
+    ## Upgrading
+
+    Helm never upgrades CRDs. Before `helm upgrade`, apply them:
+
+    ```bash
+    helm show crds oci://ghcr.io/nirmata/{{ .Env.CHART_NAME }} --version {{ .Version }} | kubectl apply --server-side --force-conflicts -f -
+    ```
 
 brews:
   - name: ottoflow
