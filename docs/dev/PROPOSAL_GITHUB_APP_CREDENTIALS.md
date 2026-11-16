@@ -148,18 +148,21 @@ but not the key, so it does not revoke tokens.
    [service accounts admin guide](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/)).
    The controller then runs a SubjectAccessReview through the existing `TokenReviewAndSARAuthenticator`
    (`internal/auth/sar.go`), as its MCP server does, behind a feature flag. The chart floor is Kubernetes 1.29+ (`charts/ottoflow/README.md:7`).
-3. The controller maps the pod to its active WorkflowRun and that run's Workflow. It refuses if the two
-   namespaces differ, or if that run's `spec.execution.job` sets `image`, `env`, `volumes` or
-   `volumeMounts` (Runner image rule, Runner env and volume rule).
-4. It mints a token narrowed to the intersection of the request and the **Workflow's** allowlist and
-   permission set. It never reads the WorkflowRun spec for scope.
+3. The controller maps the pod to its owning Job and reads the launch record on it (Scoping, Launch record).
+   It refuses if a WorkflowRun does not own the Job as its controller, if that WorkflowRun has reached a
+   terminal phase, if the record is missing, if the
+   recorded Workflow's namespace differs from the Job's, or if the record shows an `image`, `env`,
+   `volumes` or `volumeMounts` override or a non-local `clusterRef` (Runner image rule, Runner env and
+   volume rule, Cluster kubeconfig rule). The phase is WorkflowRun status, which the runner role can write (Threat model, Key theft), including from a run whose image is overridden, so this check bounds how long a run mints and is not a trust check: a forged phase cannot widen scope, and at most lets a pod whose record passes keep minting for its own recorded Workflow.
+4. It mints a token narrowed to the intersection of the request and the **recorded Workflow's** allowlist and
+   permission set. It never reads the WorkflowRun spec for scope or trust.
 5. The runner asks again before the token expires.
 
 The key stays in the controller, and tokens are never written to etcd. The repository does not read
 `authentication.kubernetes.io/*` extras today: `TokenReviewAndSARAuthenticator.AuthenticateRequest`
 returns only the username and drops `status.user.extra` (`internal/auth/sar.go:84`, `:145`). The broker
 uses a variant that also returns the TokenReview's user info, so pod-name and pod-uid come from the one
-TokenReview per request, not a second one. The pod-uid to WorkflowRun to Workflow lookup is new code.
+TokenReview per request, not a second one. The pod-uid to Job to recorded Workflow lookup is new code.
 
 ### Consumers
 
@@ -172,14 +175,14 @@ which run in the agent-executor.
   key Secret and set its allowlist and permissions, so Workflow create/update RBAC is App scope there. The
   controller can only read a key Secret the operator listed under `rbac.secretAccess.controller`, and the
   installation's own grants cap every token. Operators give Workflow write access only to people they trust
-  with the App. WorkflowRun create cannot widen that scope, because of the runner image rule and the
-  runner env and volume rule below.
+  with the App. WorkflowRun create or update cannot widen that scope, because of the runner image rule, the
+  runner env and volume rule, the cluster kubeconfig rule and the launch record below.
 - **Runner image rule.** A run author can set `spec.execution.job.image`, and the controller uses it after
   a whitespace check (`workflowrun_controller.go:1346-1352`; the configured image is
   `r.RunnerConfig.RunnerImage`, `:1321-1324`). Code the author controls would otherwise hold a real
   broker-audience token and pass the review. So the broker mints only for runs that keep the configured
-  runner image. The gate is the broker's, at mint time (see the run-spec check in the next bullet): it
-  refuses if the run's `spec.execution.job.image` is set, so that check covers the image and no separate
+  runner image. The gate is the broker's, at mint time (see Launch record below): it
+  refuses if the record shows an image override, so that check covers the image and no separate
   check on the pod's containers is needed. It holds even if a run adds its own projected token with the
   broker audience through `spec.execution.job.volumes`. Defence in depth: the controller does not mount the
   broker-audience token into a Job whose image is overridden, so the code never gets a broker token to send.
@@ -187,15 +190,41 @@ which run in the agent-executor.
   keeps it could set `HTTPS_PROXY` and `SSL_CERT_FILE` and mount a CA, and the runner's HTTP client (CEL
   `http.*` uses `http.DefaultTransport`) would send the minted installation token through an intercepting
   proxy. So a run of a Workflow with a `githubApp` scope may not supply `spec.execution.job` `env`,
-  `volumes` or `volumeMounts`. The gate is the broker's, at mint time: it reads the WorkflowRun it found
-  through the pod-uid chain and refuses to mint if that run's `spec.execution.job` sets `image`, `env`,
-  `volumes` or `volumeMounts`. The check is exact, and it closes the case where the scope is
+  `volumes` or `volumeMounts`. The gate is the broker's, at mint time: it reads the launch record
+  (Launch record below) and refuses to mint if it shows an `image`, `env`, `volumes` or `volumeMounts`
+  override. The check is exact, and it closes the case where the scope is
   added after the run starts. Defence in depth, as with the image rule: the controller also refuses such a
   run of a `githubApp` Workflow before it creates the runner Job, so it never mounts the broker-audience
   token. A deny-list of
   proxy and TLS env names is not enough: a volume mounted over the system trust store, or other names such as
   `ALL_PROXY`, keep the same path open. Trade-off: `githubApp` workflows cannot take run-level env or
   volumes; they get their inputs from the Workflow spec.
+- **Cluster kubeconfig rule.** `spec.clusterRef` has three sources (`api/v1alpha1/workflowrun_types.go:50-67`):
+  `local`, which selects the in-cluster config; `kubeConfigSecretRef`, a Secret that
+  `secret_refs.go:128-141` mounts whole, independent of the run-level volumes; and `kubeConfigFilePath`,
+  any path in the pod. The runner hands the file's contents to client-go
+  (`internal/workflow/cluster/kubeconfig.go:41-46`, `internal/workflow/cluster/resolve.go:61-62`), so a
+  kubeconfig the run author supplies could set `tokenFile` to the projected broker token and `server` to an
+  attacker endpoint, or name an exec credential plugin. So for a Workflow with a `githubApp` scope the
+  controller refuses, before it creates the Job, a run whose `clusterRef` is set and is not `local: true`.
+  No run-supplied kubeconfig is then read in a pod that holds the broker token. The controller records
+  this on the Job like the overrides (Launch record), so the broker can check it too. Trade-off: in v1 a
+  `githubApp` Workflow cannot reach another cluster through `clusterRef`, even with a kubeconfig the operator
+  trusts; telling trusted kubeconfigs apart from run-supplied ones is left out.
+- **Launch record.** The broker does not trust the WorkflowRun spec, which stays editable after the Job
+  exists: `WorkflowRunValidator.ValidateUpdate` ignores `oldRun`
+  (`internal/webhook/workflowrun_validator.go:28-29`), and reconciliation keeps the existing Job. When the
+  controller creates a runner Job it sets one annotation on it (for example
+  `ottoflow.nirmata.io/github-launch`) that the runner cannot change. It records the Workflow the Job was
+  launched against (namespace, name and UID), whether the run carried any `image`, `env`, `volumes` or
+  `volumeMounts` override, and whether it used a `clusterRef` that is not `local`. The runner role reads
+  Jobs and cannot update them (`charts/ottoflow/templates/clusterrole.yaml:463-467`). Anyone else who can update Jobs in that
+  namespace could rewrite the record, so, like pod create (Threat model, Pod-create equals key access), Job
+  update there is treated as App access. At mint time the
+  broker reads the pod's owning Job, checks that a WorkflowRun owns it as its controller and that the
+  annotation is present, checks that the recorded Workflow still has the recorded UID, and mints only for
+  that Workflow. Later edits to the run (`workflowRef` or the overrides) do not change what the broker
+  trusts. A Job with no annotation gets no token.
 - **Authority.** The Workflow's allowlist and permission set are authoritative and are checked at
   admission.
 - **Request rules.** The broker, not admission, enforces these: a token request may narrow the scope and
@@ -203,7 +232,7 @@ which run in the agent-executor.
   the App was not granted.
 - **Namespace binding.** The scope is honoured only when the WorkflowRun's namespace equals the Workflow's
   namespace. Otherwise a run in namespace A that names a Workflow in namespace B would get B's scope.
-- **Authorization key.** Authorize on the pod-uid to WorkflowRun to Workflow chain, never on the
+- **Authorization key.** Authorize on the pod-uid to Job to recorded Workflow chain, never on the
   ServiceAccount. A WorkflowRun can name its own `serviceAccountName` and the controller does not bind
   it, and an operator can configure one shared runner ServiceAccount (sandboxing proposal, Current
   Controls). A check keyed on the ServiceAccount alone would let one run ask for another Workflow's
@@ -235,9 +264,16 @@ Pulling a token per request covers all three without a rotation loop. The broker
 - revocation when the WorkflowRun reaches a terminal phase: the controller revokes the tokens it minted
   for that run (GitHub's `DELETE /installation/token`, called with the token) and drops them from the
   cache. It is best effort: a failure is logged and the token still expires within the hour;
-- one active broker: the controller runs with leader election by default
+- one serving broker: the controller runs with leader election by default
   (`cmd/controller/main.go:103-105`) and its callback server opens its port only on the leader (`:326`). The
-  broker does the same, so the cache lives in one process. After a failover the new leader starts with an
+  broker does the same, so the cache lives in one process. Serving only on the leader also means routing
+  runners to it: readiness checks only that the webhook server started (`cmd/controller/main.go:543-550`),
+  and the existing Service pattern selects every replica
+  (`charts/ottoflow/templates/webhook-trigger-service.yaml:16-17`), so followers, which have no listener,
+  would get requests. So the leader labels its own pod (for example
+  `ottoflow.nirmata.io/broker-leader: "true"`) when it wins the lease and removes the label when it loses it.
+  Every process clears the label at start, so a restarted pod never keeps a stale one. The broker Service
+  selects that label, and runners retry on connection refusal during failover. After a failover the new leader starts with an
   empty cache and mints again on the next request, and the runner's retry budget covers the gap. Tokens the
   old leader minted are not revoked by the new one and expire within the hour.
 
@@ -256,20 +292,30 @@ This is surface (B), credential blast radius, in the sandboxing proposal.
   broker refuses to mint for its run anyway (Scoping, Runner image rule), so WorkflowRun create does not reach the App.
 - **Env and volume override.** A run that keeps the configured image could set proxy or trust-store env
   and mount a CA to read the installation token in transit. The controller refuses `env`,
-  `volumes` and `volumeMounts` on runs of a `githubApp` Workflow, and the broker refuses to mint for a run
-  that sets any of them, even when the scope was added after the run started (Scoping, Runner env and volume
-  rule).
+  `volumes` and `volumeMounts` on runs of a `githubApp` Workflow, and the broker refuses to mint for a Job
+  whose launch record shows any of them, even when the scope was added after the run started (Scoping,
+  Runner env and volume rule).
+- **Run edited after launch.** A caller with WorkflowRun update access could launch a custom image with its
+  own broker-audience projection against a Workflow with no `githubApp` scope, then clear the overrides and
+  point `workflowRef` at a Workflow that has one. The broker trusts the launch record on the Job, not the
+  run, so that pod's record shows the image override and it gets no token, and the edit changes nothing
+  (Scoping, Launch record).
+- **Run-supplied kubeconfig.** A kubeconfig the run supplies through `spec.clusterRef` could point
+  `tokenFile` at the broker token and `server` at an attacker endpoint, or run a credential plugin. The
+  controller refuses a non-local `clusterRef` on a run of a `githubApp` Workflow, and the broker refuses to
+  mint for a Job whose record shows one (Scoping, Cluster kubeconfig rule).
 - **Pod-create equals key access.** The kubelet mounts any Secret a pod spec names with no Secret RBAC, so
   anyone who can create a pod, or a workload that makes one, in the key Secret's namespace can read the key.
   The controller's refusal (Secret convention) covers only Jobs it creates. Operators treat that namespace
   as the key's trust boundary.
 - **Scope escape.** Mitigated by the Workflow-only field, the namespace-equality check and the
-  pod-uid chain above.
+  pod-uid to Job to recorded Workflow chain above.
 - **Stolen token.** One token is limited to its repository set, its permission set and one hour.
 - **New endpoint.** The broker is a new authenticated network path. It is off unless the feature flag is
   set, and it reuses the TokenReview and SubjectAccessReview pattern the controller already uses for MCP
   callers.
-- **Availability.** Runner steps that need GitHub depend on the controller being up.
+- **Availability.** Runner steps that need GitHub depend on the controller being up, and during a failover
+  on the new leader labelling its pod (Token lifetime and refresh).
 
 ## Relation to #5 and #7
 
@@ -336,11 +382,11 @@ proposal calls that pod "the weak link for surface (B)".
 |---|---|
 | `api/v1alpha1/workflow_types.go`, `zz_generated.deepcopy.go`, CRDs (`config/crd/bases/`, `charts/ottoflow/crds/`) | Workflow-only GitHub App field: key Secret reference, repository allowlist, permission set |
 | `internal/webhook/workflow_validator.go` | Validate the field: key Secret reference, non-empty repository allowlist, permission set (Scoping, Authority) |
-| `internal/workflow/controller/` | Token endpoint handler and feature flag; pod to WorkflowRun to Workflow lookup; namespace-equality check; run-spec check at mint time (refuse when the run's `spec.execution.job` sets image, env, volumes or volumeMounts; the run of a `githubApp` Workflow is also refused before its Job); request narrowing; installation-token minting and cache; the broker-audience projected token volume on the runner Job (not added when the run overrides the image); revoking cached tokens when the key bytes change; revoking a run's tokens at a terminal phase |
-| `cmd/controller/main.go` | Register the broker as a leader-elected runnable, so it serves only on the leader (as the callback server does, `:326`) |
+| `internal/workflow/controller/` | Token endpoint handler and feature flag; pod to Job to recorded Workflow lookup; namespace-equality check; the launch-record annotation set when the Job is created (recorded Workflow, and whether the run set image, env, volumes or volumeMounts or a non-local `clusterRef`) and the mint-time check of it; a run of a `githubApp` Workflow with those overrides or a non-local `clusterRef` is also refused before its Job; request narrowing; installation-token minting and cache; the broker-audience projected token volume on the runner Job (not added when the run overrides the image); revoking cached tokens when the key bytes change; revoking a run's tokens at a terminal phase |
+| `cmd/controller/main.go` | Register the broker as a leader-elected runnable, so it serves only on the leader (as the callback server does, `:326`); clear the broker-leader label on the controller's own pod at start, set it on winning the lease and remove it on losing it |
 | `internal/auth/sar.go` | Reuse `TokenReviewAndSARAuthenticator`, which already gates the controller's MCP server (`cmd/controller/main.go:366`), with a new caller resourceName for the broker and the TokenReview's `spec.audiences` set to the broker audience. Return the TokenReview's `status.user.extra` pod name and pod UID with the ServiceAccount name, so the broker makes one TokenReview per request; `AuthenticateRequest` returns only the username today |
 | `api/v1alpha1/mcpserver_types.go`, `internal/agent/mcp_client_impl.go`, `internal/workflow/executor/exec_client.go` | MCPServer auth type `githubApp`; a runner-side broker client that reuses `saAuthTransport` from `exec_client.go`, moved into a package `internal/agent` can import (`exec_client.go` imports `internal/agent`, so the client cannot import it back). The moved transport takes the token path as a parameter (the broker-audience token's mount, not the default API-server token path, `exec_client.go:36`, `:267`) and re-reads the projected ServiceAccount token file per request instead of holding the string read once (`exec_client.go:244-249`, `:266-284`): Kubernetes leaves reloading a rotated token to the application, and a cluster with `--service-account-extend-token-expiration=false` rejects the old token once it expires, which would break path (a) under Token lifetime and refresh |
-| Helm chart | Behind the flag, a ClusterRole like `mcp-auth-clusterrole.yaml` (the controller creates TokenReviews and SubjectAccessReviews) and a caller ClusterRole like `mcp-caller-clusterrole.yaml` (invoke on `callers.gate.ottoflow.nirmata.io/<broker name>`, bound to runner ServiceAccounts); a named `get` for the key Secret through `rbac.secretAccess.controller` |
+| Helm chart | Behind the flag, a ClusterRole like `mcp-auth-clusterrole.yaml` (the controller creates TokenReviews and SubjectAccessReviews) and a caller ClusterRole like `mcp-caller-clusterrole.yaml` (invoke on `callers.gate.ottoflow.nirmata.io/<broker name>`, bound to runner ServiceAccounts); a named `get` for the key Secret through `rbac.secretAccess.controller`; a broker Service that selects the broker-leader pod label, and a Role in the install namespace giving the controller `patch` on `pods` for that label (pod names change, so `resourceNames` cannot limit it) |
 | `docs/user/` | Setup guide for the App, the key Secret and the grant; regenerated API reference |
 
 No Secret write grant in tenant namespaces and no new Deployment.
@@ -351,10 +397,11 @@ After this design is reviewed and accepted:
 
 1. **API and admission.** The Workflow-only field, CRD and deepcopy regeneration, validation.
 2. **Broker.** Token endpoint, TokenReview (with `spec.audiences`) and SubjectAccessReview, the pod-uid
-   chain, the namespace-equality check and the run-spec check at mint time (image, env, volumes, volumeMounts), the broker-audience projected token volume on the
+   chain to the recorded Workflow, the namespace-equality check, the launch record on the Job and the mint-time check of it (image, env, volumes, volumeMounts, non-local `clusterRef`), the broker-audience projected token volume on the
    runner Job, installation-token minting, the keyed cache, revoking cached tokens on a key change and a
-   run's tokens at a terminal phase, serving only on the leader (`cmd/controller/main.go`), the feature flag
-   and chart ClusterRole.
+   run's tokens at a terminal phase, serving only on the leader with the leader pod label
+   (`cmd/controller/main.go`), the feature flag, the chart ClusterRole, and the broker Service and pod
+   `patch` Role.
 3. **Consumers.** Runner-side client, MCPServer auth `githubApp`, CEL `http.*`, `agentRef` MCP tools.
 4. **Docs and samples.** Setup guide and a sample Workflow.
 5. **Follow-ups, in separate PRs.** #7's step, per-step scoping if wanted.
@@ -363,14 +410,23 @@ After this design is reviewed and accepted:
 
 - **Unit, minting.** A JWT with `iat` 60 s in the past and `exp` within 10 minutes; the request body
   carries only the intersection of request and allowlist; a widening request is refused.
-- **Unit, authorization.** A token for a pod with no active WorkflowRun is refused; a run whose namespace
+- **Unit, authorization.** A token for a pod whose Job no WorkflowRun owns, or whose WorkflowRun has reached a terminal phase, is refused; a run whose namespace
   differs from its Workflow's is refused; two runs with different scopes on a shared ServiceAccount each get
   their own scope; the cache never returns a token minted for a wider scope; a token whose audience is the
   API server is refused; a run that overrides `spec.execution.job.image` gets no broker token mounted, and
   the broker refuses to mint for its run even when it presents a broker-audience token; a run of a
   `githubApp` Workflow with `HTTPS_PROXY` or an extra volume is refused before the Job is created, and the
-  broker refuses to mint for a run whose `spec.execution.job` sets env, volumes or volumeMounts,
+  broker refuses to mint for a Job whose launch record shows env, volumes or volumeMounts,
   including a run created before its Workflow gained the `githubApp` scope.
+- **Unit, launch record.** The update sequence: create a run with a custom image and a broker-audience
+  projection against a Workflow with no `githubApp` scope, let the Job start, then clear the overrides and
+  change `workflowRef` to a Workflow with the scope; the original pod gets no token, and editing the run
+  never changes the record. A Job with no annotation, a Job not owned by a WorkflowRun, and a recorded
+  Workflow whose UID has changed are each refused.
+- **Unit, clusterRef.** A run of a `githubApp` Workflow with `kubeConfigSecretRef` or `kubeConfigFilePath`
+  is refused before the Job is created, and one with `local: true` or no `clusterRef` is not; the broker
+  refuses a Job whose record shows a non-local `clusterRef`, including a kubeconfig whose `tokenFile` names
+  the broker token path or that uses an exec credential plugin.
 - **Unit, revocation.** A terminal run's tokens are revoked and dropped from the cache; a change in the key
   bytes drops and revokes the cached tokens, and a label-only edit of the Secret does not.
 - **Unit, refresh.** A request when the cached token has less than the refresh margin left mints a new
@@ -381,6 +437,10 @@ After this design is reviewed and accepted:
   `WorkflowRunExecutionSpec` has the field, so a WorkflowRun cannot set it.
 - **Integration (envtest).** TokenReview and SubjectAccessReview against the API server with a pod-bound
   broker-audience projected token, and a fake GitHub token endpoint.
+- **Multi-replica (kind).** With three controller replicas, only the leader pod
+  carries the broker-leader label and every runner request reaches it; after the leader is deleted, the new
+  leader labels itself, the old label is gone, and runner requests succeed after retrying connection
+  refusals.
 - **Manual.** A real App against a test cluster, including a run that crosses the one-hour mark.
 
 ## Open questions
