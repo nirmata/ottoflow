@@ -121,18 +121,36 @@ another volume type such as a `csi` volume's `nodePublishSecretRef`), whichever 
 came from, and `ensureRunnerSecrets` never copies a key Secret. A reserved name prefix that the Workflow
 validator requires for the key Secret keeps that a name check with no extra Secret read.
 
+### Key rotation and revocation
+
+The controller reads the key Secret each time it signs a JWT and keeps no parsed key between mints, so an
+updated Secret is used on the next mint with no restart. To rotate, the operator adds the new key to the
+App in GitHub, updates the Secret, then deletes the old key in GitHub. To revoke, the operator deletes the
+key in GitHub (new mints fail at once) and the Secret. On a key change the controller also revokes the
+tokens it holds in its cache (see Token lifetime and refresh); tokens it no longer holds expire within the
+hour. The controller has only a named `get` on the key Secret and no watch, so it detects a change on the
+next mint: it compares a digest of the key bytes with the one its cached tokens were minted under, and
+a difference drops and revokes those tokens. A label or annotation edit changes the Secret's `resourceVersion`
+but not the key, so it does not revoke tokens.
+
 ### Token flow
 
-1. The runner sends its pod-bound projected ServiceAccount token to the controller's token endpoint. The
-   endpoint is served over TLS with the controller's internal certificate manager.
-2. The controller checks the token with TokenReview. For a token bound to a pod, the review's
+1. The runner sends a projected ServiceAccount token whose audience is the broker only, not the API server
+   audience, to the controller's token endpoint. The controller adds that projected volume to the runner Job
+   (the repository sets no projected token today), and the pod's default API-server token is never sent to
+   the broker. The controller does not add the volume to a Job whose run overrides `spec.execution.job.image`
+   (Runner image rule). The endpoint is served over TLS with the controller's internal certificate manager.
+2. The controller checks the token with TokenReview, setting `spec.audiences` to the broker audience, so a
+   token minted for the API server is refused (`TokenReviewAndSARAuthenticator.WithAudiences` already does
+   this, `internal/auth/sar.go:77`, `:98`). For a token bound to a pod, the review's
    `status.user.extra` carries `authentication.kubernetes.io/pod-name` and
    `authentication.kubernetes.io/pod-uid` (Kubernetes
    [service accounts admin guide](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/)).
    The controller then runs a SubjectAccessReview through the existing `TokenReviewAndSARAuthenticator`
    (`internal/auth/sar.go`), as its MCP server does, behind a feature flag. The chart floor is Kubernetes 1.29+ (`charts/ottoflow/README.md:7`).
 3. The controller maps the pod to its active WorkflowRun and that run's Workflow. It refuses if the two
-   namespaces differ.
+   namespaces differ, or if that run's `spec.execution.job` sets `image`, `env`, `volumes` or
+   `volumeMounts` (Runner image rule, Runner env and volume rule).
 4. It mints a token narrowed to the intersection of the request and the **Workflow's** allowlist and
    permission set. It never reads the WorkflowRun spec for scope.
 5. The runner asks again before the token expires.
@@ -150,6 +168,34 @@ which run in the agent-executor.
 
 ## Scoping
 
+- **Who can use the App.** Whoever can create or update a Workflow in a namespace can name that namespace's
+  key Secret and set its allowlist and permissions, so Workflow create/update RBAC is App scope there. The
+  controller can only read a key Secret the operator listed under `rbac.secretAccess.controller`, and the
+  installation's own grants cap every token. Operators give Workflow write access only to people they trust
+  with the App. WorkflowRun create cannot widen that scope, because of the runner image rule and the
+  runner env and volume rule below.
+- **Runner image rule.** A run author can set `spec.execution.job.image`, and the controller uses it after
+  a whitespace check (`workflowrun_controller.go:1346-1352`; the configured image is
+  `r.RunnerConfig.RunnerImage`, `:1321-1324`). Code the author controls would otherwise hold a real
+  broker-audience token and pass the review. So the broker mints only for runs that keep the configured
+  runner image. The gate is the broker's, at mint time (see the run-spec check in the next bullet): it
+  refuses if the run's `spec.execution.job.image` is set, so that check covers the image and no separate
+  check on the pod's containers is needed. It holds even if a run adds its own projected token with the
+  broker audience through `spec.execution.job.volumes`. Defence in depth: the controller does not mount the
+  broker-audience token into a Job whose image is overridden, so the code never gets a broker token to send.
+- **Runner env and volume rule.** The configured image still reads its environment and mounts, so a run that
+  keeps it could set `HTTPS_PROXY` and `SSL_CERT_FILE` and mount a CA, and the runner's HTTP client (CEL
+  `http.*` uses `http.DefaultTransport`) would send the minted installation token through an intercepting
+  proxy. So a run of a Workflow with a `githubApp` scope may not supply `spec.execution.job` `env`,
+  `volumes` or `volumeMounts`. The gate is the broker's, at mint time: it reads the WorkflowRun it found
+  through the pod-uid chain and refuses to mint if that run's `spec.execution.job` sets `image`, `env`,
+  `volumes` or `volumeMounts`. The check is exact, and it closes the case where the scope is
+  added after the run starts. Defence in depth, as with the image rule: the controller also refuses such a
+  run of a `githubApp` Workflow before it creates the runner Job, so it never mounts the broker-audience
+  token. A deny-list of
+  proxy and TLS env names is not enough: a volume mounted over the system trust store, or other names such as
+  `ALL_PROXY`, keep the same path open. Trade-off: `githubApp` workflows cannot take run-level env or
+  volumes; they get their inputs from the Workflow spec.
 - **Authority.** The Workflow's allowlist and permission set are authoritative and are checked at
   admission.
 - **Request rules.** The broker, not admission, enforces these: a token request may narrow the scope and
@@ -185,16 +231,38 @@ Pulling a token per request covers all three without a rotation loop. The broker
   installation alone could return a token minted for a wider scope. A cached token counts as expired once
   less than a refresh margin (for example 10 minutes) is left, so the runner's ask before expiry (Token
   flow, step 5) gets a new token in one round trip. The old token is served only while it is still valid
-  and the new mint fails.
+  and the new mint fails;
+- revocation when the WorkflowRun reaches a terminal phase: the controller revokes the tokens it minted
+  for that run (GitHub's `DELETE /installation/token`, called with the token) and drops them from the
+  cache. It is best effort: a failure is logged and the token still expires within the hour;
+- one active broker: the controller runs with leader election by default
+  (`cmd/controller/main.go:103-105`) and its callback server opens its port only on the leader (`:326`). The
+  broker does the same, so the cache lives in one process. After a failover the new leader starts with an
+  empty cache and mints again on the next request, and the runner's retry budget covers the gap. Tokens the
+  old leader minted are not revoked by the new one and expire within the hour.
 
 ## Threat model
 
 This is surface (B), credential blast radius, in the sandboxing proposal.
 
-- **Key theft.** The key is never in a runner or agent-executor pod. A tool that reads everything mounted
-  in a runner pod finds only that pod's ServiceAccount token, which is useful only for asking the broker
-  for a token within that run's own scope. The agent-executor serves every run, so its own token maps to
-  no WorkflowRun (Open questions, 8).
+- **Key theft.** The key is never in a runner or agent-executor pod the controller creates. A tool that
+  reads everything mounted in a runner pod does not find the App key, and the broker-audience token it
+  does find asks the broker only for a token within that run's own scope; the broker refuses the API-server
+  token. This limits the GitHub App key and the broker's scope, nothing else. Runners can still mount
+  configured kubeconfigs and MCP Secrets, and the runner role still reads ConfigMaps and updates
+  WorkflowRun status (`charts/ottoflow/templates/clusterrole.yaml:429-458`). The agent-executor serves
+  every run, so its own token maps to no WorkflowRun (Open questions, 8).
+- **Image override.** A run that overrides the runner image gets no broker token from the controller, and the
+  broker refuses to mint for its run anyway (Scoping, Runner image rule), so WorkflowRun create does not reach the App.
+- **Env and volume override.** A run that keeps the configured image could set proxy or trust-store env
+  and mount a CA to read the installation token in transit. The controller refuses `env`,
+  `volumes` and `volumeMounts` on runs of a `githubApp` Workflow, and the broker refuses to mint for a run
+  that sets any of them, even when the scope was added after the run started (Scoping, Runner env and volume
+  rule).
+- **Pod-create equals key access.** The kubelet mounts any Secret a pod spec names with no Secret RBAC, so
+  anyone who can create a pod, or a workload that makes one, in the key Secret's namespace can read the key.
+  The controller's refusal (Secret convention) covers only Jobs it creates. Operators treat that namespace
+  as the key's trust boundary.
 - **Scope escape.** Mitigated by the Workflow-only field, the namespace-equality check and the
   pod-uid chain above.
 - **Stolen token.** One token is limited to its repository set, its permission set and one hour.
@@ -210,7 +278,7 @@ This is surface (B), credential blast radius, in the sandboxing proposal.
   Open: could the App's own webhook feed a `provider: github` trigger? #5 uses one URL per Workflow.
 - **#7** is the main consumer and needs `contents:write` and `pull_requests:write`. It runs untrusted
   code, so the hard requirement is that the key never enters such a pod. #7 stays blocked on the choice of
-  where the key lives (Open questions, 1).
+  key custody and token delivery (Open questions, 1).
 
 ## Alternatives considered
 
@@ -257,8 +325,8 @@ use it (no `SubPath` in `internal/workflow/controller/`).
 
 ### Why not these
 
-Approach 2 is the only option that keeps the key out of every pod that runs untrusted code (#7, surface B)
-and also covers the three paths that run past an hour, without a Secret write grant in tenant namespaces.
+Approaches 2 and 3 both keep the private key with the controller. Approach 2 also covers the three paths that
+run past an hour, without a Secret write grant in tenant namespaces and without tokens in etcd.
 Running the broker in the agent-executor instead of the controller was also rejected: the sandboxing
 proposal calls that pod "the weak link for surface (B)".
 
@@ -268,9 +336,10 @@ proposal calls that pod "the weak link for surface (B)".
 |---|---|
 | `api/v1alpha1/workflow_types.go`, `zz_generated.deepcopy.go`, CRDs (`config/crd/bases/`, `charts/ottoflow/crds/`) | Workflow-only GitHub App field: key Secret reference, repository allowlist, permission set |
 | `internal/webhook/workflow_validator.go` | Validate the field: key Secret reference, non-empty repository allowlist, permission set (Scoping, Authority) |
-| `internal/workflow/controller/` | Token endpoint handler and feature flag; pod to WorkflowRun to Workflow lookup; namespace-equality check; request narrowing; installation-token minting and cache |
-| `internal/auth/sar.go` | Reuse `TokenReviewAndSARAuthenticator`, which already gates the controller's MCP server (`cmd/controller/main.go:366`), with a new caller resourceName for the broker. Return the TokenReview's `status.user.extra` pod name and pod UID with the ServiceAccount name, so the broker makes one TokenReview per request; `AuthenticateRequest` returns only the username today |
-| `api/v1alpha1/mcpserver_types.go`, `internal/agent/mcp_client_impl.go`, `internal/workflow/executor/exec_client.go` | MCPServer auth type `githubApp`; a runner-side broker client that reuses `saAuthTransport` from `exec_client.go`, moved into a package `internal/agent` can import (`exec_client.go` imports `internal/agent`, so the client cannot import it back). The moved transport re-reads the projected ServiceAccount token file per request instead of holding the string read once (`exec_client.go:244-249`, `:266-284`): Kubernetes leaves reloading a rotated token to the application, and a cluster with `--service-account-extend-token-expiration=false` rejects the old token once it expires, which would break path (a) under Token lifetime and refresh |
+| `internal/workflow/controller/` | Token endpoint handler and feature flag; pod to WorkflowRun to Workflow lookup; namespace-equality check; run-spec check at mint time (refuse when the run's `spec.execution.job` sets image, env, volumes or volumeMounts; the run of a `githubApp` Workflow is also refused before its Job); request narrowing; installation-token minting and cache; the broker-audience projected token volume on the runner Job (not added when the run overrides the image); revoking cached tokens when the key bytes change; revoking a run's tokens at a terminal phase |
+| `cmd/controller/main.go` | Register the broker as a leader-elected runnable, so it serves only on the leader (as the callback server does, `:326`) |
+| `internal/auth/sar.go` | Reuse `TokenReviewAndSARAuthenticator`, which already gates the controller's MCP server (`cmd/controller/main.go:366`), with a new caller resourceName for the broker and the TokenReview's `spec.audiences` set to the broker audience. Return the TokenReview's `status.user.extra` pod name and pod UID with the ServiceAccount name, so the broker makes one TokenReview per request; `AuthenticateRequest` returns only the username today |
+| `api/v1alpha1/mcpserver_types.go`, `internal/agent/mcp_client_impl.go`, `internal/workflow/executor/exec_client.go` | MCPServer auth type `githubApp`; a runner-side broker client that reuses `saAuthTransport` from `exec_client.go`, moved into a package `internal/agent` can import (`exec_client.go` imports `internal/agent`, so the client cannot import it back). The moved transport takes the token path as a parameter (the broker-audience token's mount, not the default API-server token path, `exec_client.go:36`, `:267`) and re-reads the projected ServiceAccount token file per request instead of holding the string read once (`exec_client.go:244-249`, `:266-284`): Kubernetes leaves reloading a rotated token to the application, and a cluster with `--service-account-extend-token-expiration=false` rejects the old token once it expires, which would break path (a) under Token lifetime and refresh |
 | Helm chart | Behind the flag, a ClusterRole like `mcp-auth-clusterrole.yaml` (the controller creates TokenReviews and SubjectAccessReviews) and a caller ClusterRole like `mcp-caller-clusterrole.yaml` (invoke on `callers.gate.ottoflow.nirmata.io/<broker name>`, bound to runner ServiceAccounts); a named `get` for the key Secret through `rbac.secretAccess.controller` |
 | `docs/user/` | Setup guide for the App, the key Secret and the grant; regenerated API reference |
 
@@ -281,9 +350,11 @@ No Secret write grant in tenant namespaces and no new Deployment.
 After this design is reviewed and accepted:
 
 1. **API and admission.** The Workflow-only field, CRD and deepcopy regeneration, validation.
-2. **Broker.** Token endpoint, TokenReview and SubjectAccessReview, the pod-uid chain, the
-   namespace-equality check, installation-token minting, the keyed cache, the feature flag and chart
-   ClusterRole.
+2. **Broker.** Token endpoint, TokenReview (with `spec.audiences`) and SubjectAccessReview, the pod-uid
+   chain, the namespace-equality check and the run-spec check at mint time (image, env, volumes, volumeMounts), the broker-audience projected token volume on the
+   runner Job, installation-token minting, the keyed cache, revoking cached tokens on a key change and a
+   run's tokens at a terminal phase, serving only on the leader (`cmd/controller/main.go`), the feature flag
+   and chart ClusterRole.
 3. **Consumers.** Runner-side client, MCPServer auth `githubApp`, CEL `http.*`, `agentRef` MCP tools.
 4. **Docs and samples.** Setup guide and a sample Workflow.
 5. **Follow-ups, in separate PRs.** #7's step, per-step scoping if wanted.
@@ -294,7 +365,14 @@ After this design is reviewed and accepted:
   carries only the intersection of request and allowlist; a widening request is refused.
 - **Unit, authorization.** A token for a pod with no active WorkflowRun is refused; a run whose namespace
   differs from its Workflow's is refused; two runs with different scopes on a shared ServiceAccount each get
-  their own scope; the cache never returns a token minted for a wider scope.
+  their own scope; the cache never returns a token minted for a wider scope; a token whose audience is the
+  API server is refused; a run that overrides `spec.execution.job.image` gets no broker token mounted, and
+  the broker refuses to mint for its run even when it presents a broker-audience token; a run of a
+  `githubApp` Workflow with `HTTPS_PROXY` or an extra volume is refused before the Job is created, and the
+  broker refuses to mint for a run whose `spec.execution.job` sets env, volumes or volumeMounts,
+  including a run created before its Workflow gained the `githubApp` scope.
+- **Unit, revocation.** A terminal run's tokens are revoked and dropped from the cache; a change in the key
+  bytes drops and revokes the cached tokens, and a label-only edit of the Secret does not.
 - **Unit, refresh.** A request when the cached token has less than the refresh margin left mints a new
   token, and the old token is served only while it is still valid and that mint fails; a GitHub 5xx or 429
   follows the retry budget and then fails the step with a clear reason.
@@ -302,13 +380,14 @@ After this design is reviewed and accepted:
 - **Unit, API types.** A reflection check in `api/v1alpha1` that neither `WorkflowRunSpec` nor
   `WorkflowRunExecutionSpec` has the field, so a WorkflowRun cannot set it.
 - **Integration (envtest).** TokenReview and SubjectAccessReview against the API server with a pod-bound
-  token, and a fake GitHub token endpoint.
+  broker-audience projected token, and a fake GitHub token endpoint.
 - **Manual.** A real App against a test cluster, including a run that crosses the one-hour mark.
 
 ## Open questions
 
-1. **Where the private key lives.** In the runner pod (Approach 1), in a Secret the controller pushes
-   (Approach 3), or in a controller broker (this proposal). This is the first decision for reviewers.
+1. **Key custody and token delivery.** The key in the runner pod (Approach 1); the key with the controller,
+   which pushes a short-lived token Secret to the run (Approach 3); or the key with the controller, which
+   hands tokens to the runner through a broker (this proposal). This is the first decision for reviewers.
 2. **`GitHubApp` CRD or Secret convention.** A Secret convention needs no new CRD or codegen. A CRD gives a
    status field for health.
 3. **Where the reference and scope live.** Proposed: a Workflow-only field. Alternative: put it under
@@ -321,4 +400,4 @@ After this design is reviewed and accepted:
    during GitHub outages and rate limits?
 7. **Namespace rule.** Is requiring the key Secret in the Workflow's tenant namespace, behind a named get
    grant, acceptable to operators?
-8. **`agentRef` consumers.** The agent-executor serves every run, so its pod token names no WorkflowRun. How does it prove which run a GitHub request is for, for example by forwarding the calling runner's token?
+8. **`agentRef` consumers.** The agent-executor serves every run, so its pod token names no WorkflowRun. How does it prove which run a GitHub request is for, without forwarding a runner's API-server token (the agent-executor never does)?
