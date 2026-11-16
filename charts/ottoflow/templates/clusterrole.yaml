@@ -112,9 +112,11 @@ rules:
       - get
       - list
       - watch
-  # ClusterRoleBindings - bind runner ServiceAccount to the runner ClusterRole (create, get, update).
+  # ClusterRoleBindings - bind runner ServiceAccount to the runner ClusterRole (create, delete, get, list, update, watch).
   # delete required because roleRef is immutable: when the role of a managed binding (runner or
-  # agent-executor caller) changes, the controller deletes and recreates it.
+  # agent-executor caller) changes, the controller deletes and recreates it. delete also removes
+  # the bindings of a runner ServiceAccount that no longer exists or lacks the
+  # app.kubernetes.io/part-of=ottoflow label; list and watch serve that sweep.
   # This grant is cluster-wide (not scoped to chart-managed bindings) because Kubernetes RBAC
   # resourceNames cannot be combined with label selectors.
   #

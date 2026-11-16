@@ -348,6 +348,8 @@ workflowRunner:
   # Default service account name for runner Jobs.
   # When empty, the controller derives a per-workflow "{workflow-name}-runner" service account
   # bound to the narrowed runner ClusterRole (see rbac.runnerClusterRole below).
+  # An existing derived or shared account must carry the label app.kubernetes.io/part-of: ottoflow,
+  # or runs on it fail and nothing is bound. Use a dedicated name, never "default".
   # Setting this to the controller's own service account re-grants full controller privileges
   # to every runner Job — only do this if you understand the privilege-escalation trade-off.
   serviceAccountName: ""

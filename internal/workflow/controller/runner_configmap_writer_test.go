@@ -37,7 +37,7 @@ const (
 )
 
 func cmWriterSAObj() *corev1.ServiceAccount {
-	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: cmWriterSA, Namespace: cmWriterNS, UID: cmWriterUID}}
+	return &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: cmWriterSA, Namespace: cmWriterNS, UID: cmWriterUID, Labels: map[string]string{"app.kubernetes.io/part-of": ottoflowPartOf}}}
 }
 
 func cmWriterReconciler(c client.Client, role string) *WorkflowRunReconciler {
