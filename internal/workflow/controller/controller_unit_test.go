@@ -902,7 +902,7 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_AlreadyCorrect_N
 	}
 }
 
-func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_NotManaged_SkipsUpdate(t *testing.T) {
+func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_NotManaged_RefusesUpdate(t *testing.T) {
 	ctx := context.Background()
 	ns := defaultNamespace
 	bindingName := agentExecutorCallerRoleBindingName(ns, "my-sa")
@@ -913,10 +913,11 @@ func TestWorkflowRunReconciler_EnsureAgentExecutorCallerBinding_NotManaged_Skips
 	}
 	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(existing).Build()
 	r := &WorkflowRunReconciler{Client: fakeClient, Scheme: unitTestScheme}
-	if err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller"); err != nil {
-		t.Fatal(err)
+	err := r.ensureAgentExecutorCallerBinding(ctx, ns, "my-sa", "agent-caller")
+	if err == nil || errors.Is(err, errRequeueRunnerAccess) || !strings.Contains(err.Error(), "refusing to update") {
+		t.Fatalf("err = %v, want a terminal 'refusing to update' error", err)
 	}
-	// Binding should be unchanged (we skip update when not managed)
+	// Binding should be unchanged (we refuse to update when not managed)
 	updated := &rbacv1.ClusterRoleBinding{}
 	if err := fakeClient.Get(ctx, types.NamespacedName{Name: bindingName}, updated); err != nil {
 		t.Fatal(err)
