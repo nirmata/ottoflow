@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -399,7 +400,6 @@ func TestEnsureRunnerAccess_CallSiteClassification(t *testing.T) {
 	mainName := workflowRunnerRoleBindingName(cmWriterNS, cmWriterSA)
 	callerName := agentExecutorCallerRoleBindingName(cmWriterNS, cmWriterSA)
 	other := []rbacv1.Subject{{Kind: "ServiceAccount", Name: "other", Namespace: cmWriterNS}}
-	exists := apierrors.NewAlreadyExists(gr, mainName)
 	sa := cmWriterSAObj()
 	type site struct {
 		objs       []client.Object
@@ -422,19 +422,6 @@ func TestEnsureRunnerAccess_CallSiteClassification(t *testing.T) {
 		"caller update":          {[]client.Object{sa, callerBinding("caller-role", other, callerName)}, "caller-role", on("update", isCRB(callerName))},
 		"caller delete":          {[]client.Object{sa, callerBinding("old-role", nil, callerName)}, "caller-role", on("delete", isCRB(callerName))},
 		"caller recreate create": {[]client.Object{sa, callerBinding("old-role", nil, callerName)}, "caller-role", on("create", isCRB(callerName))},
-		"crb re-get after exists": {[]client.Object{sa, callerBinding("old-role", nil, mainName)}, "", func(e error) interceptor.Funcs {
-			gets := 0
-			f := failOn("create", isCRB(mainName), exists)
-			f.Get = func(ctx context.Context, c client.WithWatch, k client.ObjectKey, o client.Object, opts ...client.GetOption) error {
-				if isCRB(mainName)(o, k.Name) {
-					if gets++; gets > 1 {
-						return e
-					}
-				}
-				return c.Get(ctx, k, o, opts...)
-			}
-			return f
-		}},
 	}
 	errs := map[string]struct {
 		err       error
@@ -467,6 +454,52 @@ func TestEnsureRunnerAccess_CallSiteClassification(t *testing.T) {
 			err := run(sites["crb recreate create"], e.err)
 			if err == nil || strings.Contains(err.Error(), "holds 'bind'") == e.transient {
 				t.Errorf("err = %v, want bind hint only when terminal", err)
+			}
+		})
+	}
+	t.Run("caller hint/forbidden", func(t *testing.T) {
+		err := run(sites["caller recreate create"], errs["forbidden"].err)
+		if err == nil || errors.Is(err, errRequeueRunnerAccess) || !strings.Contains(err.Error(), "holds 'bind'") {
+			t.Errorf("err = %v, want a terminal error with the bind hint", err)
+		}
+	})
+}
+
+// An existing runner or caller ClusterRoleBinding that is terminating, or that another reconcile
+// recreated first, requeues so the next pass re-reads it with every check.
+func TestEnsureRunnerAccess_ExistingClusterRoleBindingRequeues(t *testing.T) {
+	mainName := workflowRunnerRoleBindingName(cmWriterNS, cmWriterSA)
+	callerName := agentExecutorCallerRoleBindingName(cmWriterNS, cmWriterSA)
+	terminating := func(role, name string) *rbacv1.ClusterRoleBinding {
+		b := callerBinding(role, nil, name)
+		b.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+		b.Finalizers = []string{"example.com/hold"}
+		return b
+	}
+	// Create stores the desired binding, then reports AlreadyExists, as when another reconcile wins the recreate.
+	recreatedFirst := interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, o client.Object, opts ...client.CreateOption) error {
+		if err := c.Create(ctx, o, opts...); err != nil || !isCRB(mainName)(o, o.GetName()) {
+			return err
+		}
+		return apierrors.NewAlreadyExists(schema.GroupResource{Resource: "clusterrolebindings"}, mainName)
+	}}
+	cases := map[string]struct {
+		binding    *rbacv1.ClusterRoleBinding
+		callerRole string
+		funcs      interceptor.Funcs
+	}{
+		"terminating runner binding": {terminating("ottoflow-role", mainName), "", interceptor.Funcs{}},
+		"terminating caller binding": {terminating("caller-role", callerName), "caller-role", interceptor.Funcs{}},
+		"runner recreate exists":     {callerBinding("old-role", nil, mainName), "", recreatedFirst},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: cmWriterNS}}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithObjects(cmWriterSAObj(), tc.binding).WithInterceptorFuncs(tc.funcs).Build()
+			r := cmWriterReconciler(c, cmWriterRole)
+			r.RunnerConfig.AgentExecutorCallerRole = tc.callerRole
+			if err := r.ensureRunnerAccess(context.Background(), wr, nil, cmWriterSA, false); !errors.Is(err, errRequeueRunnerAccess) {
+				t.Errorf("err = %v, want requeue sentinel", err)
 			}
 		})
 	}
