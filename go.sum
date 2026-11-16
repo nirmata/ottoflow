@@ -280,10 +280,10 @@ github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 h1:C3w9PqII01/Oq
 github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822/go.mod h1:+n7T8mK8HuQTcFwEeznm/DIxMOiR9yIdICNftLE1DvQ=
 github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f h1:KUppIJq7/+SVif2QVs3tOP0zanoHgBEVAwHxUSIzRqU=
 github.com/mwitkow/go-conntrack v0.0.0-20190716064945-2f068394615f/go.mod h1:qRWi+5nqEBWmkhHvq77mSJWrCKwh8bxhgT7d/eI7P4U=
-github.com/nirmata/kubectl-ai v0.0.0-20260203053340-f1042292f995 h1:LWs71oDRN7Q2wXcnU2OKG5TJF/tkqlfOUu6H8PzfNM0=
-github.com/nirmata/kubectl-ai v0.0.0-20260203053340-f1042292f995/go.mod h1:n9jU3GhrwHIn+cMPg8H/g6PEQjA86y9AKyP9Y/r4OcI=
-github.com/nirmata/kubectl-ai/gollm v0.0.0-20260203053340-f1042292f995 h1:MtpBmfBpDF5Sv52mZ346svCFNFWCUM2/4gfUMVEdZ+w=
-github.com/nirmata/kubectl-ai/gollm v0.0.0-20260203053340-f1042292f995/go.mod h1:45apMlEKVpn4tQR1IqsCkF7OPcFHk/IVix1QvCXmy1A=
+github.com/nirmata/kubectl-ai v0.0.0-20261107214026-faee194e7184 h1:CqTV6pioa98K8dpEMJaWP0wiT5lepUMQ/9stO3NgNFQ=
+github.com/nirmata/kubectl-ai v0.0.0-20261107214026-faee194e7184/go.mod h1:s7oNExLGZZTuTziGLgnYfNquAZoNHDfpIWI8qkkM7LU=
+github.com/nirmata/kubectl-ai/gollm v0.0.0-20261107214026-faee194e7184 h1:gY8sQeL2tSfpddQPYJbOL/goiIs5CmsSu9uvn2mHPYk=
+github.com/nirmata/kubectl-ai/gollm v0.0.0-20261107214026-faee194e7184/go.mod h1:J3tmtV6XxAOk0nESRjbU7o+muKfMk3HIBrIxyQb+eXk=
 github.com/onsi/ginkgo/v2 v2.32.1 h1:6tlvcDm/3sE8lGJbZ4+d4mO3RLy24/tQWOFzVSQNIfw=
 github.com/onsi/ginkgo/v2 v2.32.1/go.mod h1:+aXOY+vzZ5mu2iI2HpTZUPmM//oQfsNFX6gU9kNcA44=
 github.com/onsi/gomega v1.44.0 h1:eAiGl3Pw5jz5GQdDff0BcxYpAX1JxW8xD7mFUuwNfZQ=

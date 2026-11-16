@@ -198,6 +198,6 @@ require (
 
 replace (
 	// Use the nirmata/kubectl-ai fork of gollm, which has no ollama provider.
-	github.com/GoogleCloudPlatform/kubectl-ai => github.com/nirmata/kubectl-ai v0.0.0-20260203053340-f1042292f995
-	github.com/GoogleCloudPlatform/kubectl-ai/gollm => github.com/nirmata/kubectl-ai/gollm v0.0.0-20260203053340-f1042292f995
+	github.com/GoogleCloudPlatform/kubectl-ai => github.com/nirmata/kubectl-ai v0.0.0-20261107214026-faee194e7184
+	github.com/GoogleCloudPlatform/kubectl-ai/gollm => github.com/nirmata/kubectl-ai/gollm v0.0.0-20261107214026-faee194e7184
 )
