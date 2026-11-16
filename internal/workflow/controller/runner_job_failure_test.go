@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -197,5 +198,25 @@ func TestReconcileRunnerJobPreservesStartupCauseAcrossActiveAndTerminal(t *testi
 	if terminal.Status.Phase != ottoflowv1alpha1.WorkflowRunPhaseFailed ||
 		terminal.Status.Execution.Message != "transient startup failure" {
 		t.Errorf("terminal Job lost startup cause: %+v", terminal.Status)
+	}
+}
+
+func TestMarkRunTerminallyFailed_DeadlineExceeded_AppendsPendingCause(t *testing.T) {
+	ctx := context.Background()
+	cause := pendingCausePrefix + "Unschedulable: 0/3 nodes are available"
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: defaultNamespace},
+		Status: ottoflowv1alpha1.WorkflowRunStatus{
+			Phase:     ottoflowv1alpha1.WorkflowRunPhaseRunning,
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{JobName: "run-1-runner", Phase: "Running", Message: cause},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(wr).Build()
+	r := &WorkflowRunReconciler{Client: c, Scheme: unitTestScheme}
+	if _, _, err := r.markRunTerminallyFailed(ctx, wr, "run-1-runner", batchv1.JobReasonDeadlineExceeded, 0); err != nil {
+		t.Fatalf("markRunTerminallyFailed: %v", err)
+	}
+	if !strings.Contains(wr.Status.Message, "DeadlineExceeded") || !strings.Contains(wr.Status.Message, cause) {
+		t.Errorf("Status.Message = %q, want DeadlineExceeded and the pending cause", wr.Status.Message)
 	}
 }
