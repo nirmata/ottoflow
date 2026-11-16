@@ -26,7 +26,7 @@ func (e *WorkflowExecutor) evaluateStepLevelOutputs(ctx context.Context, step ot
 	}
 	// Copy the variables map rather than mutating the one held in the shared context.
 	existing, _ := outputVars["variables"].(map[string]interface{})
-	mergedVariables := make(map[string]interface{}, len(existing)+len(outputs))
+	mergedVariables := make(map[string]interface{})
 	maps.Copy(mergedVariables, existing)
 	maps.Copy(mergedVariables, outputs)
 	stepVars := maps.Clone(outputVars)
