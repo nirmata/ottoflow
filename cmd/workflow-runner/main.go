@@ -233,10 +233,11 @@ func boundedCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 
 func persistBounded(
 	ctx context.Context, controlClient client.Client, runKey client.ObjectKey, status ottoflowv1alpha1.WorkflowRunStatus,
+	policy statusWritePolicy,
 ) error {
 	writeCtx, cancel := boundedCtx(ctx)
 	defer cancel()
-	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status, preserveDeadlineFailure)
+	return persistWorkflowRunStatus(writeCtx, controlClient, runKey, status, policy)
 }
 
 // hardStopDefault returns the hard stop the controller passed in v, or defaultHardStop when v is unset
@@ -772,7 +773,7 @@ func persistExecutionFailure(
 	workflowRun.Status.Execution.PodName = podName
 	workflowRun.Status.Execution.Message = message
 	workflowRun.Status.Execution.CompletionTime = &end
-	if err := persistBounded(ctx, controlClient, runKey, workflowRun.Status); err != nil {
+	if err := persistBounded(ctx, controlClient, runKey, workflowRun.Status, preserveTerminalStatus); err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
 			logging.KeyPhase, "failed")
 		klog.ErrorS(err, "workflow failed and failed to persist status", keys...)
@@ -895,6 +896,13 @@ func updateExecutionFailure(
 	}
 }
 
+func executionAttempts(e *ottoflowv1alpha1.WorkflowRunExecutionStatus) int32 {
+	if e == nil {
+		return 0
+	}
+	return e.Attempts
+}
+
 func persistWorkflowRunStatus(
 	ctx context.Context,
 	controlClient client.Client,
@@ -919,6 +927,15 @@ func persistWorkflowRunStatus(
 				latest.Status.Phase == ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 			klog.InfoS("not overwriting terminal WorkflowRun status",
 				"namespace", runKey.Namespace, "workflowRun", runKey.Name, "phase", latest.Status.Phase)
+			return nil
+		}
+		// A newer attempt owns the run now. This relies on the payload's attempts being the value this
+		// runner loaded: the executor never assigns Status.Execution, so it stays at that value.
+		storedAttempts, runnerAttempts := executionAttempts(latest.Status.Execution), executionAttempts(status.Execution)
+		if policy == preserveTerminalStatus && storedAttempts > runnerAttempts {
+			klog.InfoS("not overwriting WorkflowRun status of a newer attempt",
+				logging.KeyNamespace, runKey.Namespace, logging.KeyWorkflowRun, runKey.Name,
+				"storedAttempts", storedAttempts, "runnerAttempts", runnerAttempts)
 			return nil
 		}
 		if policy == mergeStartupFailure {
