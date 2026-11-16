@@ -106,6 +106,21 @@ The key Secret lives in the Workflow's tenant namespace, never in the install na
 it under `rbac.secretAccess.controller`, which gives the controller a named `get` and nothing broader. No
 new CRD is needed (Open questions, 2).
 
+**Key isolation is a prerequisite.** The broker serves only runs in this same namespace (Scoping, Namespace
+binding), and a run author controls `spec.execution.job.env`, `volumes` and `volumeMounts`. The controller
+copies them into the runner Job unchanged (`workflowrun_controller.go:1368-1370`); `WorkflowRunJobSpec.Validate`
+checks their names and mount paths, not what they reference (`api/v1alpha1/workflowrun_types.go:203-260`).
+The kubelet mounts or injects any Secret the pod spec names, with no Secret RBAC on the runner
+ServiceAccount. `ensureRunnerSecrets` only checks that a `secret` volume's Secret exists (`workflowrun_controller.go:1068-1070`),
+which the named `get` above makes pass, and it skips `projected` volumes and never reads env `secretKeyRef`
+(`:1043-1045`). Where the controller holds the legacy `secrets create` grant, a run that names a Workflow in
+another namespace can also get the Secret copied into its own namespace (`:1078-1107`). So, before the
+broker ships, the controller refuses to create a runner Job whose pod spec names a key Secret anywhere
+(a `secret` volume, a `secret` source in a `projected` volume, an env `secretKeyRef`, or a Secret reference in
+another volume type such as a `csi` volume's `nodePublishSecretRef`), whichever field it
+came from, and `ensureRunnerSecrets` never copies a key Secret. A reserved name prefix that the Workflow
+validator requires for the key Secret keeps that a name check with no extra Secret read.
+
 ### Token flow
 
 1. The runner sends its pod-bound projected ServiceAccount token to the controller's token endpoint. The
@@ -255,7 +270,7 @@ proposal calls that pod "the weak link for surface (B)".
 | `internal/webhook/workflow_validator.go` | Validate the field: key Secret reference, non-empty repository allowlist, permission set (Scoping, Authority) |
 | `internal/workflow/controller/` | Token endpoint handler and feature flag; pod to WorkflowRun to Workflow lookup; namespace-equality check; request narrowing; installation-token minting and cache |
 | `internal/auth/sar.go` | Reuse `TokenReviewAndSARAuthenticator`, which already gates the controller's MCP server (`cmd/controller/main.go:366`), with a new caller resourceName for the broker. Return the TokenReview's `status.user.extra` pod name and pod UID with the ServiceAccount name, so the broker makes one TokenReview per request; `AuthenticateRequest` returns only the username today |
-| `api/v1alpha1/mcpserver_types.go`, `internal/agent/mcp_client_impl.go`, `internal/workflow/executor/exec_client.go` | MCPServer auth type `githubApp`; a runner-side broker client that reuses `saAuthTransport` from `exec_client.go`, moved into a package `internal/agent` can import (`exec_client.go` imports `internal/agent`, so the client cannot import it back) |
+| `api/v1alpha1/mcpserver_types.go`, `internal/agent/mcp_client_impl.go`, `internal/workflow/executor/exec_client.go` | MCPServer auth type `githubApp`; a runner-side broker client that reuses `saAuthTransport` from `exec_client.go`, moved into a package `internal/agent` can import (`exec_client.go` imports `internal/agent`, so the client cannot import it back). The moved transport re-reads the projected ServiceAccount token file per request instead of holding the string read once (`exec_client.go:244-249`, `:266-284`): Kubernetes leaves reloading a rotated token to the application, and a cluster with `--service-account-extend-token-expiration=false` rejects the old token once it expires, which would break path (a) under Token lifetime and refresh |
 | Helm chart | Behind the flag, a ClusterRole like `mcp-auth-clusterrole.yaml` (the controller creates TokenReviews and SubjectAccessReviews) and a caller ClusterRole like `mcp-caller-clusterrole.yaml` (invoke on `callers.gate.ottoflow.nirmata.io/<broker name>`, bound to runner ServiceAccounts); a named `get` for the key Secret through `rbac.secretAccess.controller` |
 | `docs/user/` | Setup guide for the App, the key Secret and the grant; regenerated API reference |
 
