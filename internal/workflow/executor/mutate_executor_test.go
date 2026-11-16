@@ -140,6 +140,87 @@ var _ = Describe("Mutate Step Execution", func() {
 		Expect(updated.Annotations["ottoflow/key"]).To(Equal("value"))
 	})
 
+	It("step-level outputs: should evaluate alongside mutate.outputs", func() {
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "my-cm", Namespace: "default"}}
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
+
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		workflow := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "addLabel",
+						Mutate: &ottoflowv1alpha1.StepMutate{
+							Target: ottoflowv1alpha1.StepMutateTarget{
+								APIVersion: "v1", Resource: "ConfigMap", Namespace: `"default"`, Name: `"my-cm"`,
+							},
+							PatchType: "ApplyConfiguration",
+							ApplyConfiguration: &ottoflowv1alpha1.MutateApplyConfiguration{
+								Expression: `{"metadata": {"labels": {"managed-by": "ottoflow"}}}`,
+							},
+							Outputs: map[string]string{"label": `object.metadata.labels["managed-by"]`},
+						},
+						Outputs: []ottoflowv1alpha1.Output{
+							{Name: "derived", Expression: `variables.label + "-x"`},
+							{Name: "name", Expression: `object.metadata.name`},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+		Expect(workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)).To(Succeed())
+		contextData, err := workflowExecutor.GetContextManager().ReadContext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		variables := contextData["variables"].(map[string]interface{})
+		Expect(variables["label"]).To(Equal("ottoflow"))
+		Expect(variables["derived"]).To(Equal("ottoflow-x"))
+		Expect(variables["name"]).To(Equal("my-cm"))
+	})
+
+	It("step-level outputs: should be written when mutate.outputs is absent", func() {
+		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "my-cm", Namespace: "default"}}
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm).Build()
+
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		workflow := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "addLabel",
+						Mutate: &ottoflowv1alpha1.StepMutate{
+							Target: ottoflowv1alpha1.StepMutateTarget{
+								APIVersion: "v1", Resource: "ConfigMap", Namespace: `"default"`, Name: `"my-cm"`,
+							},
+							PatchType: "ApplyConfiguration",
+							ApplyConfiguration: &ottoflowv1alpha1.MutateApplyConfiguration{
+								Expression: `{"metadata": {"labels": {"managed-by": "ottoflow"}}}`,
+							},
+						},
+						Outputs: []ottoflowv1alpha1.Output{{Name: "name", Expression: `object.metadata.name`}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+		Expect(workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)).To(Succeed())
+		contextData, err := workflowExecutor.GetContextManager().ReadContext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(contextData["variables"].(map[string]interface{})).To(HaveKeyWithValue("name", "my-cm"))
+	})
+
 	It("should fail when mutate target resource does not exist", func() {
 		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
 
