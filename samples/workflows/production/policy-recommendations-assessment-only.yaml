@@ -1,6 +1,14 @@
 # Policy recommendations assessment only (no Agent step)
 # Use this to verify the assessment logic without LLM credentials
 # Run: ottoflow run policy-recommendations-assessment-only --workflow-dir samples/workflows
+# RBAC: in-cluster runs need `list` on rbac.authorization.k8s.io clusterroles, plus (when Kyverno is installed) kyverno.io clusterpolicies and policies; the chart grants none of them. Add to Helm value rbac.runnerClusterRole.extraResources:
+#   - apiGroups: ["rbac.authorization.k8s.io"]
+#     resources: ["clusterroles"]
+#     verbs: ["list"]
+#   - apiGroups: ["kyverno.io"]
+#     resources: ["clusterpolicies", "policies"]
+#     verbs: ["list"]
+# Local runs (`ottoflow run <name> --workflow-dir ...`) use your kubeconfig instead; plain `ottoflow run <name>` creates an in-cluster WorkflowRun and needs these rules.
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:
