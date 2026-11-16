@@ -378,14 +378,13 @@ workflowRunner:
   # Set to a Secret name to enable cluster-level injection, or use spec.execution.llmCredentialsSecret per run.
   llmCredentialsSecret: ""
 
-  # Name of the agent-executor CA Secret in the install namespace. For a workflow that has an agent step, the
+  # The agent-executor CA Secret in the install namespace is named by the controller's certificate manager when
+  # agent executor TLS is internal. For a workflow that has an agent step, the
   # controller publishes that Secret's certificate (tls.crt only, never the private key) as a ConfigMap of the
   # same name in the WorkflowRun's namespace and mounts it into the runner Job (as ca.crt at
   # /etc/ottoflow/agent-executor-ca) so the runner can verify agent-executor TLS. Nothing has to be created or
   # granted in that namespace: the controller's ClusterRole already lets it create and update ConfigMaps. A
-  # runner whose workflow has no agent step never calls the agent-executor and does not mount it. Defaults to
-  # the CA Secret name the controller's certificate manager uses when agent executor TLS is internal.
-  agentExecutorCASecret: ""
+  # runner whose workflow has no agent step never calls the agent-executor and does not mount it.
 
 # serve-a2a exposure configuration.
 # When enabled, the controller publishes Workflows with spec.expose.kagent set as kagent BYO
@@ -453,7 +452,7 @@ rbac:
   # Opt-in named-Secret access (break-by-default).
   # OttoFlow ships with ZERO cluster-wide Secret access for every component. Features that read a
   # Secret — automatic LLM credential injection, webhook HMAC verification, cron inputValuesFrom,
-  # agent/MCP server credentials, external-agent auth — DO NOT WORK until an operator grants access
+  # an agent step's MCP tool credentials — DO NOT WORK until an operator grants access
   # to the specific Secrets they use. Each component takes a LIST of {namespace, secretNames}
   # entries — one entry per TENANT namespace — so a multi-tenant release grants access for every
   # tenant from one values file. For each entry the chart renders a Role+RoleBinding in that

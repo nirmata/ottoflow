@@ -103,6 +103,7 @@ The controller is the main OttoFlow manager process (e.g. `controller` or `/ko-a
 | `--workflow-runner-cluster-role` | `WORKFLOW_RUNNER_CLUSTER_ROLE` | required (controller refuses to start if unset); the Helm chart sets `<fullname>-runner-role` (narrowed, runner-only role) | ClusterRole name for runner Job RBAC |
 | `--agent-executor-caller-cluster-role` | `AGENT_EXECUTOR_CALLER_CLUSTER_ROLE` | (empty) | ClusterRole for agent-executor caller RBAC; empty disables |
 | `--workflow-runner-agent-executor-ca-secret` | | (empty) | Name of the agent-executor CA Secret in `--agent-executor-namespace` (internal TLS). Its certificate is published as a ConfigMap of the same name in each namespace that runs a workflow with an agent step and mounted into those runner Jobs; empty disables the CA mount |
+| `--secret-ref-allowed-namespaces` | `SECRET_REF_ALLOWED_NAMESPACES` | (empty) | Comma-separated namespaces, besides the WorkflowRun's own, that an `agentRef` step's MCP tool credential Secret may live in. A kubeconfig, an `externalAgentRef` CA or auth Secret and a directly-called MCPServer's auth and env Secrets must be in the run's namespace whatever this says |
 | `--secret-source-namespace` | | (empty) | Namespace to copy runner Secret-backed volumes from when missing |
 | `--workflow-runner-image-pull-secrets` | `WORKFLOW_RUNNER_IMAGE_PULL_SECRETS` | (empty) | Comma-separated Secret names for runner pod `imagePullSecrets` |
 | `--workflow-runner-image-pull-policy` | `WORKFLOW_RUNNER_IMAGE_PULL_POLICY` | `IfNotPresent` | Runner container `imagePullPolicy` |

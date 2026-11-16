@@ -695,7 +695,7 @@ Runner Jobs can inherit LLM credentials from a well-known Secret in the Workflow
 
 Option A (namespace-scoped well-known Secret) was chosen over Option B (per-Agent `secretKeyRef`) and Option C (a new `LLMConfig` CRD). Option A requires no API changes, no per-step author knowledge of credential key names, and naturally scopes credentials to the namespace boundary that Kubernetes RBAC already enforces. Options B and C are deferred: B adds per-Agent boilerplate that most users don't want, and C introduces a new CRD abstraction that isn't needed until credentials require more structure (rotation, expiry, multiple providers per namespace).
 
-No RBAC changes were required: the controller `ClusterRole` already held `secrets: get` cluster-wide.
+No RBAC changes were required then: the controller `ClusterRole` held `secrets: get` cluster-wide. The shipped chart no longer grants that; the operator grants the credentials Secret per namespace (`docs/user/rbac-secret-access.md`).
 
 ### Key Constraints
 
@@ -852,7 +852,7 @@ reconciles) was considered but deferred: it cannot reach cron- or event-triggere
 controller creates itself with no human present to see a warning, so reconcile-time gating remains
 the only mechanism that reaches every run regardless of how it was created.
 
-**Reader consistency:** the predicate's Agent `Get` reads through the controller's direct
+**Reader consistency:** the predicate's Agent, StepTemplate and sub-Workflow `Get`s read through the controller's direct
 (non-cached) reader, the same one `injectWellKnownLLMCredentials` uses for the Secret `Get` it
 gates. Reading the Agent through the shared/cached client instead would race a batch apply of
 Agent + Workflow + WorkflowRun together: a `NotFound` from a not-yet-synced informer cache would
@@ -869,8 +869,8 @@ uncached by nature. A cache-backed `Get` of a typed object starts a cluster-wide
 informer for that type, so a cached Secret `Get` would require cluster-wide `secrets list, watch`
 RBAC no matter how narrow the individual `Get` looks. With caching disabled, each `Get` is a live
 API call authorized as `get` on that one object — which is what allows Secret access to be granted
-per Secret, per namespace (the shipped chart still grants the controller cluster-wide Secret
-access today; narrowing it is a separate change). The
+per Secret, per namespace (the shipped chart grants the controller no cluster-wide Secret
+access; see `docs/user/rbac-secret-access.md`). The
 trade-off is latency: every Secret read is an API round trip rather than a cache hit.
 
 **Laziness:** the predicate walks the step tree, so `buildWorkflowRunnerJob` defers it into a
@@ -885,9 +885,8 @@ walk's cost off every run that isn't actually denied access.
 classifies a Failed run's cause for programmatic consumers (alerting, dashboards) that need to
 distinguish specific causes without parsing `Status.Message`. It carries two values today —
 `SecretAccessDenied` (a Secret read or create the **controller ServiceAccount** performed returned
-Forbidden) and `RunnerRefUnresolved` (the kubelet could not resolve a Secret/ConfigMap or one of
-their keys referenced by the runner pod; the value is reserved in the API now so the enum is
-stable, and the detection that sets it lands in a separate change) — and is deliberately small
+Forbidden) and `RunnerRefUnresolved` (a Secret/ConfigMap or one of their keys referenced by the
+runner pod could not be resolved; `checkSecretMounts` and `handleStuckRunnerPod` set it) — and is deliberately small
 and additive: a future cause gets a new value, existing values are never repurposed or removed.
 Empty is NOT itself a claim
 that the run succeeded or that nothing is classifiable about the failure — it means either the run
@@ -923,6 +922,48 @@ the run's own, so a Secret in the controller's install namespace never has that 
 rules described in a tenant-visible status. And because the API server authorizes a read before
 it looks the object up, a 403 says nothing about whether the Secret exists — this addendum can
 only ever speak to permission; it is never evidence the Secret exists.
+
+**Agent-executor CA published as a ConfigMap:** a runner Job whose workflow reaches an `agentRef`
+step (`workflowNeedsAgentExecutor`) verifies the agent-executor's TLS certificate against the
+internal CA, but no Secret access exists in tenant namespaces. Before it creates the Job,
+`ensureAgentExecutorCA` reads the CA Secret in the install namespace and publishes only its
+`tls.crt`, as `ca.crt`, in a ConfigMap of the same name in the run's namespace; the Job mounts that
+ConfigMap under the `agent-executor-ca` volume. The ConfigMap is labelled
+`app.kubernetes.io/part-of=ottoflow` and has no owner. One without the label is neither trusted nor
+overwritten, and an owned one whose `ca.crt` differs from the current CA is updated, which is how a
+CA rotation reaches a namespace. Both reads use the direct reader. The volume name is reserved:
+`buildWorkflowRunnerJob` rejects a tenant volume called `agent-executor-ca` for every runner Job.
+The chart passes the CA name the certificate manager computes, and the former
+`workflowRunner.agentExecutorCASecret` override is retired (the render fails when it is set with internal TLS).
+
+**Secret-mount pipeline:** `collectSecretRefs` walks the workflow (steps, `forEach`, StepTemplates,
+sub-Workflows, and the MCPServers named by an `mcpToolCall` or by an Agent's `mcpTools`) through the
+direct reader and returns every Secret reference with its origin. A `NotFound` or `Forbidden` on any
+of those reads, or any error on an empty or path-invalid reference name or a path-invalid namespace, fails the run;
+every other error requeues it (`transientBuildError`).
+`validateSecretRefPolicy` then applies the namespace policy: `--secret-ref-allowed-namespaces`
+extends it only for references the runner does not mount (an `agentRef` step's MCP tool credentials,
+which the agent-executor resolves with its own RBAC). References flagged `NeedsRunnerMount` (a
+directly-called MCPServer's auth and env, an `externalAgentRef` CA and auth, and the `clusterRef`
+kubeconfig) must be in the run's namespace. `buildSecretMounts` turns them into native Secret
+volumes with the reserved `ottoflow-secret-` prefix and a mount manifest in the `secretmount.EnvVar`
+variable; the kubeconfig is read from `secretmount.KubeconfigDir`. The kubelet resolves those
+volumes, so the runner never reads those Secrets through the API. Before the Job is created, `checkSecretMounts` reads each mandatory one through the direct reader when a SelfSubjectAccessReview allows it and fails the build with `RunnerRefUnresolved` on a missing Secret or key; otherwise a missing one surfaces as the kubelet's mount failure. The Job
+annotation `generatedSecretVolumeOriginsAnnotation` records which workflow field generated each
+volume, so a mount failure can name it.
+
+**Stuck-pod detector:** the runner pod's mount and container failures surface only in pod status
+and Events, so `handleStuckRunnerPod` fails a run and deletes its Job (retrying the delete in place
+because a terminal run returns early on the next reconcile) when `detectStuckRunnerPod` finds the pod
+stuck, classified `RunnerRefUnresolved` when the kubelet's message
+names a Secret or ConfigMap. For `CreateContainerConfigError` and `CreateContainerError`, `detectStuckRunnerPod` keeps process
+memory of when it first saw that reason on that container (`stuckPods`) and reports the pod stuck only once
+the reason has persisted for `stuckPodGracePeriod`. For `FailedMount` it acts only on a Pending pod
+that has been scheduled for that long, whose `PodReadyToStartContainers` condition is `False` (a
+`True` condition means every mount succeeded, so earlier mount Events are stale; an absent
+condition skips detection), and only on an Event whose kubelet-clock first-to-last span covers the
+same window. The Events list is uncached, so successful lists that find nothing stuck run at most once per pod per
+`stuckPodEventListInterval`, the cap of the kubelet's mount retry backoff.
 
 ---
 

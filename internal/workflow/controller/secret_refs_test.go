@@ -21,6 +21,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
@@ -521,6 +522,35 @@ func TestCollectSecretRefs_AgentRefMCPTools(t *testing.T) {
 		if r.Name == "agent-mcp-secret" && r.NeedsRunnerMount {
 			t.Errorf("agentRef-reached MCP secret must NOT be mounted into the runner (handled by agent-executor)")
 		}
+	}
+}
+
+func TestCollectSecretRefs_AgentToolsOnOneServerFetchTheServerOnce(t *testing.T) {
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "wf1"},
+		Spec: ottoflowv1alpha1.WorkflowSpec{
+			Steps: []ottoflowv1alpha1.Step{{Name: "s", AgentRef: &ottoflowv1alpha1.StepAgentRef{Name: "agent1"}}},
+		},
+	}
+	agent := &ottoflowv1alpha1.Agent{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "agent1"},
+		Spec:       ottoflowv1alpha1.AgentSpec{Prompt: "x", MCPTools: []string{"srv:tool-a", "srv:tool-b"}},
+	}
+	srv := &ottoflowv1alpha1.MCPServer{ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "srv"}}
+	gets := 0
+	c := interceptor.NewClient(fake.NewClientBuilder().WithScheme(newSecretRefsTestScheme(t)).WithObjects(agent, srv).Build(), interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*ottoflowv1alpha1.MCPServer); ok {
+				gets++
+			}
+			return cl.Get(ctx, key, obj, opts...)
+		},
+	})
+	if _, err := collectSecretRefs(context.Background(), c, wf, testWorkflowRun("wf1")); err != nil {
+		t.Fatalf("collectSecretRefs: %v", err)
+	}
+	if gets != 1 {
+		t.Errorf("MCPServer Gets for two tools on one server = %d, want 1", gets)
 	}
 }
 
