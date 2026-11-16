@@ -368,6 +368,7 @@ In CEL expressions, you can access:
 - **`a2aResult`** - External A2A agent call result (in externalAgentRef step outputs)
 - **`result`** - Prometheus query result (`result.type`, `result.samples`, `result.value`)
 - **`reportResult`** - OpenReports.io report result (in openReport step outputs)
+- **`step`** - Container step result (`step.stdout`, `step.exitCode`, in container step outputs)
 
 ---
 

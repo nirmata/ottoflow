@@ -156,6 +156,20 @@
     "workflowRunner": {
       "type": "object"
     },
+    "containerStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowedImages": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
     "serveA2A": {
       "type": "object"
     },

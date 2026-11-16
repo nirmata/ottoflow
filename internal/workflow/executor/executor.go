@@ -120,6 +120,8 @@ type WorkflowExecutor struct {
 	// kubeClient is the typed Kubernetes clientset propagated to the CELEvaluator for resource.GetLogs.
 	// nil when the executor was created without a rest.Config (convenience wrappers, CLI local mode).
 	kubeClient kubernetes.Interface
+	// containerStep enables container steps; zero value leaves them disabled.
+	containerStep ContainerStepConfig
 }
 
 // Close releases resources held by the executor, including stopping the MCP client eviction
@@ -309,6 +311,7 @@ func (e *WorkflowExecutor) newChildExecutor(childWorkflowRun *ottoflowv1alpha1.W
 	}
 	// Propagate setter-based fields so sub-workflows behave identically to the parent.
 	child.progressCallback = e.progressCallback
+	child.containerStep = e.containerStep
 	// Share the parent's already-initialized HTTP client directly so child executors (forEach)
 	// reuse the same connection pool without re-initializing.
 	if c := e.execHTTPClient; c != nil {
@@ -825,6 +828,9 @@ func (e *WorkflowExecutor) executeStep(ctx context.Context, workflowRun *ottoflo
 	if step.WaitForCallback != nil {
 		return e.executeWaitForCallback(ctx, workflowRun, step)
 	}
+	if step.Container != nil {
+		return e.executeContainerStep(ctx, workflowRun, step)
+	}
 	// Evaluate outputs (reached by pure expression steps; vars already include this step's expressions)
 	outputs, err := e.celEvaluator.EvaluateStepOutputs(ctx, step, vars)
 	if err != nil {
@@ -862,6 +868,8 @@ func stepType(step ottoflowv1alpha1.Step) string {
 		return "mutate"
 	case step.OpenReport != nil:
 		return "openReport"
+	case step.Container != nil:
+		return "container"
 	default:
 		return "expression"
 	}

@@ -18,6 +18,7 @@ import (
 	"net"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -81,6 +82,13 @@ type RunnerConfig struct {
 	// --workflow-runner-llm-credentials-secret / WORKFLOW_RUNNER_LLM_CREDENTIALS_SECRET) or overridden per-run
 	// via spec.execution.llmCredentialsSecret.
 	LLMCredentialsSecret string
+	// ContainerStepAllowedImages is the image allowlist for container steps; empty disables them.
+	ContainerStepAllowedImages []string
+	// ContainerStepMaxOutputBytes caps a container step's stdout; 0 uses the runner default.
+	ContainerStepMaxOutputBytes int64
+	// RunnerJobWriterRole is the ClusterRole bound per run namespace so runners can create and delete
+	// container step Jobs; empty disables. Bound only while ContainerStepAllowedImages is non-empty.
+	RunnerJobWriterRole string
 	// SecretRefAllowedNamespaces is the operator allowlist validateSecretRefPolicy checks a
 	// cross-namespace secret ref's namespace against. Empty (the default) means same-namespace only.
 	SecretRefAllowedNamespaces map[string]struct{}
@@ -300,6 +308,9 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		// Existing Job may predate the writer binding; log and fall through so Job supervision below still runs.
 		if err := r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, sa, ""); err != nil {
 			logger.V(2).Info("failed to ensure runner ConfigMap writer RoleBinding", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "error", err.Error())
+		}
+		if err := r.ensureRunnerJobWriter(ctx, workflowRun.Namespace, sa, ""); err != nil {
+			logger.V(2).Info("failed to ensure runner Job writer RoleBinding", logging.KeyWorkflowRun, req.Name, logging.KeyNamespace, req.Namespace, "error", err.Error())
 		}
 	}
 
@@ -614,21 +625,42 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 		}
 	}
 
-	return r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, serviceAccountName, serviceAccount.UID)
+	if err := r.ensureRunnerConfigMapWriter(ctx, workflowRun.Namespace, serviceAccountName, serviceAccount.UID); err != nil {
+		return err
+	}
+	return r.ensureRunnerJobWriter(ctx, workflowRun.Namespace, serviceAccountName, serviceAccount.UID)
 }
 
 func runnerConfigMapWriterBindingName(serviceAccountName string) string {
 	return "ottoflow-runner-configmap-writer-" + serviceAccountName
 }
 
+func runnerJobWriterBindingName(serviceAccountName string) string {
+	return "ottoflow-runner-job-writer-" + serviceAccountName
+}
+
 // ensureRunnerConfigMapWriter binds the runner SA to the ConfigMap-write ClusterRole in its own namespace only.
 func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context, namespace, serviceAccountName string, saUID types.UID) error {
-	roleName := r.RunnerConfig.RunnerConfigMapWriterRole
+	return r.ensureRunnerNamespaceBinding(ctx, namespace, serviceAccountName, saUID,
+		r.RunnerConfig.RunnerConfigMapWriterRole, runnerConfigMapWriterBindingName(serviceAccountName), "ConfigMap writer RoleBinding")
+}
+
+// ensureRunnerJobWriter binds the runner SA to the container step Job ClusterRole in its own namespace only.
+func (r *WorkflowRunReconciler) ensureRunnerJobWriter(ctx context.Context, namespace, serviceAccountName string, saUID types.UID) error {
+	if len(r.RunnerConfig.ContainerStepAllowedImages) == 0 {
+		return nil
+	}
+	return r.ensureRunnerNamespaceBinding(ctx, namespace, serviceAccountName, saUID,
+		r.RunnerConfig.RunnerJobWriterRole, runnerJobWriterBindingName(serviceAccountName), "Job writer RoleBinding")
+}
+
+// ensureRunnerNamespaceBinding binds the runner SA to roleName with a RoleBinding in its own namespace; empty roleName disables.
+func (r *WorkflowRunReconciler) ensureRunnerNamespaceBinding(ctx context.Context, namespace, serviceAccountName string, saUID types.UID, roleName, bindingName, what string) error {
 	if roleName == "" {
 		return nil
 	}
 	const partOfLabel = "app.kubernetes.io/part-of"
-	key := types.NamespacedName{Namespace: namespace, Name: runnerConfigMapWriterBindingName(serviceAccountName)}
+	key := types.NamespacedName{Namespace: namespace, Name: bindingName}
 	subjects := []rbacv1.Subject{{Kind: "ServiceAccount", Name: serviceAccountName, Namespace: namespace}}
 	roleRef := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: roleName}
 	existing := &rbacv1.RoleBinding{}
@@ -647,14 +679,14 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 				return nil
 			}
 			existing.Subjects = subjects
-			return classifyRunnerAccessErr(r.Update(ctx, existing), "ConfigMap writer RoleBinding", key)
+			return classifyRunnerAccessErr(r.Update(ctx, existing), what, key)
 		}
 		// RoleRef is immutable: recreate.
 		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
-			return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
+			return classifyRunnerAccessErr(err, what, key)
 		}
 	case !apierrors.IsNotFound(err):
-		return classifyRunnerAccessErr(err, "ConfigMap writer RoleBinding", key)
+		return classifyRunnerAccessErr(err, what, key)
 	}
 
 	if saUID == "" {
@@ -678,7 +710,7 @@ func (r *WorkflowRunReconciler) ensureRunnerConfigMapWriter(ctx context.Context,
 		RoleRef:  roleRef,
 		Subjects: subjects,
 	}
-	return classifyRunnerAccessErr(r.Create(ctx, rb), "ConfigMap writer RoleBinding", key)
+	return classifyRunnerAccessErr(r.Create(ctx, rb), what, key)
 }
 
 // classifyRunnerAccessErr keeps Forbidden/Invalid terminal and requeues every other failure.
@@ -1348,6 +1380,12 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	}
 	if r.RunnerConfig.AgentExecutorNamespace != "" {
 		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: "AGENT_EXECUTOR_NAMESPACE", Value: r.RunnerConfig.AgentExecutorNamespace})
+	}
+	if len(r.RunnerConfig.ContainerStepAllowedImages) > 0 {
+		runnerEnv = append(runnerEnv, corev1.EnvVar{Name: executor.ContainerStepAllowedImagesEnv, Value: strings.Join(r.RunnerConfig.ContainerStepAllowedImages, ",")})
+		if r.RunnerConfig.ContainerStepMaxOutputBytes > 0 {
+			runnerEnv = append(runnerEnv, corev1.EnvVar{Name: executor.ContainerStepMaxOutputBytesEnv, Value: strconv.FormatInt(r.RunnerConfig.ContainerStepMaxOutputBytes, 10)})
+		}
 	}
 	runnerEnv = append(runnerEnv, podEnv...)
 

@@ -532,6 +532,26 @@ rules:
       - delete
       - patch
       - update
+{{- if .Values.containerStep.allowedImages }}
+---
+# Job writes for runners that run container steps. Not aggregated: the controller binds it with a
+# RoleBinding in each run namespace. Reads of Jobs, Pods and pod logs come from the runner role.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "ottoflow.fullname" . }}-runner-job-writer
+  labels:
+    {{- include "ottoflow.labels.n4" . }}
+    app.kubernetes.io/component: runner-rbac
+rules:
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - create
+      - delete
+{{- end }}
 ---
 # Additional ClusterRole - for custom resources and additional permissions
 {{- if and .Values.rbac.clusterRole .Values.rbac.clusterRole.extraResources }}

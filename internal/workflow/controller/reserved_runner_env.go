@@ -15,11 +15,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/nirmata/ottoflow/internal/secretmount"
+	"github.com/nirmata/ottoflow/internal/workflow/executor"
 )
 
 // reservedRunnerEnvNames are the runner-Job environment variables the controller sets itself —
 // WORKFLOW_RUN_NAME, WORKFLOW_RUN_NAMESPACE, JOB_NAME and POD_NAME on every runner Job,
-// OTTOFLOW_SECRET_MOUNTS and AGENT_EXECUTOR_NAMESPACE on the runs that get them — ahead of the
+// OTTOFLOW_SECRET_MOUNTS, AGENT_EXECUTOR_NAMESPACE and the container step settings on the runs that get them — ahead of the
 // author's spec.execution.job.env entries (buildWorkflowRunnerJob). Neither the API server nor the
 // kubelet rejects a repeated env name: the container environment is built from a map keyed by
 // name, so the LAST entry silently wins, and an author-supplied duplicate would replace the
@@ -47,6 +48,9 @@ var reservedRunnerEnvNames = map[string]struct{}{
 	"JOB_NAME":                 {},
 	"POD_NAME":                 {},
 	"AGENT_EXECUTOR_NAMESPACE": {},
+	// The container step allowlist and output cap are operator policy, not author input.
+	executor.ContainerStepAllowedImagesEnv:  {},
+	executor.ContainerStepMaxOutputBytesEnv: {},
 }
 
 // rejectReservedRunnerEnv returns an error when env (spec.execution.job.env) names any variable

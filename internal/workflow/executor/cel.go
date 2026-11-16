@@ -179,6 +179,8 @@ func createCELEnvironment(
 		celapi.Variable("item", celapi.DynType),
 		// Prometheus query step result (result.type, result.samples, result.value)
 		celapi.Variable("result", celapi.DynType),
+		// container step result (step.stdout, step.exitCode)
+		celapi.Variable("step", celapi.DynType),
 	)
 	floOpts = append(floOpts, resourceMacroOpts...)
 	floOpts = append(floOpts, stringFormatOpts...)

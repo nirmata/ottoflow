@@ -339,6 +339,70 @@ steps:
 
 See `samples/workflows/features/wait-for-callback.yaml` for a complete example.
 
+#### container
+
+Runs an image as a child Job in the WorkflowRun namespace, waits for it to finish, and exposes its
+stdout to the step's `outputs` as `step.stdout` and its exit code as `step.exitCode`. Without
+`outputs`, the step writes `stdout` and `exitCode` as its outputs.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `container.image` | string | Yes | Image to run. Must match the controller allowlist (below) after template evaluation. |
+| `container.args` | []string | No | Container arguments; the image entrypoint is kept. |
+| `container.env` | []{name, value} | No | Plain environment variables. |
+| `container.files.configMapRef` | string | No | ConfigMap in the WorkflowRun namespace whose keys are mounted read-only at `files.mountPath`. |
+| `container.files.mountPath` | string | With `files` | Absolute mount directory. |
+| `container.kubeconfig` | bool | No | Mount the WorkflowRun's `spec.clusterRef.kubeConfigSecretRef` read-only at `/kube/config`. The Secret must be in the WorkflowRun namespace. |
+| `container.resources` | ResourceRequirements | No | Requests and limits. |
+| `container.timeout` | duration | No | Bound on the whole run, including scheduling and image pull (default `10m`). |
+| `container.successExitCodes` | []int | No | Exit codes treated as success (default `[0]`). Any other exit code fails the step. |
+
+`image`, `args`, `env[].value` and `files.configMapRef` may contain `{{ <CEL> }}` segments, evaluated
+in the workflow context (for example `"ghcr.io/kyverno/kyverno-cli:{{ inputs.kyvernoVersion }}"`).
+Text outside the braces is literal. A non-string result is inserted as JSON. A `steps.<name>`
+reference in a segment needs that step in `dependsOn`.
+
+**Allowlist.** Only images on the controller's allowlist run (Helm `containerStep.allowedImages`,
+flag `--container-step-allowed-images`). An entry ending in `/` allows every image under that path;
+any other entry allows that repository with any tag or digest. An empty allowlist disables
+container steps. Admission rejects a non-templated image that is not on the list, and the runner
+checks every image again after evaluation.
+
+**Pod.** The pod runs as UID 65532 with `runAsNonRoot`, a read-only root filesystem, no privilege
+escalation, all capabilities dropped, the `RuntimeDefault` seccomp profile, no host namespaces and
+no service account token (`automountServiceAccountToken: false`). `/tmp` is a writable `emptyDir`
+and `HOME` is `/tmp`. The Job has `backoffLimit: 0` and `activeDeadlineSeconds` from `timeout`, and is
+deleted when the step ends.
+
+**Output.** stdout is read from the pod log, up to the controller's
+`containerStep.maxOutputBytes` (default 1 MiB). Larger output fails the step rather than being
+truncated. On clusters without the `PodLogsQuerySplitStreams` feature gate, the log has stdout and
+stderr interleaved. A failed run's error message carries the end of the container log.
+
+**RBAC.** When the allowlist is non-empty, the controller binds the runner ServiceAccount to
+`<release>-runner-job-writer` (create and delete `jobs`) with a RoleBinding in the run namespace.
+A WorkflowRun that sets its own `spec.execution.job.serviceAccountName` must grant that itself.
+
+**Example:**
+
+```yaml
+steps:
+  - name: evaluate
+    container:
+      image: "ghcr.io/kyverno/kyverno-cli:{{ inputs.kyvernoVersion }}"
+      args: [apply, /in/policy.yaml, --cluster, --kubeconfig, /kube/config,
+             --policy-report, --output-format, json]
+      files: { configMapRef: "{{ inputs.policiesConfigMap }}", mountPath: /in }
+      kubeconfig: true
+      timeout: 2m
+      successExitCodes: [0, 1]
+    outputs:
+      - name: report
+        expression: "json.unmarshal(step.stdout)"
+```
+
+See `samples/workflows/features/container-step.yaml` for a complete example.
+
 ---
 
 ## Triggers

@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -119,6 +120,7 @@ func main() {
 	exec := mustNewWorkflowExecutor(
 		ctx, controlClient, targetClient, metricsClient, kubeClient, prometheusClient, workflowRun)
 	exec.SetCheckpointManager(workflowexecutor.NewCheckpointManager(controlClient, workflowRun))
+	exec.SetContainerStepConfig(mustGetContainerStepConfig(ctx, controlClient, workflowRun, cfg.jobName, cfg.podName))
 	runWorkflowToCompletion(ctx, exec, workflow, workflowRun, controlClient, cfg)
 }
 
@@ -160,6 +162,42 @@ func mustGetControlPlane(_ context.Context) client.Client {
 		klog.Fatalf("failed to create control client: %v", err)
 	}
 	return controlClient
+}
+
+// mustGetContainerStepConfig reads the controller's container step settings; container Jobs run in the
+// WorkflowRun's own cluster, so the clientset uses the in-cluster config, not the clusterRef target.
+func mustGetContainerStepConfig(
+	ctx context.Context,
+	controlClient client.Client,
+	workflowRun *ottoflowv1alpha1.WorkflowRun,
+	jobName, podName string,
+) workflowexecutor.ContainerStepConfig {
+	fail := func(msg string) {
+		key := client.ObjectKeyFromObject(workflowRun)
+		updateExecutionFailure(ctx, controlClient, key, workflowRun, jobName, podName, msg)
+		klog.Fatal(msg)
+	}
+	csCfg, err := workflowexecutor.ContainerStepConfigFromEnv()
+	if err != nil {
+		fail(fmt.Sprintf("Invalid container step configuration: %v", err))
+	}
+	if len(csCfg.AllowedImages) == 0 {
+		return csCfg
+	}
+	ref := workflowRun.Spec.ClusterRef
+	if ref != nil && ref.KubeConfigSecretRef != nil && ref.KubeConfigSecretRef.Key == "" {
+		if path, pathErr := cluster.KubeConfigPathForClusterRef(ref); pathErr == nil && path != "" {
+			csCfg.KubeconfigKey = filepath.Base(path)
+		}
+	}
+	restConfig, err := config.GetConfig()
+	if err == nil {
+		csCfg.Clientset, err = kubernetes.NewForConfig(restConfig)
+	}
+	if err != nil {
+		fail(fmt.Sprintf("Failed to create the container step client: %v", err))
+	}
+	return csCfg
 }
 
 func mustLoadWorkflowRun(
