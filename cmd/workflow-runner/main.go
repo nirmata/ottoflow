@@ -173,7 +173,8 @@ func mustGetContainerStepConfig(
 	jobName, podName string,
 ) workflowexecutor.ContainerStepConfig {
 	fail := func(msg string) {
-		updateExecutionFailure(ctx, controlClient, client.ObjectKeyFromObject(workflowRun), workflowRun, jobName, podName, msg)
+		key := client.ObjectKeyFromObject(workflowRun)
+		updateExecutionFailure(ctx, controlClient, key, workflowRun, jobName, podName, msg)
 		klog.Fatal(msg)
 	}
 	csCfg, err := workflowexecutor.ContainerStepConfigFromEnv()
@@ -183,7 +184,8 @@ func mustGetContainerStepConfig(
 	if len(csCfg.AllowedImages) == 0 {
 		return csCfg
 	}
-	if ref := workflowRun.Spec.ClusterRef; ref != nil && ref.KubeConfigSecretRef != nil && ref.KubeConfigSecretRef.Key == "" {
+	ref := workflowRun.Spec.ClusterRef
+	if ref != nil && ref.KubeConfigSecretRef != nil && ref.KubeConfigSecretRef.Key == "" {
 		if path, pathErr := cluster.KubeConfigPathForClusterRef(ref); pathErr == nil && path != "" {
 			csCfg.KubeconfigKey = filepath.Base(path)
 		}
