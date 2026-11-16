@@ -507,7 +507,7 @@ func main() {
 	//
 	// Register through mgr.GetWebhookServer() rather than the raw webhookServer variable:
 	// controller-runtime only adds the webhook server as a manager Runnable inside
-	// GetWebhookServer()'s sync.Once (controller-runtime@v0.24.1/pkg/manager/internal.go:278-288).
+	// GetWebhookServer()'s sync.Once (controller-runtime@v0.25.2/pkg/manager/internal.go:279-289).
 	// Passing WebhookServer via ctrl.Options above does NOT register it as a Runnable by
 	// itself, so calling Register directly on webhookServer would silently build a server
 	// that never starts and never serves admission requests.

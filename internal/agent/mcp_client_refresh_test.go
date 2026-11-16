@@ -187,13 +187,17 @@ func TestBuildSessionToolsRetriesAfterListToolsFailure(t *testing.T) {
 
 // newRestartableMCPServer serves one echo tool over streamable HTTP. While down is true it
 // answers 404, which an MCP client reads as a terminated session (what a server restart causes).
-func newRestartableMCPServer(t *testing.T) (*httptest.Server, *atomic.Bool) {
+// Each wrap, if given, decorates the MCP handler (inside the down check), in order.
+func newRestartableMCPServer(t *testing.T, wrap ...func(http.Handler) http.Handler) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	ms := server.NewMCPServer("test", "1")
 	ms.AddTool(mcpproto.NewTool("echo"), func(ctx context.Context, r mcpproto.CallToolRequest) (*mcpproto.CallToolResult, error) {
 		return mcpproto.NewToolResultText("hi"), nil
 	})
-	h := server.NewStreamableHTTPServer(ms)
+	var h http.Handler = server.NewStreamableHTTPServer(ms)
+	for _, f := range wrap {
+		h = f(h)
+	}
 	var down atomic.Bool
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if down.Load() {
@@ -226,5 +230,75 @@ func TestBuildSessionToolsRecoversAfterSessionTerminated(t *testing.T) {
 	}
 	if _, ok := tools["svc:echo"]; !ok {
 		t.Fatalf("echo tool missing after recovery: %v", tools)
+	}
+}
+
+// A server that rejects server/discover leaves the client on the sessionful (Mcp-Session-Id)
+// handshake. The cached client must still be evicted when that server drops the session.
+// TestBuildSessionToolsRecoversAfterSessionTerminated's server answers server/discover, so its
+// client holds no session and passes without eviction; this test is the eviction guard.
+func TestBuildSessionToolsRecoversAfterSessionTerminatedOnLegacyServer(t *testing.T) {
+	var sawSession atomic.Bool
+	ts, down := newRestartableMCPServer(t, func(h http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Mcp-Method") == "server/discover" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`))
+				return
+			}
+			if r.Header.Get("Mcp-Session-Id") != "" {
+				sawSession.Store(true)
+			}
+			h.ServeHTTP(w, r)
+		})
+	})
+	_, m := newRefreshManager(t, ts.URL+"/mcp")
+	ctx := context.Background()
+
+	if _, err := buildSessionToolsFromMCP(ctx, []string{"svc:echo"}, "default", m); err != nil {
+		t.Fatalf("first execution: %v", err)
+	}
+	if !sawSession.Load() {
+		t.Fatal("no request carried Mcp-Session-Id: the client is not on the legacy session path")
+	}
+	down.Store(true)
+	if _, err := buildSessionToolsFromMCP(ctx, []string{"svc:echo"}, "default", m); err == nil {
+		t.Fatal("expected ListTools to fail while the server answers 404")
+	}
+	down.Store(false)
+	if _, err := buildSessionToolsFromMCP(ctx, []string{"svc:echo"}, "default", m); err != nil {
+		t.Fatalf("execution after the server came back: %v", err)
+	}
+}
+
+// A server restricted to older protocol versions rejects the new handshake; setting
+// Mcp-Protocol-Version to an older accepted version under spec.transport.headers makes the
+// client use the earlier handshake. Pins docs/user/upgrades/mcp-protocol-negotiation.md.
+func TestMCPProtocolVersionHeaderWorkaround(t *testing.T) {
+	ms := server.NewMCPServer("test", "1")
+	ms.AddTool(mcpproto.NewTool("echo"), func(ctx context.Context, r mcpproto.CallToolRequest) (*mcpproto.CallToolResult, error) {
+		return mcpproto.NewToolResultText("hi"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(ms,
+		server.WithStreamableHTTPProtocolVersions("2025-11-25", "2025-06-18", "2025-03-26")))
+	t.Cleanup(ts.Close)
+
+	listTools := func(headers map[string]string) error {
+		k, m := newRefreshManager(t, ts.URL+"/mcp")
+		defer func() { _ = m.Close() }()
+		updateMCPServer(t, k, func(s *ottoflowv1alpha1.MCPServer) { s.Spec.Transport.Headers = headers })
+		c, err := m.GetClient(context.Background(), refreshServerKey.Name, refreshServerKey.Namespace)
+		if err != nil {
+			return err
+		}
+		_, err = c.ListTools(context.Background())
+		return err
+	}
+
+	if err := listTools(nil); err == nil || !strings.Contains(err.Error(), "unsupported protocol version") {
+		t.Fatalf("without the header: want unsupported protocol version, got %v", err)
+	}
+	if err := listTools(map[string]string{"Mcp-Protocol-Version": "2025-11-25"}); err != nil {
+		t.Fatalf("with the header: %v", err)
 	}
 }

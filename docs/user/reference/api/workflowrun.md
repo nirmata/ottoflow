@@ -68,8 +68,8 @@ Exactly one cluster source should be set when `clusterRef` is present.
 | `serviceAccountName` | string | No | Service account for the runner Job. |
 | `env` | []EnvVar | No | Extra environment variables for the runner container. For credentials (e.g. Nirmata LLM), use `valueFrom.secretKeyRef` to reference a Secret; do not use plain `value`. |
 | `resources` | ResourceRequirements | No | Container resource requests and limits. |
-| `volumes` | []Volume | No | Extra pod volumes, including CSI/projected/Secret volumes. |
-| `volumeMounts` | []VolumeMount | No | Container volume mounts for the runner container. |
+| `volumes` | []Volume | No | Extra pod volumes, including CSI/projected/Secret volumes. Kubernetes 1.37 alpha volume fields: [Upgrading: Kubernetes 1.37 alpha volume fields](../../upgrades/kubernetes-137-alpha-volume-fields.md). |
+| `volumeMounts` | []VolumeMount | No | Container volume mounts for the runner container. Kubernetes 1.37 alpha volume fields: [Upgrading: Kubernetes 1.37 alpha volume fields](../../upgrades/kubernetes-137-alpha-volume-fields.md). |
 | `nodeSelector` | map[string]string | No | Node selector for runner pod scheduling. |
 | `tolerations` | []Toleration | No | Tolerations for runner pod scheduling. |
 | `affinity` | Affinity | No | Affinity/anti-affinity rules for the runner pod. |
