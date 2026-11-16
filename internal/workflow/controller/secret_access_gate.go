@@ -13,7 +13,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -149,21 +148,6 @@ func hasExplicitNirmataCreds(env []corev1.EnvVar) bool {
 	return false
 }
 
-// isTransientCredentialWalkError reports whether err — returned by the needsCreds() closure
-// handleDeniedLLMCredentialsRead calls, ultimately workflowNeedsNirmataLLMCredentials's walk
-// (secret_needs_creds.go) — is a genuine, retryable API condition rather than a real
-// misconfiguration.
-// Only agentRefNeeds' Agent Get (the walk's one uncached, direct-reader read) can plausibly
-// produce one of these; every other error the walk can return (maxWorkflowRefDepth exceeded, a
-// NotFound sub-Workflow/StepTemplate) is a static misconfiguration a retry cannot fix and must
-// stay terminal.
-func isTransientCredentialWalkError(err error) bool {
-	return apierrors.IsInternalError(err) ||
-		apierrors.IsServiceUnavailable(err) ||
-		apierrors.IsTimeout(err) ||
-		apierrors.IsTooManyRequests(err)
-}
-
 func (r *WorkflowRunReconciler) handleDeniedLLMCredentialsRead(
 	ctx context.Context,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
@@ -184,9 +168,6 @@ func (r *WorkflowRunReconciler) handleDeniedLLMCredentialsRead(
 	}
 	needs, nerr := needsCreds()
 	if nerr != nil {
-		if isTransientCredentialWalkError(nerr) {
-			return &transientBuildError{err: nerr}
-		}
 		return nerr
 	}
 	if needs {

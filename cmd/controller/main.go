@@ -173,9 +173,9 @@ func main() {
 			"need to be mounted into the runner Job - i.e. an agentRef step's MCP tool credentials, "+
 			"which the agent-executor pod resolves with its own RBAC. It does NOT enable "+
 			"cross-namespace mounting for a workflowRun's kubeconfig, a step's externalAgentRef "+
-			"CA/auth, or a directly-called MCPServer's auth: a native Secret volume can only ever "+
+			"CA/auth, or a directly-called MCPServer's auth and env: a native Secret volume can only ever "+
 			"reach a Secret in the runner pod's own namespace, so those three are always rejected "+
-			"cross-namespace (at admission time, and again if reached anyway) regardless of this "+
+			"cross-namespace (when the runner Job is built) regardless of this "+
 			"flag. Empty (default) means same-namespace only.")
 
 	flag.StringVar(&webhookTriggerAddr, "webhook-trigger-addr", "",

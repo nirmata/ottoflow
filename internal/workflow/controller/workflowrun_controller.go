@@ -1190,8 +1190,9 @@ func (r *WorkflowRunReconciler) ensureAgentExecutorCA(ctx context.Context, workf
 		switch {
 		case apierrors.IsForbidden(err):
 			return fmt.Errorf("reading the agent-executor CA Secret %s is Forbidden: the chart's certmanager Role "+
-				"grants the controller ServiceAccount get on this name in the install namespace, so check that the "+
-				"Role and its RoleBinding exist in namespace %q and that --agent-executor-namespace names the "+
+				"grants the controller ServiceAccount get only on the Secret names the certificate manager writes in "+
+				"the install namespace, so check that --workflow-runner-agent-executor-ca-secret names one of them, "+
+				"that the Role and its RoleBinding exist in namespace %q and that --agent-executor-namespace names the "+
 				"namespace the certificate manager writes to (underlying error: %w): %w",
 				caKey, installNamespace, err, errSecretAccessDenied)
 		case apierrors.IsNotFound(err):
@@ -1373,6 +1374,15 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		affinity = jobSpec.Job.Affinity
 	}
 
+	for _, v := range volumes {
+		if v.Name == agentExecutorCAVolumeName {
+			return nil, fmt.Errorf(
+				"a volume named %q already exists on the runner Job pod spec (likely from "+
+					"spec.execution.job.volumes), but that name is reserved for the agent-executor CA; "+
+					"rename that volume to resolve the conflict", agentExecutorCAVolumeName)
+		}
+	}
+
 	// Inject LLM credentials from the well-known namespace-scoped Secret (multi-tenant support).
 	// Explicit spec.execution.job.env entries win: we only inject keys not already in podEnv.
 	existingEnvNames := make(map[string]struct{}, len(podEnv))
@@ -1385,7 +1395,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		if !llmSecretConfigured || hasExplicitNirmataCreds(podEnv) {
 			return false, nil
 		}
-		return workflowNeedsNirmataLLMCredentials(ctx, r.Client, r.directReader(), workflow, workflowRun.Namespace)
+		return workflowNeedsNirmataLLMCredentials(ctx, r.directReader(), r.directReader(), workflow, workflowRun.Namespace)
 	}
 	wellKnownEnv, err := r.injectWellKnownLLMCredentials(ctx, workflowRun, existingEnvNames, needsCreds)
 	if err != nil {
@@ -1401,19 +1411,11 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 	// publishes it into the run namespace before the Job is created, so no Secret has to exist,
 	// or be readable, there.
 	if caSecret := r.RunnerConfig.AgentExecutorCASecret; caSecret != "" {
-		needsAgentExecutor, err := workflowNeedsAgentExecutor(ctx, r.Client, workflow, workflowRun.Namespace)
+		needsAgentExecutor, err := workflowNeedsAgentExecutor(ctx, r.directReader(), workflow, workflowRun.Namespace)
 		if err != nil {
 			return nil, err
 		}
 		if needsAgentExecutor {
-			for _, v := range volumes {
-				if v.Name == agentExecutorCAVolumeName {
-					return nil, fmt.Errorf(
-						"cannot mount the agent-executor CA: a volume named %q already exists on the "+
-							"runner Job pod spec (likely from spec.execution.job.volumes); rename that "+
-							"volume to resolve the conflict", agentExecutorCAVolumeName)
-				}
-			}
 			volumes = append(volumes, corev1.Volume{
 				Name: agentExecutorCAVolumeName,
 				VolumeSource: corev1.VolumeSource{
@@ -1431,7 +1433,7 @@ func (r *WorkflowRunReconciler) buildWorkflowRunnerJob(ctx context.Context, work
 		}
 	}
 
-	secretRefs, err := collectSecretRefs(ctx, r.Client, workflow, workflowRun)
+	secretRefs, err := collectSecretRefs(ctx, r.directReader(), workflow, workflowRun)
 	if err != nil {
 		return nil, err
 	}

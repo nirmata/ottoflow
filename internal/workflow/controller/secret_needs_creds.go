@@ -47,7 +47,7 @@ const nirmataModelProvider = "nirmata"
 // memory plus StepTemplate/Workflow CRDs (the same two kinds collectSecretRefs fetches for the
 // same reason: expanding StepTemplateRef/WorkflowRef requires reading them), with the same
 // cycle (visitedKey) and depth (maxWorkflowRefDepth) guards collectSecretRefs uses.
-func workflowNeedsAgentExecutor(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow, runNamespace string) (bool, error) {
+func workflowNeedsAgentExecutor(ctx context.Context, c client.Reader, workflow *ottoflowv1alpha1.Workflow, runNamespace string) (bool, error) {
 	// agentReader==c: requireNirmataProvider is false, so agentRefNeeds returns before ever
 	// touching agentReader (see its doc comment) — this walk never fetches an Agent.
 	found, err := walkAgentSteps(ctx, c, c, workflow, runNamespace, false)
@@ -69,7 +69,7 @@ func workflowNeedsAgentExecutor(ctx context.Context, c client.Client, workflow *
 // own check, so an error surfaced through the credentials preflight names that check and not
 // the unrelated agent-executor-CA check.
 func walkAgentSteps(
-	ctx context.Context, c client.Client, agentReader client.Reader,
+	ctx context.Context, c client.Reader, agentReader client.Reader,
 	workflow *ottoflowv1alpha1.Workflow, runNamespace string, requireNirmataProvider bool,
 ) (bool, error) {
 	w := &agentStepWalker{
@@ -97,9 +97,8 @@ func walkAgentSteps(
 // comment for why.
 type agentStepWalker struct {
 	// client fetches the Workflow/StepTemplate CRs this walk expands (fromWorkflowRef,
-	// fetchStepTemplateStep) — the shared, cached controller client, same as every other
-	// non-Secret CR read in this package.
-	client  client.Client
+	// fetchStepTemplateStep) — the controller's direct (uncached) reader.
+	client  client.Reader
 	visited map[visitedKey]struct{}
 	// requireNirmataProvider narrows an AgentRef match to Agents whose modelProvider is
 	// "" or "nirmata" — the only providers for which the agent-executor demands a
@@ -118,7 +117,7 @@ type agentStepWalker struct {
 	// to this same decision (injectWellKnownLLMCredentials' Secret Get) already goes
 	// through the direct reader; this field keeps the Agent Get consistent with that.
 	// workflowNeedsAgentExecutor (requireNirmataProvider==false) never uses this field, so
-	// its caller passes the ordinary cached client here and pays no extra cost.
+	// its caller passes the same direct reader here and pays no extra cost.
 	agentReader client.Reader
 }
 
@@ -157,7 +156,7 @@ func stepMayNotRun(matchConditions []ottoflowv1alpha1.MatchCondition, failurePol
 // instead of RBAC advice from this one. No runner pod is ever created in that case, so the
 // runner's own "agent not found" message can never actually surface. Returning (false, nil)
 // here only means this walk itself does not misdiagnose the eventual failure as an RBAC
-// problem; it does not mean the run keeps going. Any other fetch error propagates, matching
+// problem; it does not mean the run keeps going. A Forbidden fetch error propagates, matching
 // this walker's existing convention (fetchStepTemplateStep, below), so setRunFailed names the
 // real API failure instead of wrapping it in RBAC advice.
 func (w *agentStepWalker) agentRefNeeds(
@@ -176,7 +175,7 @@ func (w *agentStepWalker) agentRefNeeds(
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("fetching Agent %s/%s: %w", ns, ref.Name, err)
+		return false, walkGetError(ns, ref.Name, fmt.Errorf("fetching Agent %s/%s: %w", ns, ref.Name, err))
 	}
 	// exec_handler.go coerces an empty provider to nirmata.
 	p := agentCRD.Spec.ModelProvider
@@ -204,7 +203,7 @@ func (w *agentStepWalker) agentRefNeeds(
 // verdict is least trustworthy exactly where execution is conditional, so this walk simply
 // declines to render one there.
 func workflowNeedsNirmataLLMCredentials(
-	ctx context.Context, c client.Client, agentReader client.Reader,
+	ctx context.Context, c client.Reader, agentReader client.Reader,
 	workflow *ottoflowv1alpha1.Workflow, runNamespace string,
 ) (bool, error) {
 	found, err := walkAgentSteps(ctx, c, agentReader, workflow, runNamespace, true)
@@ -335,7 +334,7 @@ func (w *agentStepWalker) fromWorkflowRef(ctx context.Context, ref *ottoflowv1al
 
 	var sub ottoflowv1alpha1.Workflow
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: subNamespace, Name: ref.Name}, &sub); err != nil {
-		return false, fmt.Errorf("fetching sub-Workflow %s/%s: %w", subNamespace, ref.Name, err)
+		return false, walkGetError(subNamespace, ref.Name, fmt.Errorf("fetching sub-Workflow %s/%s: %w", subNamespace, ref.Name, err))
 	}
 	for _, s := range sub.Spec.Steps {
 		found, err := w.fromStep(ctx, s, subNamespace, depth+1)
@@ -350,7 +349,7 @@ func (w *agentStepWalker) fromWorkflowRef(ctx context.Context, ref *ottoflowv1al
 func (w *agentStepWalker) fetchStepTemplateStep(ctx context.Context, namespace, name string) (*ottoflowv1alpha1.StepTemplateStep, error) {
 	var tpl ottoflowv1alpha1.StepTemplate
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &tpl); err != nil {
-		return nil, fmt.Errorf("fetching StepTemplate %s/%s: %w", namespace, name, err)
+		return nil, walkGetError(namespace, name, fmt.Errorf("fetching StepTemplate %s/%s: %w", namespace, name, err))
 	}
 	return &tpl.Spec.Step, nil
 }

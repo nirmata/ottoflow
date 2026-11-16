@@ -15,13 +15,15 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -33,7 +35,91 @@ import (
 // stuckPodGracePeriod is how long a runner pod may sit in a Waiting container state (or show a
 // FailedMount event) before the controller treats it as a permanent failure rather than normal
 // image-pull/mount startup latency.
-const stuckPodGracePeriod = 30 * time.Second
+const stuckPodGracePeriod = 60 * time.Second
+
+// stuckPodEventListInterval is the cap of the kubelet's volume-operation backoff, the slowest it re-emits a mount failure.
+const stuckPodEventListInterval = 2*time.Minute + 2*time.Second
+
+const stuckPodMemoryTTL = time.Hour
+
+type stuckPodEntry struct {
+	waitingSince   map[string]time.Time
+	eventsListedAt time.Time
+	touched        time.Time
+}
+
+type stuckPodMemory struct {
+	mu   sync.Mutex
+	pods map[types.UID]*stuckPodEntry
+}
+
+var stuckPods = &stuckPodMemory{pods: map[types.UID]*stuckPodEntry{}}
+
+func (m *stuckPodMemory) entry(uid types.UID, now time.Time) *stuckPodEntry {
+	e, ok := m.pods[uid]
+	if !ok {
+		for k, old := range m.pods {
+			if now.Sub(old.touched) > stuckPodMemoryTTL {
+				delete(m.pods, k)
+			}
+		}
+		e = &stuckPodEntry{}
+		m.pods[uid] = e
+	}
+	e.touched = now
+	return e
+}
+
+func (m *stuckPodMemory) observeWaiting(uid types.UID, seen []string, now time.Time) map[string]time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.pods[uid]; !ok && len(seen) == 0 {
+		return nil
+	}
+	e := m.entry(uid, now)
+	kept := make(map[string]time.Time, len(seen))
+	for _, k := range seen {
+		first, ok := e.waitingSince[k]
+		if !ok {
+			first = now
+		}
+		kept[k] = first
+	}
+	e.waitingSince = kept
+	return kept
+}
+
+func (m *stuckPodMemory) listDue(uid types.UID, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.entry(uid, now)
+	return e.eventsListedAt.IsZero() || now.Sub(e.eventsListedAt) >= stuckPodEventListInterval
+}
+
+func (m *stuckPodMemory) markListed(uid types.UID, now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entry(uid, now).eventsListedAt = now
+}
+
+func (m *stuckPodMemory) forget(uid types.UID) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.pods, uid)
+}
+
+func waitingKey(cs corev1.ContainerStatus) string {
+	return cs.Name + "/" + cs.State.Waiting.Reason
+}
+
+func podCondition(pod *corev1.Pod, t corev1.PodConditionType) *corev1.PodCondition {
+	for i := range pod.Status.Conditions {
+		if pod.Status.Conditions[i].Type == t {
+			return &pod.Status.Conditions[i]
+		}
+	}
+	return nil
+}
 
 // unresolvedRefWaitingReasons are container Waiting.Reason values that indicate a pod will
 // never start on its own — most commonly, the kubelet could not resolve a Secret or ConfigMap
@@ -137,7 +223,7 @@ func (r *WorkflowRunReconciler) handleStuckRunnerPod(
 	// Running with no Job and recreate it — looping unbounded, since
 	// maxRestartAttemptsForRun only guards the checkpoint-retry path, not this one. With
 	// status persisted first, a failed delete below just leaves the (already-Failed) run
-	// with a dangling Job; the next reconcile retries the delete, which is idempotent.
+	// with a dangling Job.
 	if err := r.Status().Update(ctx, workflowRun); err != nil {
 		return true, err
 	}
@@ -145,10 +231,9 @@ func (r *WorkflowRunReconciler) handleStuckRunnerPod(
 	// Delete the stuck Job: unlike a Job whose pod actually failed, a Job wedged in Waiting
 	// never reaches a Kubernetes-native "finished" state, so TTLSecondsAfterFinished never
 	// fires and it would otherwise sit there (with its stuck pod) forever.
-	if delErr := r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); delErr != nil && !apierrors.IsNotFound(delErr) {
-		return true, delErr
-	}
-	return true, nil
+	return true, retry.OnError(retry.DefaultBackoff, func(error) bool { return true }, func() error {
+		return client.IgnoreNotFound(r.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)))
+	})
 }
 
 // detectStuckRunnerPod reports an actionable message when pod shows a symptom that means it
@@ -172,17 +257,27 @@ func (r *WorkflowRunReconciler) handleStuckRunnerPod(
 // kubelet's own message in hand, rather than handleStuckRunnerPod re-deriving it afterward.
 func (r *WorkflowRunReconciler) detectStuckRunnerPod(ctx context.Context, pod *corev1.Pod) (string, ottoflowv1alpha1.WorkflowRunFailureReason) {
 	if pod.Status.Phase != corev1.PodPending && pod.Status.Phase != corev1.PodRunning {
+		stuckPods.forget(pod.UID)
 		return "", ""
 	}
-	if time.Since(pod.CreationTimestamp.Time) < stuckPodGracePeriod {
-		return "", ""
+	now := time.Now()
+
+	var seen []string
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Waiting == nil {
+			continue
+		}
+		if _, stuck := unresolvedRefWaitingReasons[cs.State.Waiting.Reason]; stuck {
+			seen = append(seen, waitingKey(cs))
+		}
 	}
+	since := stuckPods.observeWaiting(pod.UID, seen, now)
 
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting == nil {
 			continue
 		}
-		if reason, stuck := unresolvedRefWaitingReasons[cs.State.Waiting.Reason]; stuck {
+		if reason, stuck := unresolvedRefWaitingReasons[cs.State.Waiting.Reason]; stuck && now.Sub(since[waitingKey(cs)]) >= stuckPodGracePeriod {
 			// Lead with the kubelet's own message: CreateContainerConfigError fires for a
 			// missing ConfigMap or ConfigMap key (e.g. a bad configMapKeyRef in
 			// spec.execution.job.env) just as it does for a missing Secret, so the diagnosis
@@ -206,9 +301,13 @@ func (r *WorkflowRunReconciler) detectStuckRunnerPod(ctx context.Context, pod *c
 	// A FailedMount event is only actionable while the pod is still Pending. A Running pod has
 	// already mounted its volumes, so any FailedMount event on it is stale — left over from an
 	// earlier mount attempt that later succeeded — and must not fail a healthy run. (The
-	// grace-period gate above does not catch this: a long-Running pod is well past grace, yet a
+	// grace-period gate below does not catch this: a long-Running pod is well past grace, yet a
 	// FailedMount event from its startup can linger in the API for the event TTL.)
-	if pod.Status.Phase == corev1.PodPending {
+	scheduled, ready := podCondition(pod, corev1.PodScheduled), podCondition(pod, corev1.PodReadyToStartContainers)
+	if pod.Status.Phase == corev1.PodPending &&
+		scheduled != nil && scheduled.Status == corev1.ConditionTrue && now.Sub(scheduled.LastTransitionTime.Time) >= stuckPodGracePeriod &&
+		ready != nil && ready.Status == corev1.ConditionFalse &&
+		stuckPods.listDue(pod.UID, now) {
 		events := &corev1.EventList{}
 		// APIReader, not r.Client: a field-selector List through the manager's cached client
 		// is served from an informer index, and controller-runtime returns "index with name
@@ -228,8 +327,23 @@ func (r *WorkflowRunReconciler) detectStuckRunnerPod(ctx context.Context, pod *c
 			log.FromContext(ctx).Error(err, "failed to list pod events for stuck-pod detection", "pod", pod.Name)
 			return "", ""
 		}
+		// The kubelet attempts the pod sandbox only after every volume has mounted, so a sandbox failure newer
+		// than a FailedMount (both on the kubelet's clock) means the mount stopped failing.
+		var sandboxFailedAt time.Time
 		for _, ev := range events.Items {
-			if ev.Reason == "FailedMount" {
+			if ev.Reason == "FailedCreatePodSandBox" && ev.LastTimestamp.After(sandboxFailedAt) {
+				sandboxFailedAt = ev.LastTimestamp.Time
+			}
+		}
+		for _, ev := range events.Items {
+			// The recency term covers a controller that looks late (e.g. after a restart): a failing mount
+			// is retried at least every stuckPodEventListInterval, so an older last occurrence means it
+			// stopped, or that the event recorder's spam filter (one update per 5 minutes once engaged) held
+			// the update back; a list every stuckPodEventListInterval still lands inside the window after
+			// the next update. The added grace period absorbs node clock skew and a slow mount attempt.
+			if ev.Reason == "FailedMount" && ev.LastTimestamp.Sub(ev.FirstTimestamp.Time) >= stuckPodGracePeriod &&
+				ev.LastTimestamp.After(sandboxFailedAt) &&
+				now.Sub(ev.LastTimestamp.Time) <= stuckPodEventListInterval+stuckPodGracePeriod {
 				msg := fmt.Sprintf(
 					"runner pod %q failed to mount a volume (%s); this usually means a Secret or ConfigMap referenced "+
 						"by the pod does not exist in this namespace (native Secret/ConfigMap volumes are always "+
@@ -246,6 +360,7 @@ func (r *WorkflowRunReconciler) detectStuckRunnerPod(ctx context.Context, pod *c
 				return msg, reason
 			}
 		}
+		stuckPods.markListed(pod.UID, now)
 	}
 	return "", ""
 }

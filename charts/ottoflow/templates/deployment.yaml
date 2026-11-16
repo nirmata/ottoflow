@@ -139,7 +139,10 @@ spec:
         - --agent-executor-service-name={{ include "ottoflow.agentExecutor.fullname" . }}
         - --agent-executor-namespace={{ include "ottoflow.namespace" . }}
         {{- if and .Values.agentExecutor.tls.internal.enabled (not .Values.agentExecutor.tls.secretName) }}
-        - --workflow-runner-agent-executor-ca-secret={{ .Values.workflowRunner.agentExecutorCASecret | default (include "ottoflow.agentExecutor.caSecretName" .) }}
+        {{- if .Values.workflowRunner.agentExecutorCASecret }}
+        {{- fail "workflowRunner.agentExecutorCASecret is no longer supported: the runner mounts only the CA the certificate manager publishes (the agent-executor CA Secret name); remove the value" }}
+        {{- end }}
+        - --workflow-runner-agent-executor-ca-secret={{ include "ottoflow.agentExecutor.caSecretName" . }}
         {{- end }}
         {{- end }}
         securityContext:

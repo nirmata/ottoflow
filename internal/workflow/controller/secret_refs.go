@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/validate/content"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -86,8 +88,17 @@ type visitedKey struct {
 
 // secretRefWalker carries the read-only state shared across one collectSecretRefs call.
 type secretRefWalker struct {
-	client  client.Client
+	client  client.Reader
 	visited map[visitedKey]struct{}
+}
+
+func walkGetError(namespace, name string, err error) error {
+	// client-go rejects an empty or path-invalid name, or a path-invalid namespace, before sending; no retry can fix that.
+	if name == "" || len(content.IsPathSegmentName(name)) > 0 || len(content.IsPathSegmentName(namespace)) > 0 ||
+		apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
+		return err
+	}
+	return &transientBuildError{err: err}
 }
 
 // collectSecretRefs walks a Workflow (and everything it can reach: ForEach inline steps,
@@ -97,7 +108,7 @@ type secretRefWalker struct {
 // (already-defaulted) namespace.
 //
 // FAIL-CLOSED: a missing reference or a CR that cannot be fetched (NotFound or any other API
-// error) aborts the whole walk with a terminal error — this function never silently skips a
+// error) aborts the whole walk with an error — this function never silently skips a
 // reference it could not resolve.
 //
 // TOCTOU note: this runs at Job-build time in the controller. The runner re-fetches every CR
@@ -107,7 +118,7 @@ type secretRefWalker struct {
 // re-resolves against the current state of those CRs.
 func collectSecretRefs(
 	ctx context.Context,
-	c client.Client,
+	c client.Reader,
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 ) ([]resolvedSecretRef, error) {
@@ -306,8 +317,8 @@ func (w *secretRefWalker) stepTemplateRefSecretRefs(ctx context.Context, ref *ot
 func (w *secretRefWalker) fetchStepTemplateStep(ctx context.Context, namespace, name, origin string) (*ottoflowv1alpha1.StepTemplateStep, error) {
 	var tpl ottoflowv1alpha1.StepTemplate
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &tpl); err != nil {
-		return nil, fmt.Errorf("resolving secret refs: fetching StepTemplate %s/%s (referenced by %s): %w; "+
-			"re-run the WorkflowRun to re-resolve if this was a transient error", namespace, name, origin, err)
+		return nil, walkGetError(namespace, name, fmt.Errorf("resolving secret refs: fetching StepTemplate %s/%s (referenced by %s): %w; "+
+			"re-run the WorkflowRun to re-resolve", namespace, name, origin, err))
 	}
 	return &tpl.Spec.Step, nil
 }
@@ -334,8 +345,8 @@ func (w *secretRefWalker) workflowRefSecretRefs(ctx context.Context, ref *ottofl
 
 	var sub ottoflowv1alpha1.Workflow
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: subNamespace, Name: ref.Name}, &sub); err != nil {
-		return nil, fmt.Errorf("resolving secret refs: fetching sub-Workflow %s/%s (referenced by %s): %w; "+
-			"re-run the WorkflowRun to re-resolve if this was a transient error", subNamespace, ref.Name, origin, err)
+		return nil, walkGetError(subNamespace, ref.Name, fmt.Errorf("resolving secret refs: fetching sub-Workflow %s/%s (referenced by %s): %w; "+
+			"re-run the WorkflowRun to re-resolve", subNamespace, ref.Name, origin, err))
 	}
 
 	var refs []resolvedSecretRef
@@ -371,11 +382,12 @@ func (w *secretRefWalker) agentRefSecretRefs(ctx context.Context, ref *ottoflowv
 	}
 	var agentCRD ottoflowv1alpha1.Agent
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: ns, Name: ref.Name}, &agentCRD); err != nil {
-		return nil, fmt.Errorf("resolving secret refs: fetching Agent %s/%s (referenced by %s): %w; "+
-			"re-run the WorkflowRun to re-resolve if this was a transient error", ns, ref.Name, origin, err)
+		return nil, walkGetError(ns, ref.Name, fmt.Errorf("resolving secret refs: fetching Agent %s/%s (referenced by %s): %w; "+
+			"re-run the WorkflowRun to re-resolve", ns, ref.Name, origin, err))
 	}
 
 	var refs []resolvedSecretRef
+	fetched := map[string]struct{}{}
 	for _, mcpToolRef := range agentCRD.Spec.MCPTools {
 		mcpToolRef = strings.TrimSpace(mcpToolRef)
 		if mcpToolRef == "" {
@@ -385,6 +397,10 @@ func (w *secretRefWalker) agentRefSecretRefs(ctx context.Context, ref *ottoflowv
 		if serverName == "" {
 			continue
 		}
+		if _, done := fetched[serverName]; done {
+			continue
+		}
+		fetched[serverName] = struct{}{}
 		serverRefs, err := w.mcpServerSecretRefs(ctx, serverName, ns, origin, false)
 		if err != nil {
 			return nil, err
@@ -409,8 +425,8 @@ func (w *secretRefWalker) mcpServerSecretRefs(ctx context.Context, serverName, s
 	}
 	var mcpServer ottoflowv1alpha1.MCPServer
 	if err := w.client.Get(ctx, client.ObjectKey{Namespace: serverNamespace, Name: serverName}, &mcpServer); err != nil {
-		return nil, fmt.Errorf("resolving secret refs: fetching MCPServer %s/%s (referenced by %s): %w; "+
-			"re-run the WorkflowRun to re-resolve if this was a transient error", serverNamespace, serverName, origin, err)
+		return nil, walkGetError(serverNamespace, serverName, fmt.Errorf("resolving secret refs: fetching MCPServer %s/%s (referenced by %s): %w; "+
+			"re-run the WorkflowRun to re-resolve", serverNamespace, serverName, origin, err))
 	}
 
 	base := fmt.Sprintf("%s (MCPServer %s/%s)", origin, mcpServer.Namespace, mcpServer.Name)
