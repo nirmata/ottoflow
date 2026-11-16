@@ -57,6 +57,7 @@ default: an endpoint that runs workflows is not something to open without asking
 
 The server speaks plain HTTP, like the webhook trigger. Terminate TLS at an ingress or a
 service mesh sidecar if callers are outside the cluster.
+A proxy or sidecar that forwards to the server over `127.0.0.1` must rewrite Host to `localhost`, and `kubectl port-forward` callers use `localhost:<port>`. Loopback Hosts such as `127.0.0.1:<port>` and `[::1]:<port>` are accepted; only a non-loopback Host forwarded over loopback gets 403 `invalid Host header`. See [Upgrading: MCP protocol negotiation and the `/mcp` Host check](../upgrades/mcp-protocol-negotiation.md).
 
 ## Authorizing callers
 

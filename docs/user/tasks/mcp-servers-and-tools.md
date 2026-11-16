@@ -128,7 +128,7 @@ Store credentials in a Secret in the same namespace (e.g. `client_id` and `clien
 
 ### Other fields
 
-- **timeout** – Connection/call timeout (e.g. `"30s"`, `"5m"`). Optional.
+- **timeout** – Connection/call timeout (e.g. `"30s"`, `"5m"`). Optional. Keep it above 5s: a server that ignores the protocol probe takes 5s to fall back. See [Upgrading: MCP protocol negotiation and the `/mcp` Host check](../upgrades/mcp-protocol-negotiation.md).
 - **env** – List of `name`/`value` environment variables for the MCP server process (mainly relevant for stdio). Optional.
 
 ---

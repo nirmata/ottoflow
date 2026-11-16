@@ -6,14 +6,14 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 
 | License | Count |
 |---|---|
-| Apache-2.0 | 98 |
+| Apache-2.0 | 99 |
 | MIT | 57 |
 | BSD-3-Clause | 37 |
 | BSD-2-Clause | 2 |
 | MPL-2.0 | 1 |
 | ISC | 1 |
 
-**Total third-party dependencies:** 196
+**Total third-party dependencies:** 197
 
 **Copyleft license check (GPL/AGPL/LGPL):** None found.
 
@@ -86,6 +86,7 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/prometheus/client_model/go` | https://github.com/prometheus/client_model/blob/v0.6.2/LICENSE |
 | `github.com/prometheus/common` | https://github.com/prometheus/common/blob/v0.70.1/LICENSE |
 | `github.com/prometheus/procfs` | https://github.com/prometheus/procfs/blob/v0.21.1/LICENSE |
+| `github.com/santhosh-tekuri/jsonschema/v6` | https://github.com/santhosh-tekuri/jsonschema/blob/v6.0.2/LICENSE |
 | `github.com/spf13/cobra` | https://github.com/spf13/cobra/blob/v1.10.2/LICENSE.txt |
 | `github.com/zach-klippenstein/goregen` | https://github.com/zach-klippenstein/goregen/blob/795b5e3961ea/LICENSE.txt |
 | `go.opentelemetry.io/auto/sdk` | https://github.com/open-telemetry/opentelemetry-go-instrumentation/blob/sdk/v1.2.1/sdk/LICENSE |
@@ -163,7 +164,7 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/json-iterator/go` | https://github.com/json-iterator/go/blob/v1.1.12/LICENSE |
 | `github.com/klauspost/compress/zstd/internal/xxhash` | https://github.com/klauspost/compress/blob/v1.19.1/zstd/internal/xxhash/LICENSE.txt |
 | `github.com/lucasb-eyer/go-colorful` | https://github.com/lucasb-eyer/go-colorful/blob/v1.3.0/LICENSE |
-| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/v0.46.0/LICENSE |
+| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/v1.4.0/LICENSE |
 | `github.com/mattn/go-isatty` | https://github.com/mattn/go-isatty/blob/v0.0.20/LICENSE |
 | `github.com/mattn/go-runewidth` | https://github.com/mattn/go-runewidth/blob/v0.0.19/LICENSE |
 | `github.com/mitchellh/go-homedir` | https://github.com/mitchellh/go-homedir/blob/v1.1.0/LICENSE |
