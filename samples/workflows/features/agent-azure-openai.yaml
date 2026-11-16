@@ -23,6 +23,11 @@
 #     --namespace ottoflow \
 #     --set-json 'agentExecutor.env=[{"name":"AZURE_OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"name":"llm-credentials","key":"azure-openai-api-key"}}}]'
 #
+# Rotating the key without a restart: instead of agentExecutor.env, set
+# `agentExecutor.llmCredentialsSecret=llm-credentials` and name the Secret key
+# `AZURE_OPENAI_API_KEY`. The Secret is mounted as files and read on every agent call, so a
+# patched Secret takes effect after the kubelet refreshes the mount (not instantly).
+#
 # You will also need AZURE_OPENAI_ENDPOINT set (or override it per-Agent via
 # `spec.config.endpoint`, once the operator has allowlisted its origin via
 # AGENT_LLM_ENDPOINT_ALLOWLIST — see agent-custom-endpoint.yaml for that

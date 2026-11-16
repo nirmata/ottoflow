@@ -12,6 +12,7 @@ package chart
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -26,6 +27,10 @@ import (
 // (test/chart/runner_rbac_render_test.go -> <repo>/charts/ottoflow).
 func chartDir(t *testing.T) string {
 	t.Helper()
+	// Lets a test run against a scratch copy of the chart, e.g. to show a mutation fails it.
+	if d := os.Getenv("OTTOFLOW_TEST_CHART_DIR"); d != "" {
+		return d
+	}
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("failed to resolve caller for chart path")

@@ -163,6 +163,8 @@ The agent executor is the HTTPS service that runs agent steps on behalf of the w
 | `--agent-executor-caller-namespace` | `ottoflow` | Namespace for RBAC auth (SubjectAccessReview checks `callers.gate.ottoflow.nirmata.io/agent-executor-caller` in this namespace) |
 | `-v` | `0` | klog verbosity level (e.g. `-v=2` for troubleshooting, `-v=4` for deep debugging). See [Logging](logging.md). |
 
+When `agentExecutor.llmCredentialsSecret` is set, the Secret is mounted at `/etc/ottoflow/llm-credentials` and a provider's API key is read from the file named after its variable (for example `ANTHROPIC_API_KEY`) on every agent call. Rotating the Secret therefore needs no restart; it is eventually consistent (up to the kubelet sync period plus cache propagation), not instant. A missing or blank file falls back to the environment variable; an unreadable file logs an error once and falls back; any other read error fails the step.
+
 Nirmata credentials for LLM are used by the **workflow runner** when it executes agent steps (set via env vars in the runner pod), not by the agent-executor binary itself.
 
 ---

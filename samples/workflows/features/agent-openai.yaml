@@ -20,6 +20,11 @@
 #     --namespace ottoflow \
 #     --set-json 'agentExecutor.env=[{"name":"OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"name":"llm-credentials","key":"openai-api-key"}}}]'
 #
+# Rotating the key without a restart: instead of agentExecutor.env, set
+# `agentExecutor.llmCredentialsSecret=llm-credentials` and name the Secret key
+# `OPENAI_API_KEY`. The Secret is mounted as files and read on every agent call, so a
+# patched Secret takes effect after the kubelet refreshes the mount (not instantly).
+#
 # CLI local mode (`ottoflow run --workflow-dir ...`) runs in-process and picks
 # up OPENAI_API_KEY from your shell environment instead — no Helm/Secret:
 #   export OPENAI_API_KEY='sk-...'

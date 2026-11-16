@@ -10,6 +10,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 
 	"github.com/GoogleCloudPlatform/kubectl-ai/gollm"
 	. "github.com/onsi/ginkgo/v2"
@@ -358,5 +360,98 @@ var _ = Describe("DefaultAgentExecutor getDefaultModel", func() {
 		Expect(e.getDefaultModel("local")).To(Equal(""))
 		Expect(e.getDefaultModel("unknown")).To(Equal(""))
 		Expect(e.getDefaultModel("nirmata")).To(Equal(""))
+	})
+})
+
+var _ = Describe("DefaultAgentExecutor key file", func() {
+	var (
+		ctx      context.Context
+		dir      string
+		keyPath  string
+		factory  *mockLLMClientFactory
+		e        *DefaultAgentExecutor
+		agentCRD *ottoflowv1alpha1.Agent
+	)
+
+	apiKeyOf := func() string {
+		co := &gollm.ClientOptions{}
+		for _, o := range factory.opts {
+			o(co)
+		}
+		return co.APIKey
+	}
+
+	BeforeEach(func() {
+		ctx = context.Background()
+		dir = GinkgoT().TempDir()
+		keyPath = filepath.Join(dir, "ANTHROPIC_API_KEY")
+		orig := llmCredentialsDir
+		llmCredentialsDir = dir
+		DeferCleanup(func() { llmCredentialsDir = orig })
+		factory = &mockLLMClientFactory{client: &mockGollmClient{}}
+		e = NewDefaultAgentExecutorWithLLMFactory(nil, factory)
+		agentCRD = &ottoflowv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+			Spec:       ottoflowv1alpha1.AgentSpec{ModelProvider: "anthropic"},
+		}
+	})
+
+	It("reads the rotated key on every call", func() {
+		Expect(os.WriteFile(keyPath, []byte("v1\n"), 0o600)).To(Succeed())
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiKeyOf()).To(Equal("v1"))
+
+		Expect(os.WriteFile(keyPath, []byte("v2\n"), 0o600)).To(Succeed())
+		_, err = e.createLLMClient(ctx, agentCRD)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiKeyOf()).To(Equal("v2"))
+	})
+
+	It("leaves the key to the environment when the file is missing or blank", func() {
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiKeyOf()).To(BeEmpty())
+
+		Expect(os.WriteFile(keyPath, []byte(" \n"), 0o600)).To(Succeed())
+		_, err = e.createLLMClient(ctx, agentCRD)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apiKeyOf()).To(BeEmpty())
+	})
+
+	It("warns once and falls back to the environment when the file is unreadable", func() {
+		Expect(os.WriteFile(keyPath, []byte("v1"), 0o600)).To(Succeed())
+		Expect(os.Chmod(keyPath, 0)).To(Succeed())
+		if f, err := os.Open(keyPath); err == nil {
+			_ = f.Close()
+			Skip("file is readable despite chmod 0 (running as root)")
+		}
+		warnings := 0
+		orig := warnLLMKeyFile
+		warnLLMKeyFile = func(string, error) { warnings++ }
+		DeferCleanup(func() { warnLLMKeyFile = orig })
+
+		for i := 0; i < 2; i++ {
+			_, err := e.createLLMClient(ctx, agentCRD)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(apiKeyOf()).To(BeEmpty())
+		}
+		Expect(warnings).To(Equal(1))
+	})
+
+	It("fails the step on any other read error, naming the path", func() {
+		Expect(os.Mkdir(keyPath, 0o700)).To(Succeed())
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(keyPath))
+		Expect(factory.called).To(BeFalse())
+	})
+
+	It("never reads the key file for a refused endpoint", func() {
+		Expect(os.Mkdir(keyPath, 0o700)).To(Succeed())
+		agentCRD.Spec.Config = map[string]string{"endpoint": "https://not-allowlisted.example"}
+		_, err := e.createLLMClient(ctx, agentCRD)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("agent endpoint rejected"))
 	})
 })

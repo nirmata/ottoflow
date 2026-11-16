@@ -1,4 +1,6 @@
 {{- if .Values.agentExecutor.enabled }}
+{{- $tls := or .Values.agentExecutor.tls.internal.enabled .Values.agentExecutor.tls.secretName }}
+{{- $llmCredentials := .Values.agentExecutor.llmCredentialsSecret }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -66,11 +68,20 @@ spec:
         {{- end }}
         securityContext:
           {{- toYaml .Values.agentExecutor.securityContext | nindent 10 }}
-        {{- if or .Values.agentExecutor.tls.internal.enabled .Values.agentExecutor.tls.secretName }}
+        {{- if or $tls $llmCredentials }}
         volumeMounts:
+        {{- if $tls }}
         - name: tls-certs
           mountPath: /etc/tls
           readOnly: true
+        {{- end }}
+        {{- if $llmCredentials }}
+        # A directory mount, never subPath: kubelet does not refresh a subPath mount, so the
+        # key file would never see a rotation.
+        - name: llm-credentials
+          mountPath: /etc/ottoflow/llm-credentials
+          readOnly: true
+        {{- end }}
         {{- end }}
         {{- if or .Values.agentExecutor.goMemLimit .Values.agentExecutor.env .Values.agentExecutor.llmEndpointAllowlist }}
         env:
@@ -143,11 +154,20 @@ spec:
             cpu: 100m
             memory: 256Mi
         {{- end }}
-      {{- if or .Values.agentExecutor.tls.internal.enabled .Values.agentExecutor.tls.secretName }}
+      {{- if or $tls $llmCredentials }}
       volumes:
+      {{- if $tls }}
       - name: tls-certs
         secret:
           secretName: {{ .Values.agentExecutor.tls.secretName | default (include "ottoflow.agentExecutor.tlsSecretName" .) }}
+      {{- end }}
+      {{- if $llmCredentials }}
+      - name: llm-credentials
+        secret:
+          secretName: {{ $llmCredentials }}
+          optional: true
+          defaultMode: 0400
+      {{- end }}
       {{- end }}
       {{- if .Values.agentExecutor.terminationGracePeriodSeconds }}
       terminationGracePeriodSeconds: {{ .Values.agentExecutor.terminationGracePeriodSeconds }}
