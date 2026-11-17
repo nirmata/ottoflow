@@ -160,21 +160,22 @@ func (s *MCPToolServer) callWorkflow(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	if limit := wf.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, s.client, &wf)
-		if err != nil {
-			return nil, fmt.Errorf("counting active runs for %s/%s: %w", namespace, name, err)
-		}
-		if active >= int(limit) {
-			return mcp.NewToolResultErrorf(
-				"workflow %s/%s is at its concurrency limit (%d running)", namespace, name, active), nil
-		}
+	tok, admitted, active, err := s.RunLedger.admit(ctx, s.client, &wf)
+	if err != nil {
+		return nil, fmt.Errorf("counting active runs for %s/%s: %w", namespace, name, err)
 	}
+	if !admitted {
+		return mcp.NewToolResultErrorf(
+			"workflow %s/%s is at its concurrency limit (%d running or starting)", namespace, name, active), nil
+	}
+	defer tok.hold("")
 
 	run, err := s.createRun(ctx, &wf, inputs)
 	if err != nil {
+		tok.settle(err, "")
 		return nil, err
 	}
+	tok.hold(run.Name)
 	logger.Info("workflow run created from MCP tool call",
 		"workflow", fmt.Sprintf("%s/%s", namespace, name), "run", run.Name)
 

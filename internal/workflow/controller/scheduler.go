@@ -42,6 +42,9 @@ type Scheduler struct {
 	// Recorder, when set, records a Warning Event on the Workflow when createWorkflowRun fails
 	// during a cron fire. Optional; set it before the manager starts.
 	Recorder events.EventRecorder
+
+	// RunLedger counts runs admitted but not yet in the cache. The trigger manager and MCP server share it.
+	RunLedger *runLedger
 }
 
 // NewScheduler creates a Scheduler. The cron engine is created immediately
@@ -55,6 +58,7 @@ func NewScheduler(c client.Client, logger logr.Logger) *Scheduler {
 		entries:   make(map[string]cron.EntryID),
 		workflows: make(map[string]*ottoflowv1alpha1.Workflow),
 		cronSpecs: make(map[string]*ottoflowv1alpha1.CronTrigger),
+		RunLedger: newRunLedger(),
 	}
 }
 
@@ -181,19 +185,19 @@ func (s *Scheduler) handleCronFire(key string) {
 	}
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
-	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, s.client, workflow, cancelled...)
-		if err != nil {
-			logger.Error(err, "Failed to count active WorkflowRuns")
-			return
-		}
-		if active >= int(limit) {
-			logger.V(1).Info("Skipping cron fire: max concurrent runs reached", "active", active, "max", limit)
-			return
-		}
+	tok, admitted, active, err := s.RunLedger.admit(ctx, s.client, workflow, cancelled...)
+	if err != nil {
+		logger.Error(err, "Failed to count active WorkflowRuns")
+		return
 	}
+	if !admitted {
+		logger.V(1).Info("Skipping cron fire: max concurrent runs reached", "active", active, "max", workflow.Spec.Run.EffectiveMaxConcurrentRuns())
+		return
+	}
+	defer tok.hold("")
 
 	if err := s.createWorkflowRun(ctx, workflow, cronSpec); err != nil {
+		tok.settle(err, "")
 		msg := "Failed to create WorkflowRun from cron trigger"
 		if errors.Is(err, errStatusUpdateAfterCreate) {
 			msg = "WorkflowRun created from cron trigger but its status update failed"
@@ -202,11 +206,12 @@ func (s *Scheduler) handleCronFire(key string) {
 		s.recordCronFireFailure(workflow, err)
 		return
 	}
+	tok.release()
 	logger.Info("Created WorkflowRun from cron trigger")
 }
 
 // countActiveWorkflowRuns returns the number of WorkflowRuns (not yet picked up, Pending or Running) for the workflow.
-// Used to enforce spec.run.maxConcurrentRuns in scheduler and trigger manager.
+// spec.run.maxConcurrentRuns is enforced in this package by runLedger.admit (run_ledger.go), which counts the same runs plus its reservations.
 func countActiveWorkflowRuns(ctx context.Context, c client.Client, workflow *ottoflowv1alpha1.Workflow, skip ...string) (int, error) {
 	var list ottoflowv1alpha1.WorkflowRunList
 	if err := c.List(ctx, &list,

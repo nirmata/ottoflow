@@ -506,6 +506,8 @@ curl -s -X POST \
 | `429 Too Many Requests` | Rate limit or MaxConcurrentRuns exceeded |
 | `500 Internal Server Error` | K8s API error — safe to retry |
 
+A cron, event, webhook or MCP run create that fails but may still have stored the run (a timeout, for example) keeps its place against `maxConcurrentRuns` for up to 30 seconds, so a `429` can come while fewer runs are active.
+
 ### Deduplication semantics
 
 - **`dedupKey` + `dedupWindow`**: same key value within the window → drop (200 deduped)

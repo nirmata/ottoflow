@@ -45,6 +45,7 @@ func fireCron(t *testing.T, c client.Client, wf *ottoflowv1alpha1.Workflow, cron
 		workflows: map[string]*ottoflowv1alpha1.Workflow{"key": wf},
 		cronSpecs: map[string]*ottoflowv1alpha1.CronTrigger{"key": cronSpec},
 		Recorder:  rec,
+		RunLedger: newRunLedger(),
 	}
 	s.handleCronFire("key")
 	var out []string

@@ -162,6 +162,7 @@ type TriggerManager struct {
 	dedupState map[string]map[string]dedupEntry
 	// Workflow namespaces allowed to watch other or all namespaces.
 	eventTriggerAllowedNamespaces []string
+	ledger                        *runLedger
 }
 
 // SetEventTriggerAllowedNamespaces sets the Workflow namespaces exempt from the event-trigger watch scope.
@@ -212,6 +213,7 @@ func NewTriggerManager(client client.Client, scheme *runtime.Scheme, scheduler *
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
 		dedupState:       make(map[string]map[string]dedupEntry),
+		ledger:           ledgerFor(scheduler),
 	}
 }
 
@@ -249,6 +251,7 @@ func NewTriggerManagerWithConfig(client client.Client, scheme *runtime.Scheme, c
 		eventSpecMap:     make(map[string]*ottoflowv1alpha1.EventTrigger),
 		triggerCELEnv:    celEnv,
 		dedupState:       make(map[string]map[string]dedupEntry),
+		ledger:           ledgerFor(scheduler),
 	}, nil
 }
 
@@ -810,15 +813,14 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 	tm.dedupMu.Unlock()
 
 	// Enforce MaxConcurrentRuns: skip creating if active runs already at limit
-	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
-		if err != nil {
-			return fmt.Errorf("count active WorkflowRuns: %w", err)
-		}
-		if active >= int(limit) {
-			return nil // Skip creating; event is dropped
-		}
+	tok, admitted, _, err := tm.ledger.admit(ctx, tm.client, workflow)
+	if err != nil {
+		return fmt.Errorf("count active WorkflowRuns: %w", err)
 	}
+	if !admitted {
+		return nil // Skip creating; event is dropped
+	}
+	defer tok.hold("")
 
 	// Generate workflow run name: uid4 identifies the source object; time8 ensures
 	// each trigger fire gets a unique name even if prior runs haven't been cleaned up.
@@ -876,8 +878,10 @@ func (tm *TriggerManager) CreateWorkflowRunFromEvent(ctx context.Context, trigge
 		return createErr
 	})
 	if createErr != nil {
+		tok.settle(createErr, workflowRunName)
 		return createErr
 	}
+	tok.hold(workflowRunName)
 
 	// Record dedup state only after a successful create so a failed create doesn't block the next event.
 	tm.dedupMu.Lock()
@@ -1057,15 +1061,14 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 	}
 
 	// Gate 4: MaxConcurrentRuns.
-	if limit := workflow.Spec.Run.EffectiveMaxConcurrentRuns(); limit > 0 {
-		active, err := countActiveWorkflowRuns(ctx, tm.client, workflow)
-		if err != nil {
-			return nil, 0, fmt.Errorf("count active WorkflowRuns: %w", err)
-		}
-		if active >= int(limit) {
-			return nil, WebhookConcurrencyLimited, nil
-		}
+	tok, admitted, _, err := tm.ledger.admit(ctx, tm.client, workflow)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count active WorkflowRuns: %w", err)
 	}
+	if !admitted {
+		return nil, WebhookConcurrencyLimited, nil
+	}
+	defer tok.hold("")
 
 	// Gate 5: build and create WorkflowRun.
 	// Name format: {workflowName}-{rand4}-{time8hex}
@@ -1090,8 +1093,10 @@ func (tm *TriggerManager) CreateWorkflowRunFromWebhook(
 
 	statusToSet := run.Status.DeepCopy()
 	if err := tm.client.Create(ctx, run); err != nil {
+		tok.settle(err, runName)
 		return nil, 0, fmt.Errorf("%w: %v", ErrWorkflowRunCreateFailed, err)
 	}
+	tok.hold(runName)
 
 	// Write dedup state AFTER successful Create so a failed Create does not block the next request.
 	if dedupWindow > 0 {
