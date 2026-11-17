@@ -27,8 +27,10 @@ spec:
   inputs:
     - name: kustomizationName
       description: FluxCD Kustomization name
+      required: true
     - name: appliedRevision
       description: Git commit SHA that was applied
+      required: true
 
   triggers:
     - event:
