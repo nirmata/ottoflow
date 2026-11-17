@@ -727,10 +727,16 @@ func prometheusResultToMap(result PrometheusResult) map[string]interface{} {
 	switch resultType {
 	case "vector":
 		samples := result.GetVector()
-		items := make([]map[string]interface{}, len(samples))
+		// Generic maps and slices only: the result is stored in the workflow context, which a
+		// checkpoint restores as JSON-shaped values.
+		items := make([]interface{}, len(samples))
 		for i, sample := range samples {
+			metric := make(map[string]interface{}, len(sample.Metric()))
+			for k, v := range sample.Metric() {
+				metric[k] = v
+			}
 			items[i] = map[string]interface{}{
-				"metric":    sample.Metric(),
+				"metric":    metric,
 				"value":     sample.Value(),
 				"timestamp": sample.Timestamp().Format(time.RFC3339),
 			}
