@@ -99,7 +99,7 @@ This separation provides:
 - **FR1B.4**: Agents must support output extraction configuration (JSON, text, regex patterns)
 - **FR1B.5**: Agents must support serviceAccount field for per-agent RBAC
 - **FR1B.6**: Agents must support executorImage field for custom executor images
-- **FR1B.7**: Agents must support executionMode field (enum: `service`, future: `sandbox`, `substrate`) - defaults to `service`
+- **FR1B.7** (planned; `AgentSpec` has no `executionMode` field yet): Agents must support executionMode field (enum: `service`, future: `sandbox`, `substrate`) - defaults to `service`
 - **FR1B.8**: Agents must support serviceName and serviceNamespace fields for AgentExecutor Service configuration
 - **FR1B.9**: Agents must support resources field for resource requests/limits (future: for sandbox mode)
 - **FR1B.10**: Agents must be namespace-scoped

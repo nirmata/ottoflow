@@ -86,7 +86,7 @@ spec:
   executionMode: substrate      # service (default) | sandbox | substrate
 ```
 
-The Agent names neither an atespace nor an `ActorTemplate`. Every `substrate` actor runs the operator's executor template (see below), so an Agent author can't pick a different image and bypass the checks the executor runs. The operator maps each Kubernetes namespace to one atespace in the gateway's configuration (a chart value), and the gateway runs an Agent's actors only in the atespace mapped to the Agent's namespace. An Agent in a namespace with no mapping fails with a clear error. This stops an Agent in one namespace from running in another team's atespace and inheriting its egress and credential policy.
+The Agent names neither an atespace nor an `ActorTemplate`. Every `substrate` actor runs the operator's executor template (see below), so an Agent author can't pick a different image and bypass the checks the executor runs. The operator maps each Kubernetes namespace to one atespace in the gateway's configuration (a chart value), and the gateway runs an Agent's actors only in the atespace mapped to the Agent's namespace. An Agent in a namespace with no mapping fails with a clear error. This stops an Agent in one namespace from running in another team's atespace and using the Secret namespaces that atespace is granted through the credential provider.
 
 - `executionMode` defaults to `service`, so existing Agents keep today's behavior.
 - `sandbox` stays reserved for [PROPOSAL_AGENT_SANDBOXING.md](PROPOSAL_AGENT_SANDBOXING.md) Layer 2; both backends share the gateway and standalone executor below.
@@ -110,15 +110,18 @@ For a `substrate` Agent, the agent-executor's exec handler:
 1. Authenticates and authorizes the caller, and reads the Agent and its MCPServers, exactly as today.
 2. Looks up the atespace mapped to the Agent's namespace, and fails the call if there is none.
 3. Calls `CreateActor` in that atespace from the executor template named in the gateway's configuration, never a name taken from the Agent or the request, with a generated name that starts with a fixed `ottoflow-` prefix.
-4. POSTs the resolved request to `atenet-router` with `ate-target-actor: <atespace>/<actor>`, and waits for the response.
-5. Calls `DeleteActor` when the call finishes, fails, or is cancelled, which also removes the actor's snapshot.
-6. Returns the actor's `ExecResponse` to the runner unchanged.
+4. Calls `CreateActorEgressPolicy` for the new actor. Substrate sets egress policy per actor: the template's policy covers only its golden actor, and an atespace holds no policy. The gateway builds the rules from the Agent and its MCPServers: the LLM provider's host, the hosts of remote MCP servers, and the extra hosts the operator configures for the namespace, such as package registries that `uvx` and `npx` stdio servers reach. In Phase 3, it adds the `replaceHeaders` rules for each credential. If this call fails, the gateway deletes the actor and fails the step without forwarding.
+5. POSTs the resolved request to `atenet-router` with `ate-target-actor: <atespace>/<actor>`, and waits for the response.
+6. Calls `DeleteActor` when the call finishes, fails, or is cancelled, which also removes the actor's snapshot and egress policy.
+7. Returns the actor's `ExecResponse` to the runner unchanged.
+
+The client spike confirms that an actor runs no code before its egress policy exists, and what an actor with no policy can reach.
 
 The gateway needs a Go client for `ateapi`, generated from Substrate's protos, and a SPIFFE client identity on the router's ingress allowlist.
 
-**Timeouts and retries.** `ExecRequest` doesn't carry the step's timeout, so the gateway is bounded only by the runner's request context: the runner's exec HTTP client times out after 30 minutes (`internal/workflow/executor/exec_client.go:38`), and a cancelled request cancels the forward and triggers `DeleteActor`. The exec endpoint isn't idempotent, and the runner retries only connection failures (`isRetryableExecErr`, `internal/workflow/executor/exec_client.go:313-320`). The gateway keeps that contract: it may retry `CreateActor`, since nothing has run yet, but once it has sent the request to the router it never re-sends it or creates a second actor for the same call.
+**Timeouts and retries.** `ExecRequest` doesn't carry the step's timeout, so the gateway is bounded only by the runner's request context: the runner's exec HTTP client times out after 30 minutes (`internal/workflow/executor/exec_client.go:38`), and a cancelled request cancels the forward and triggers `DeleteActor`. The exec endpoint isn't idempotent, and the runner retries only connection failures (`isRetryableExecErr`, `internal/workflow/executor/exec_client.go:313-320`). The gateway keeps that contract: it may retry `CreateActor` and `CreateActorEgressPolicy`, since nothing has run yet, but once it has sent the request to the router it never re-sends it or creates a second actor for the same call.
 
-**Orphaned actors.** If the gateway restarts during a step, its `DeleteActor` call never runs. On startup and then periodically, the gateway lists actors in its mapped atespaces and deletes any with the `ottoflow-` prefix that are older than the runner's 30-minute exec timeout, since no call can still be waiting on them. The client spike confirms that `ateapi` can list actors and report their age.
+**Orphaned actors.** If the gateway restarts during a step, its `DeleteActor` call never runs. On startup and then periodically, the gateway lists actors in its mapped atespaces and deletes any with the `ottoflow-` prefix that are older than the runner's 30-minute exec timeout, since no call can still be waiting on them. Phase 4 run-scoped actors use a different prefix, so the reaper doesn't delete them while their run waits. The client spike confirms that `ateapi` can list actors and report their age.
 
 **Observability.** The gateway reports each failure, such as a `CreateActor` error, the router holding the request until the context ends, or the actor failing its wakeup probe, as an `ExecErrorResponse` whose message names the stage and the actor. The message reaches the step's status through the existing error path. The runner adds informational headers with the WorkflowRun namespace and name and the step name, and the gateway logs them with the actor name, so you can map an actor back to its run and step. Actor logs come from Substrate's own logging (see its observability guide).
 
@@ -135,7 +138,7 @@ The gateway needs a Go client for `ateapi`, generated from Substrate's protos, a
 
 ### Network
 
-The gateway's egress allowlist gains `ateapi` and `atenet-router`. Actor egress is governed by Substrate's egress gateway, not Kubernetes NetworkPolicy; the operator allows only the LLM and MCP endpoints the atespace needs.
+The gateway's egress allowlist gains `ateapi` and `atenet-router`. Actor egress is governed by Substrate's egress gateway, not Kubernetes NetworkPolicy. The gateway writes each actor's egress policy at dispatch, so an actor can reach only its Agent's LLM endpoint, its MCP servers, and the extra hosts the operator configures for the namespace.
 
 ### Policy
 
@@ -143,23 +146,23 @@ The gateway's egress allowlist gains `ateapi` and `atenet-router`. Actor egress 
 
 - **Admission of OttoFlow objects.** Agents, MCPServers, and Workflows are still CRDs, so admission policies on them apply as in `service` mode. Only the gateway creates actors, and only from the chart's `ActorTemplate`, so users can't create actors directly.
 - **Inside the actor.** The `mcpTools` allowlist and the other checks the executor runs at dispatch run inside the actor unchanged, because the actor runs the same executor code.
-- **Network.** Substrate's egress policy for the atespace is the network control for the actor.
+- **Network.** The per-actor egress policy that the gateway writes at dispatch is the network control for the actor.
 
 ## Interaction with kagent
 
 OttoFlow integrates with kagent in two directions today, and Substrate changes each differently.
 
 - **kagent calls OttoFlow (`spec.expose.kagent`).** The exposure controller publishes each exposed Workflow as a kagent BYO `Agent` running `serve-a2a` (`internal/workflow/controller/exposure_controller.go`). It stays a BYO `Agent`, not a `SandboxAgent`: `serve-a2a` creates WorkflowRuns and calls TokenReview, which need a ServiceAccount token and API server access that an actor doesn't have, and it runs no untrusted code, so a sandbox adds nothing. The controller writes `kind: Agent` explicitly, so a change in kagent's defaults doesn't move it onto Substrate.
-- **A kagent `SandboxAgent` calls an exposed Workflow.** The caller's traffic leaves through `atenet-egress`, so its atespace's egress policy must allow the `serve-a2a` Service. kagent doesn't document how the `headersFrom` Secret that carries the caller's token reaches an actor. This path is untested.
+- **A kagent `SandboxAgent` calls an exposed Workflow.** The caller's traffic leaves through `atenet-egress`, so the egress policy that kagent sets on the caller's actor must allow the `serve-a2a` Service. kagent doesn't document how the `headersFrom` Secret that carries the caller's token reaches an actor. This path is untested.
 - **OttoFlow calls kagent (`externalAgentRef`).** Unchanged for kagent agents that run as Deployments. For `SandboxAgent`s, see Option A.
-- **Shared Substrate install.** kagent and OttoFlow can share one `ate-system` control plane. Use separate atespaces so egress and credential policies stay apart. `ActorTemplate`s in different atespaces can share a `WorkerPool`, so OttoFlow can use kagent's `kagent-default` pool; the chart's `workerSelector` on the OttoFlow `ActorTemplate` picks the pool.
+- **Shared Substrate install.** kagent and OttoFlow can share one `ate-system` control plane. Use separate atespaces so credential provider grants stay apart. Each controller writes the egress policies of its own actors. `ActorTemplate`s in different atespaces can share a `WorkerPool`, so OttoFlow can use kagent's `kagent-default` pool; the chart's `workerSelector` on the OttoFlow `ActorTemplate` picks the pool.
 
 ## Phases
 
 1. **Interop (no code).** Check whether kagent exposes an A2A endpoint for `SandboxAgent`s, and if it does, document Option A with a sample workflow.
 2. **Step-scoped actors.** The API field, webhook validation, standalone executor, gateway dispatch, `ateapi` client, and chart `ActorTemplate`. LLM keys and MCP auth values still reach the actor through the resolved request in this phase, but only for the life of one step, in a gVisor sandbox that holds no other tenant's state.
 3. **Credentials outside the sandbox.** Move LLM keys and remote MCP auth to egress injection, send placeholders in the request, and mount the egress trust bundle in the actor.
-4. **Run-scoped actors and suspend.** An `actorScope: run` field reuses one actor across a run's steps, suspends it while the run waits, and deletes it when the run finishes. It adds the WorkflowRun UID to the headers the runner sends from Phase 2.
+4. **Run-scoped actors and suspend.** An `actorScope: run` field reuses one actor across a run's steps, suspends it while the run waits, and deletes it when the run finishes. It adds the WorkflowRun UID to the headers the runner sends from Phase 2. A suspended actor's snapshot holds the stdio Secret env values, per-run tokens, and OAuth2 client credentials it received for the life of the run, so the snapshot store needs tight access control and encryption at rest.
 
 ## Files to Change
 
@@ -168,16 +171,16 @@ OttoFlow integrates with kagent in two directions today, and Substrate changes e
 | `api/v1alpha1/agent_types.go` | Add `executionMode`; run `make manifests generate codegen-docs` |
 | `internal/webhook/agent_mcpserver_validators.go` | Reject `substrate` when the feature is off |
 | `cmd/agent-executor/main.go` | Standalone mode flag; Substrate gateway configuration |
-| `internal/workflow/executor/exec_handler.go` | Branch on `executionMode`; map the namespace to an atespace; resolve Agent and MCPServers; forward to the router; reap orphaned actors |
+| `internal/workflow/executor/exec_handler.go` | Branch on `executionMode`; map the namespace to an atespace; resolve Agent and MCPServers; create each actor's egress policy; forward to the router; reap orphaned actors |
 | `internal/workflow/executor/exec_client.go` | Send the WorkflowRun and step headers |
-| `internal/agent/` | New Substrate client (generated `ateapi` stubs plus create, delete, and forward) |
-| `charts/ottoflow/` | Values for the router and `ateapi` endpoints, gateway SPIFFE identity, the namespace-to-atespace mapping, `ActorTemplate` publishing; all off by default |
-| `docs/dev/DESIGN.md` | Add `substrate` to the execution modes |
+| `internal/agent/` | New Substrate client (generated `ateapi` stubs plus create, delete, egress policy, and forward) |
+| `charts/ottoflow/` | Values for the router and `ateapi` endpoints, gateway SPIFFE identity, the namespace-to-atespace mapping, extra egress hosts per namespace, `ActorTemplate` publishing; all off by default |
+| `docs/dev/DESIGN.md` | Mark `substrate` and the `executionMode` field as implemented |
 | `samples/workflows/` | One `substrate` Agent sample; one Option A sample |
 
 ## Testing and Verification
 
-- Unit tests: webhook validation; gateway dispatch with a fake `ateapi` client and router, including `DeleteActor` on success, failure, and cancellation, no re-send after the request reaches the router, refusal of a namespace with no atespace mapping, and the orphan reaper; the standalone executor with resolved Agent and MCPServer specs and no Kubernetes client.
+- Unit tests: webhook validation; gateway dispatch with a fake `ateapi` client and router, including `DeleteActor` on success, failure, and cancellation, no re-send after the request reaches the router, refusal of a namespace with no atespace mapping, egress rules built from the Agent and its MCPServers, `DeleteActor` when `CreateActorEgressPolicy` fails, and the orphan reaper; the standalone executor with resolved Agent and MCPServer specs and no Kubernetes client.
 - e2e on kind with Substrate's kind installer and gVisor: an `agentRef` step on a `substrate` Agent returns the same outputs and token usage as in `service` mode, and no actor is left after the run.
 - Manual: confirm an actor can't reach the Kubernetes API or another actor.
 - Phase 3 e2e: with injection enabled, HTTPS LLM and authenticated MCP calls succeed with only placeholders inside the actor, and fail closed when the atespace isn't granted the Secret's namespace.
