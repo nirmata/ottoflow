@@ -302,3 +302,25 @@ func TestMCPProtocolVersionHeaderWorkaround(t *testing.T) {
 		t.Fatalf("with the header: %v", err)
 	}
 }
+
+// An MCP server's redirect to another origin fails before that origin gets a request.
+// Requiring a hit on the first server means a client that errors before sending anything cannot pass.
+func TestMCPClientRefusesCrossOriginRedirect(t *testing.T) {
+	var redirected, landed atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { landed.Store(true) }))
+	t.Cleanup(other.Close)
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirected.Store(true)
+		http.Redirect(w, r, other.URL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirecting.Close)
+
+	c, err := NewDefaultMCPClientFactory(nil, true).CreateClient(context.Background(), refreshMCPServer(redirecting.URL+"/mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if _, err := c.ListTools(context.Background()); err == nil || !redirected.Load() || landed.Load() {
+		t.Errorf("err %v, redirected %t, landed %t; want an error, true, false", err, redirected.Load(), landed.Load())
+	}
+}

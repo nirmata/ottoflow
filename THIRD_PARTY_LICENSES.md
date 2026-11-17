@@ -29,8 +29,8 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `cloud.google.com/go/auth` | https://github.com/googleapis/google-cloud-go/blob/auth/v0.18.2/auth/LICENSE |
 | `cloud.google.com/go/civil` | https://github.com/googleapis/google-cloud-go/blob/v0.123.0/LICENSE |
 | `cloud.google.com/go/compute/metadata` | https://github.com/googleapis/google-cloud-go/blob/compute/metadata/v0.9.0/compute/metadata/LICENSE |
-| `github.com/GoogleCloudPlatform/kubectl-ai/gollm` | https://github.com/nirmata/kubectl-ai/blob/f1042292f995/gollm/LICENSE |
-| `github.com/GoogleCloudPlatform/kubectl-ai/pkg` | https://github.com/nirmata/kubectl-ai/blob/f1042292f995/LICENSE |
+| `github.com/GoogleCloudPlatform/kubectl-ai/gollm` | https://github.com/nirmata/kubectl-ai/blob/886f82eaeffb/gollm/LICENSE |
+| `github.com/GoogleCloudPlatform/kubectl-ai/pkg` | https://github.com/nirmata/kubectl-ai/blob/886f82eaeffb/LICENSE |
 | `github.com/aws/aws-sdk-go-v2` | https://github.com/aws/aws-sdk-go-v2/blob/v1.41.5/LICENSE.txt |
 | `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | https://github.com/aws/aws-sdk-go-v2/blob/aws/protocol/eventstream/v1.7.8/aws/protocol/eventstream/LICENSE.txt |
 | `github.com/aws/aws-sdk-go-v2/config` | https://github.com/aws/aws-sdk-go-v2/blob/config/v1.32.12/config/LICENSE.txt |
@@ -163,7 +163,7 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/klauspost/compress` | https://github.com/klauspost/compress/blob/v1.20.2/LICENSE |
 | `github.com/klauspost/compress/zstd/internal/xxhash` | https://github.com/klauspost/compress/blob/v1.20.2/zstd/internal/xxhash/LICENSE.txt |
 | `github.com/lucasb-eyer/go-colorful` | https://github.com/lucasb-eyer/go-colorful/blob/v1.3.0/LICENSE |
-| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/v1.4.0/LICENSE |
+| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/2f5b9637ea84/LICENSE |
 | `github.com/mattn/go-isatty` | https://github.com/mattn/go-isatty/blob/v0.0.20/LICENSE |
 | `github.com/mattn/go-runewidth` | https://github.com/mattn/go-runewidth/blob/v0.0.19/LICENSE |
 | `github.com/muesli/reflow` | https://github.com/muesli/reflow/blob/v0.3.0/LICENSE |
