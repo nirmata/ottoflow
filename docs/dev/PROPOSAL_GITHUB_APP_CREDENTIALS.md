@@ -83,7 +83,8 @@ a pod that runs such code is a key an attacker can read.
 
 ## Proposed design
 
-The controller holds the App's private key and serves a token broker. A runner never sees the key. When a
+The controller holds the App's private key and serves a token broker. A runner never sees the key, given
+the install-namespace prerequisite (Threat model, Install-namespace runs). When a
 step needs GitHub, the runner proves which pod it is, and the controller mints an installation token
 narrowed to what that run's Workflow allows.
 
@@ -174,7 +175,8 @@ but not the key, so it does not revoke tokens.
    permission set. It never reads the WorkflowRun spec for scope or trust.
 5. The runner asks again before the token expires.
 
-The key stays in the controller, and tokens are never written to etcd. The repository does not read
+The key stays in the controller, given the install-namespace prerequisite (Threat model, Install-namespace
+runs), and tokens are never written to etcd. The repository does not read
 `authentication.kubernetes.io/*` extras today: `TokenReviewAndSARAuthenticator.AuthenticateRequest`
 returns only the username and drops `status.user.extra` (`internal/auth/sar.go:84`, `:145`). The broker
 uses a variant that also returns the TokenReview's user info, so pod-name and pod-uid come from the one
@@ -190,10 +192,11 @@ which run in the agent-executor.
 - **Who can use the App.** Whoever can create or update a Workflow in a namespace can name that namespace's
   key Secret and set its allowlist and permissions, so Workflow create/update RBAC is App scope there. The
   controller can only read a key Secret the operator listed under `rbac.secretAccess.controller`, and the
-  installation's own grants cap every token. Operators give Workflow, StepTemplate and MCPServer
-  write access only to people they trust with the App (Runner binding). WorkflowRun create or update
-  cannot widen that scope, because of the runner image rule, the runner env and volume rule, the
-  cluster kubeconfig rule, the launch record, run immutability and the runner binding below.
+  installation's own grants cap every token. Operators give Workflow, StepTemplate and MCPServer write
+  access only to people they trust with the App (Runner binding). Outside the namespaces named under
+  Install-namespace runs (Threat model), WorkflowRun create or update cannot widen that scope, because of
+  the runner image rule, the runner env and volume rule, the cluster kubeconfig rule, the launch record,
+  run immutability and the runner binding below.
 - **Runner image rule.** A run author can set `spec.execution.job.image`, and the controller uses it after
   a whitespace check (`workflowrun_controller.go:1346-1352`; the configured image is
   `r.RunnerConfig.RunnerImage`, `:1321-1324`). Code the author controls would otherwise hold a real
@@ -351,15 +354,18 @@ cannot use (b) or (c) (Scoping, Run immutability). The broker needs:
 
 This is surface (B), credential blast radius, in the sandboxing proposal.
 
-- **Key theft.** The key is never in a runner or agent-executor pod the controller creates. A tool that
+- **Key theft.** Given the Install-namespace runs prerequisite below, the key is never in a runner or
+  agent-executor pod the controller creates. A tool that
   reads everything mounted in a runner pod does not find the App key, and the broker-audience token it
   does find asks the broker only for a token within that run's own scope; the broker refuses the API-server
   token. This limits the GitHub App key and the broker's scope, nothing else. Runners can still mount
   configured kubeconfigs and MCP Secrets, and the runner role still reads ConfigMaps and updates
   WorkflowRun status (`charts/ottoflow/templates/clusterrole.yaml:429-458`). The agent-executor serves
   every run, so its own token maps to no WorkflowRun (Open questions, 8).
-- **Image override.** A run that overrides the runner image gets no broker token from the controller, and the
-  broker refuses to mint for its run anyway (Scoping, Runner image rule), so WorkflowRun create does not reach the App.
+- **Image override.** A run that overrides the runner image gets no broker token from the controller, and
+  the broker refuses to mint for its run anyway (Scoping, Runner image rule), so WorkflowRun create does
+  not reach the App through the broker; reading the key directly is covered under Install-namespace runs
+  below.
 - **Env and volume override.** A run that keeps the configured image could set proxy or trust-store env
   and mount a CA to read the installation token in transit. The controller refuses `env`,
   `volumes` and `volumeMounts` on runs of a `githubApp` Workflow, and the broker refuses to mint for a Job
@@ -391,8 +397,18 @@ This is surface (B), credential blast radius, in the sandboxing proposal.
   anyone who can create a pod, or a workload that makes one, in the key Secret's namespace can read the key.
   The controller's refusal (Secret convention) covers only Jobs it creates. Operators treat that namespace
   as the key's trust boundary.
-- **Scope escape.** Mitigated by the Workflow-only field, the namespace-equality check and the
-  pod-uid to Job to recorded Workflow chain above.
+- **Install-namespace runs.** A WorkflowRun can name any `serviceAccountName` in its namespace (Scoping,
+  Authorization key) and set its own image (Scoping, Runner image rule), and cron and trigger runs copy
+  their Workflow's `execution`, so a run in the install namespace can run a custom image as the
+  controller's ServiceAccount and read every key Secret listed under `rbac.secretAccess.controller`,
+  outside the broker's checks. Creating WorkflowRuns, Workflows, pods or workloads that make pods in the
+  install namespace therefore gives the controller's identity, key grant included. In any other namespace
+  with a ServiceAccount that can read a key Secret, the same objects give that ServiceAccount's identity
+  and grant. Prerequisite: only trusted operators
+  can create or update these objects in the install namespace or in any such namespace.
+- **Scope escape.** Through the broker, mitigated by the Workflow-only field, the namespace-equality check
+  and the pod-uid to Job to recorded Workflow chain above; a direct key read rests on the Install-namespace
+  runs prerequisite.
 - **Stolen token.** One token is limited to its repository set, its permission set and one hour.
 - **New endpoint.** The broker is a new authenticated network path. It is off unless the feature flag is
   set, and it reuses the TokenReview and SubjectAccessReview pattern the controller already uses for MCP
