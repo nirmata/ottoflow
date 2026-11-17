@@ -390,7 +390,7 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 
 	err = e.contextManager.InitializeContext(ctx, workflow, workflowRun.Spec.InputValues)
 	if err != nil {
-		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to initialize context: %w", err))
+		return e.failBeforeSteps(ctx, workflow, workflowRun, fmt.Errorf("failed to initialize context: %w", err))
 	}
 
 	if !restoredFromCheckpoint {
@@ -404,13 +404,13 @@ func (e *WorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflow *ottofl
 	// A workflow with no steps would otherwise finish as Succeeded without doing anything.
 	// Record the failure so Phase and Message are set before the runner exits.
 	if len(workflow.Spec.Steps) == 0 {
-		return e.failBeforeSteps(workflow, workflowRun, errors.New("workflow has no steps"))
+		return e.failBeforeSteps(ctx, workflow, workflowRun, errors.New("workflow has no steps"))
 	}
 
 	// Build DAG
 	dag, err := BuildDAG(workflow.Spec.Steps)
 	if err != nil {
-		return e.failBeforeSteps(workflow, workflowRun, fmt.Errorf("failed to build DAG: %w", err))
+		return e.failBeforeSteps(ctx, workflow, workflowRun, fmt.Errorf("failed to build DAG: %w", err))
 	}
 
 	// Initialize step statuses
@@ -715,14 +715,17 @@ func (e *WorkflowExecutor) recordWorkflowFailure(
 // failBeforeSteps records a deterministic pre-step failure so the runner persists Phase=Failed.
 // Retention cleanup keys off Status.CompletionTime, which the success path also sets.
 func (e *WorkflowExecutor) failBeforeSteps(
+	ctx context.Context,
 	workflow *ottoflowv1alpha1.Workflow,
 	workflowRun *ottoflowv1alpha1.WorkflowRun,
 	err error,
 ) error {
+	// Sampled before the deferred checkpoint cleanup runs, which can outlast a SIGTERM.
+	live := ctx.Err() == nil
 	e.recordWorkflowFailure(workflow, workflowRun, err.Error())
 	now := metav1.Now()
 	workflowRun.Status.CompletionTime = &now
-	return err
+	return markIfLive(live, err)
 }
 
 func (e *WorkflowExecutor) recordWorkflowSuccess(
