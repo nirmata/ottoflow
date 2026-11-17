@@ -162,3 +162,5 @@ spec:
   "may this identity invoke *this* workflow". A caller that is allowed in can call every
   workflow the server lists.
 - **No TLS of its own.** Terminate it in front of the Service.
+- **Request bodies are capped at 4 MiB.** A larger POST gets `413 Request Entity Too Large`
+  with a JSON-RPC error.
