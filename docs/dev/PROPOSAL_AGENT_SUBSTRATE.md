@@ -112,10 +112,10 @@ For a `substrate` Agent, the agent-executor's exec handler:
 3. Calls `CreateActor` in that atespace from the executor template named in the gateway's configuration, never a name taken from the Agent or the request, with a generated name that starts with a fixed `ottoflow-` prefix.
 4. Calls `CreateActorEgressPolicy` for the new actor. Substrate sets egress policy per actor: the template's policy covers only its golden actor, and an atespace holds no policy. The gateway builds the rules from the Agent and its MCPServers: the LLM provider's host, the hosts of remote MCP servers, and the extra hosts the operator configures for the namespace, such as package registries that `uvx` and `npx` stdio servers reach. In Phase 3, it adds the `replaceHeaders` rules for each credential. If this call fails, the gateway deletes the actor and fails the step without forwarding.
 5. POSTs the resolved request to `atenet-router` with `ate-target-actor: <atespace>/<actor>`, and waits for the response.
-6. Calls `DeleteActor` when the call finishes, fails, or is cancelled, which also removes the actor's snapshot and egress policy.
+6. Calls `DeleteActor` when the call finishes, fails, or is cancelled, which also removes the actor's snapshot.
 7. Returns the actor's `ExecResponse` to the runner unchanged.
 
-The client spike confirms that an actor runs no code before its egress policy exists, and what an actor with no policy can reach.
+The client spike confirms that an actor runs no code before its egress policy exists, what an actor with no policy can reach, and whether `DeleteActor` also removes the policy. If it doesn't, the gateway deletes the policy before the actor.
 
 The gateway needs a Go client for `ateapi`, generated from Substrate's protos, and a SPIFFE client identity on the router's ingress allowlist.
 
