@@ -108,6 +108,14 @@ kubectl patch secret llm-credentials -n ottoflow -p '{"stringData":{"ANTHROPIC_A
 
 Rotation is eventually consistent: it lands after the kubelet refreshes the mounted Secret (up to the kubelet sync period plus cache propagation), not instantly. See [the upgrade note](../upgrades/agent-executor-key-file.md).
 
+For a script that fetches a key from a token endpoint and patches the Secret, see the [LLM key rotation sample](../../../samples/credential-rotation/README.md).
+
+### In-flight runs during a rotation
+
+- A running agent step keeps the key it read when it started. The next agent step reads the rotated key once the kubelet refreshes the mount.
+- `NIRMATA_*` values (enterprise plugin only) in a runner pod, whether injected from the runner's LLM credentials Secret or set in `spec.execution.job.env`, stay as they were at pod start for the life of that pod (normally the whole run). New runs get the new value.
+- Neither the agent-executor nor the runner retries on an auth failure. Keep the old key valid for at least the kubelet refresh delay plus the longest agent step, and for `NIRMATA_*` values the longest run. Otherwise in-flight steps fail with the provider's auth error.
+
 ## Nirmata LLM credentials (optional)
 
 > **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `google`/`gemini`, and `local`. `azure-openai` is accepted but is not supported (see the [Agent API reference](../reference/api/agent.md)); the admission webhook warns when it is set. The Nirmata LLM credentials below apply only when running with the enterprise plugin.
