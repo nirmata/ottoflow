@@ -53,6 +53,9 @@ type MCPToolServer struct {
 
 	mcp    *mcpserver.MCPServer
 	server *http.Server
+
+	// RunLedger counts runs admitted but not yet in the cache; the controller points it at the scheduler's.
+	RunLedger *runLedger
 }
 
 // NewMCPToolServer builds a server listening on addr. authenticator is
@@ -69,6 +72,7 @@ func NewMCPToolServer(c client.Client, authenticator Authenticator, addr string)
 		addr:          addr,
 		callTimeout:   defaultMCPCallTimeout,
 		pollInterval:  defaultMCPPollInterval,
+		RunLedger:     newRunLedger(),
 	}
 
 	// listChanged is not advertised. The tool set does follow the Workflows in

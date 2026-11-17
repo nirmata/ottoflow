@@ -370,6 +370,7 @@ func main() {
 			setupLog.Error(err, "unable to create MCP server")
 			os.Exit(1)
 		}
+		mcpToolServer.RunLedger = scheduler.RunLedger
 		if err := mgr.Add(mcpToolServer); err != nil {
 			setupLog.Error(err, "unable to add MCP server to manager")
 			os.Exit(1)
