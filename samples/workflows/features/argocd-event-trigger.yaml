@@ -27,8 +27,10 @@ spec:
   inputs:
     - name: appName
       description: ArgoCD Application name
+      required: true
     - name: appNamespace
       description: Target namespace the application deploys into
+      required: true
 
   triggers:
     - event:
