@@ -71,7 +71,7 @@ var _ = Describe("RoutingAgentExecutor", func() {
 		Entry("unknown", "some-unrecognized-provider"),
 	)
 
-	disabled := &ottoflowv1alpha1.AgentThinking{Type: "disabled"}
+	typeOnly := &ottoflowv1alpha1.AgentThinking{Type: "disabled"}
 	DescribeTable("refuses a non-empty spec.thinking on every provider but anthropic, before any delegate runs",
 		func(provider string, thinking *ottoflowv1alpha1.AgentThinking) {
 			agentCRD := &ottoflowv1alpha1.Agent{
@@ -85,13 +85,13 @@ var _ = Describe("RoutingAgentExecutor", func() {
 			Expect(err).To(MatchError(ContainSubstring("spec.thinking is supported only for modelProvider anthropic")))
 			Expect(nirmataMock.GetCallCount() + defaultMock.GetCallCount()).To(Equal(0))
 		},
-		Entry("nirmata", "nirmata", disabled),
-		Entry("empty", "", disabled),
-		Entry("openai", "openai", disabled),
-		Entry("azure-openai", "azure-openai", disabled),
-		Entry("google", "google", disabled),
-		Entry("gemini", "gemini", disabled),
-		Entry("local", "local", disabled),
+		Entry("nirmata", "nirmata", typeOnly),
+		Entry("empty", "", typeOnly),
+		Entry("openai", "openai", typeOnly),
+		Entry("azure-openai", "azure-openai", typeOnly),
+		Entry("google", "google", typeOnly),
+		Entry("gemini", "gemini", typeOnly),
+		Entry("local", "local", typeOnly),
 		Entry("effort only on openai", "openai", &ottoflowv1alpha1.AgentThinking{Effort: "low"}),
 	)
 
