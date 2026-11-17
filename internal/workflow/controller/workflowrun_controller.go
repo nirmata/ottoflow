@@ -361,7 +361,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		(workflowRun.Status.Execution.JobName != jobName ||
 			workflowRun.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 		newPhase := string(ottoflowv1alpha1.WorkflowRunPhaseRunning)
-		newMsg := "Runner Job is running"
+		newMsg := activeRunnerMessage(workflowRun.Status.Execution.Message, podList.Items)
 		if workflowRun.Status.Execution.Phase != newPhase || workflowRun.Status.Execution.Message != newMsg {
 			workflowRun.Status.Execution.Phase = newPhase
 			workflowRun.Status.Execution.Message = newMsg
@@ -1808,6 +1808,10 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	switch {
 	case isDeterministicTermination(terminationReason):
 		msg = fmt.Sprintf("Runner Job %s failed with non-retryable reason: %s", jobName, terminationReason)
+		if execution := workflowRun.Status.Execution; terminationReason == batchv1.JobReasonDeadlineExceeded &&
+			execution != nil && execution.JobName == jobName && strings.HasPrefix(execution.Message, pendingCausePrefix) {
+			msg += "; " + execution.Message
+		}
 	case terminationReason != "":
 		msg = fmt.Sprintf("Runner Job %s failed (reason: %s, attempts: %d)", jobName, terminationReason, attempts+1)
 	default:

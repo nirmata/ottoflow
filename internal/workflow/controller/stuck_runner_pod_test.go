@@ -860,3 +860,115 @@ func TestHandleStuckRunnerPod_RetriesJobDeleteInPlace(t *testing.T) {
 		})
 	}
 }
+
+// reconcilePendingRun reconciles an active Job whose execution carries execMsg, with the given pods.
+func reconcilePendingRun(t *testing.T, execMsg string, pods ...client.Object) *ottoflowv1alpha1.WorkflowRun {
+	t.Helper()
+	ctx := context.Background()
+	ns := defaultNamespace
+	wf := &ottoflowv1alpha1.Workflow{
+		ObjectMeta: metav1.ObjectMeta{Name: "wf", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowSpec{Steps: []ottoflowv1alpha1.Step{{Name: "s1", Expressions: []ottoflowv1alpha1.Expression{{Name: "x", Expression: `"ok"`}}}}},
+	}
+	wr := &ottoflowv1alpha1.WorkflowRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1", Namespace: ns},
+		Spec:       ottoflowv1alpha1.WorkflowRunSpec{WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: "wf", Namespace: ns}},
+		Status: ottoflowv1alpha1.WorkflowRunStatus{
+			Phase:     ottoflowv1alpha1.WorkflowRunPhaseRunning,
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{JobName: "run-1-runner", Phase: "Pending", Message: execMsg},
+		},
+	}
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "run-1-runner", Namespace: ns},
+		Status:     batchv1.JobStatus{Active: 1},
+	}
+	objs := append([]client.Object{wf, wr, job,
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "ottoflow-role"}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "controller-manager", Namespace: ns}}}, pods...)
+	fakeClient := fake.NewClientBuilder().WithScheme(unitTestScheme).WithStatusSubresource(wr).WithObjects(objs...).Build()
+	r := &WorkflowRunReconciler{
+		Client:       fakeClient,
+		Scheme:       unitTestScheme,
+		RunnerConfig: RunnerConfig{RunnerServiceAccount: "controller-manager", RunnerClusterRole: "ottoflow-role"},
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: wr.Name, Namespace: ns}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got := &ottoflowv1alpha1.WorkflowRun{}
+	if err := fakeClient.Get(ctx, types.NamespacedName{Name: wr.Name, Namespace: ns}, got); err != nil {
+		t.Fatalf("get WorkflowRun: %v", err)
+	}
+	return got
+}
+
+func pendingRunnerPod(status corev1.PodStatus) *corev1.Pod {
+	status.Phase = corev1.PodPending
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "run-1-runner-abcde", Namespace: defaultNamespace,
+			Labels:            map[string]string{"job-name": "run-1-runner"},
+			CreationTimestamp: metav1.NewTime(time.Now()),
+		},
+		Status: status,
+	}
+}
+
+func waitingStatus(reason, msg string) corev1.PodStatus {
+	return corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+		Name:  "workflow-runner",
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: reason, Message: msg}},
+	}}}
+}
+
+func TestReconcile_PendingPodUnschedulable_RecordsCause(t *testing.T) {
+	pod := pendingRunnerPod(corev1.PodStatus{Conditions: []corev1.PodCondition{{
+		Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
+		Message: "0/3 nodes are available: 3 Insufficient cpu.",
+	}}})
+	got := reconcilePendingRun(t, "Runner Job created", pod)
+	msg := got.Status.Execution.Message
+	if !strings.Contains(msg, "Unschedulable") || !strings.Contains(msg, "3 Insufficient cpu") {
+		t.Errorf("Execution.Message = %q, want the Unschedulable reason and scheduler message", msg)
+	}
+}
+
+func TestReconcile_PendingPodImagePullBackOff_RecordsCause(t *testing.T) {
+	pod := pendingRunnerPod(waitingStatus("ImagePullBackOff", `Back-off pulling image "example.invalid/runner:v1"`))
+	got := reconcilePendingRun(t, "Runner Job created", pod)
+	msg := got.Status.Execution.Message
+	if !strings.Contains(msg, "ImagePullBackOff") || !strings.Contains(msg, "example.invalid/runner:v1") {
+		t.Errorf("Execution.Message = %q, want the ImagePullBackOff reason and kubelet message", msg)
+	}
+}
+
+func TestReconcile_PendingPodNormalStartup_StaysRunning(t *testing.T) {
+	running := pendingRunnerPod(corev1.PodStatus{})
+	running.Status.Phase = corev1.PodRunning
+	for name, pod := range map[string]*corev1.Pod{
+		"ContainerCreating": pendingRunnerPod(waitingStatus("ContainerCreating", "")),
+		"Running":           running,
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := reconcilePendingRun(t, "Runner Job created", pod)
+			if got.Status.Execution.Message != "Runner Job is running" {
+				t.Errorf("Execution.Message = %q, want %q", got.Status.Execution.Message, "Runner Job is running")
+			}
+		})
+	}
+}
+
+func TestReconcile_NoPodListed_KeepsRecordedCause(t *testing.T) {
+	want := pendingCausePrefix + "Unschedulable: 0/3 nodes are available"
+	got := reconcilePendingRun(t, want)
+	if got.Status.Execution.Message != want {
+		t.Errorf("Execution.Message = %q, want the recorded cause kept", got.Status.Execution.Message)
+	}
+}
+
+func TestActiveRunnerMessage_ImagePullReasonFlip_KeepsMessage(t *testing.T) {
+	cur := pendingCausePrefix + "ErrImagePull: x"
+	pod := pendingRunnerPod(waitingStatus("ImagePullBackOff", "y"))
+	if got := activeRunnerMessage(cur, []corev1.Pod{*pod}); got != cur {
+		t.Errorf("message = %q, want %q unchanged across the ErrImagePull/ImagePullBackOff flip", got, cur)
+	}
+}
