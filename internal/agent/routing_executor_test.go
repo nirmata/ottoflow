@@ -71,40 +71,43 @@ var _ = Describe("RoutingAgentExecutor", func() {
 		Entry("unknown", "some-unrecognized-provider"),
 	)
 
-	DescribeTable("refuses spec.thinking on every provider but anthropic, before any delegate runs",
-		func(provider string) {
+	disabled := &ottoflowv1alpha1.AgentThinking{Type: "disabled"}
+	DescribeTable("refuses a non-empty spec.thinking on every provider but anthropic, before any delegate runs",
+		func(provider string, thinking *ottoflowv1alpha1.AgentThinking) {
 			agentCRD := &ottoflowv1alpha1.Agent{
 				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
 				Spec: ottoflowv1alpha1.AgentSpec{
 					ModelProvider: provider,
-					Thinking:      &ottoflowv1alpha1.AgentThinking{Type: "disabled"},
+					Thinking:      thinking,
 				},
 			}
 			_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
 			Expect(err).To(MatchError(ContainSubstring("spec.thinking is supported only for modelProvider anthropic")))
 			Expect(nirmataMock.GetCallCount() + defaultMock.GetCallCount()).To(Equal(0))
 		},
-		Entry("nirmata", "nirmata"),
-		Entry("empty", ""),
-		Entry("openai", "openai"),
-		Entry("azure-openai", "azure-openai"),
-		Entry("google", "google"),
-		Entry("gemini", "gemini"),
-		Entry("local", "local"),
+		Entry("nirmata", "nirmata", disabled),
+		Entry("empty", "", disabled),
+		Entry("openai", "openai", disabled),
+		Entry("azure-openai", "azure-openai", disabled),
+		Entry("google", "google", disabled),
+		Entry("gemini", "gemini", disabled),
+		Entry("local", "local", disabled),
+		Entry("effort only on openai", "openai", &ottoflowv1alpha1.AgentThinking{Effort: "low"}),
 	)
 
-	It("passes spec.thinking on anthropic to the default delegate", func() {
-		agentCRD := &ottoflowv1alpha1.Agent{
-			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
-			Spec: ottoflowv1alpha1.AgentSpec{
-				ModelProvider: "anthropic",
-				Thinking:      &ottoflowv1alpha1.AgentThinking{Effort: "low"},
-			},
-		}
-		_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(defaultMock.GetCallCount()).To(Equal(1))
-	})
+	DescribeTable("passes spec.thinking to the default delegate",
+		func(provider string, thinking *ottoflowv1alpha1.AgentThinking) {
+			agentCRD := &ottoflowv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+				Spec:       ottoflowv1alpha1.AgentSpec{ModelProvider: provider, Thinking: thinking},
+			}
+			_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defaultMock.GetCallCount()).To(Equal(1))
+		},
+		Entry("anthropic with effort", "anthropic", &ottoflowv1alpha1.AgentThinking{Effort: "low"}),
+		Entry("an empty block on openai, which sends nothing", "openai", &ottoflowv1alpha1.AgentThinking{}),
+	)
 
 	It("constructs real delegates that both satisfy AgentExecutor", func() {
 		real := NewRoutingAgentExecutor(nil)

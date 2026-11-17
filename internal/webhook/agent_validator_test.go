@@ -47,11 +47,24 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			wantContains: []string{"azure-openai is not supported"},
 		},
 		{
-			name:         "thinking on a provider other than anthropic is reported",
+			name:         "non-empty thinking on a provider other than anthropic is reported",
 			provider:     "openai",
 			thinking:     &ottoflowv1alpha1.AgentThinking{Type: "disabled"},
 			wantCount:    1,
 			wantContains: []string{"spec.thinking", "only for modelProvider anthropic", "FAIL", `"openai"`},
+		},
+		{
+			name:         "effort-only thinking on a provider other than anthropic is reported",
+			provider:     "openai",
+			thinking:     &ottoflowv1alpha1.AgentThinking{Effort: "low"},
+			wantCount:    1,
+			wantContains: []string{"spec.thinking", "only for modelProvider anthropic", "FAIL", `"openai"`},
+		},
+		{
+			name:      "empty thinking on a provider other than anthropic produces no warnings",
+			provider:  "openai",
+			thinking:  &ottoflowv1alpha1.AgentThinking{},
+			wantCount: 0,
 		},
 		{
 			name:      "thinking on anthropic produces no warnings",

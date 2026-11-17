@@ -65,7 +65,7 @@ type AgentSpec struct {
 	OutputExtraction *OutputExtraction `json:"outputExtraction,omitempty"`
 
 	// Thinking sets the thinking type and effort sent with each LLM request.
-	// Supported only for modelProvider anthropic; on any other provider the agent run fails.
+	// Supported only for modelProvider anthropic; on another provider a non-empty one fails the run.
 	// +optional
 	Thinking *AgentThinking `json:"thinking,omitempty"`
 
@@ -162,6 +162,9 @@ type AgentThinking struct {
 	// +optional
 	Effort string `json:"effort,omitempty"`
 }
+
+// IsSet reports whether t sets any field; nil or an empty block sends nothing.
+func (t *AgentThinking) IsSet() bool { return t != nil && *t != AgentThinking{} }
 
 // AgentStatus defines the observed state of Agent
 type AgentStatus struct {

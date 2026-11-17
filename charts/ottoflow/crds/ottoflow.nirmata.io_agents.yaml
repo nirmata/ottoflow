@@ -218,7 +218,7 @@ spec:
               thinking:
                 description: |-
                   Thinking sets the thinking type and effort sent with each LLM request.
-                  Supported only for modelProvider anthropic; on any other provider the agent run fails.
+                  Supported only for modelProvider anthropic; on another provider a non-empty one fails the run.
                 properties:
                   effort:
                     description: Effort is sent as the request's output_config.effort.

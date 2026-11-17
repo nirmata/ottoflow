@@ -73,7 +73,7 @@ _Appears in:_
 | `modelName` _string_ | ModelName is the specific model to use (e.g., "gpt-4", "claude-3-opus")<br />Default depends on provider |  | Optional: \{\} <br /> |
 | `mcpTools` _string array_ | MCPTools is a list of MCP tools the agent can use<br />Each tool is specified as "server:tool" (e.g., "kubernetes-mcp:get-resource") |  | Optional: \{\} <br /> |
 | `outputExtraction` _[OutputExtraction](#outputextraction)_ | OutputExtraction defines how to extract outputs from agent responses |  | Optional: \{\} <br /> |
-| `thinking` _[AgentThinking](#agentthinking)_ | Thinking sets the thinking type and effort sent with each LLM request.<br />Supported only for modelProvider anthropic; on any other provider the agent run fails. |  | Optional: \{\} <br /> |
+| `thinking` _[AgentThinking](#agentthinking)_ | Thinking sets the thinking type and effort sent with each LLM request.<br />Supported only for modelProvider anthropic; on another provider a non-empty one fails the run. |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the Kubernetes service account to use for agent execution<br />Used for RBAC and authentication |  | Optional: \{\} <br /> |
 | `executorImage` _string_ | ExecutorImage is a custom container image for agent execution<br />If not specified, uses the default executor image (ghcr.io/nirmata/ottoflow/agent-executor:latest) |  | Optional: \{\} <br /> |
 | `serviceName` _string_ | ServiceName is the name of the AgentExecutor Service<br />If not specified, uses default: ottoflow-agent-executor |  | Optional: \{\} <br /> |
