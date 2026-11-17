@@ -134,9 +134,9 @@ func (e *WorkflowExecutor) executeMutate(ctx context.Context, workflowRun *ottof
 		klog.V(3).InfoS("Mutate step applied patch", logging.KeyStep, step.Name, "resource", key.String())
 	}
 
-	// Optional outputs
+	// Optional outputs: mutate.outputs, then step-level outputs
 	var outputs map[string]interface{}
-	if len(mutate.Outputs) > 0 {
+	if len(mutate.Outputs) > 0 || len(step.Outputs) > 0 {
 		outputContext := make(map[string]interface{})
 		for k, v := range contextData {
 			outputContext[k] = v
@@ -151,6 +151,9 @@ func (e *WorkflowExecutor) executeMutate(ctx context.Context, workflowRun *ottof
 				return nil, fmt.Errorf("failed to evaluate mutate output %q: %w", outputName, err)
 			}
 			outputs[outputName] = result
+		}
+		if err := e.evaluateStepLevelOutputs(ctx, step, outputVars, outputs); err != nil {
+			return nil, err
 		}
 		if err := e.contextManager.WriteStepOutputs(ctx, step.Name, outputs); err != nil {
 			return nil, fmt.Errorf("failed to write mutate step outputs: %w", err)

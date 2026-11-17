@@ -82,7 +82,7 @@ Each step has a unique **name** (camelCase) and exactly one execution type (expr
 | `message` | string | No | Human-readable description. |
 | `dependsOn` | []string | No | Step names that must complete before this step. Dependencies are **explicit only** — referencing `variables.x` from another step does not create an ordering dependency; list the producing step here. |
 | `expressions` | [][Expression](#expression) | No | CEL expressions for **expression steps only**. A step takes exactly one action: when a step has an action field (resourceQuery, agentRef, etc.), its `expressions` are **not** evaluated. |
-| `outputs` | [][Output](#output) | No | Key-value pairs written to shared context (readable as `variables.<name>` by later steps). Evaluated for all step types, including resourceQuery steps (in addition to `resourceQuery.outputs`). |
+| `outputs` | [][Output](#output) | No | Key-value pairs written to shared context (readable as `variables.<name>` by later steps). Evaluated for every step type except workflowRef and waitForCallback, and ignored at the call site of a stepTemplateRef step. On resourceQuery, mutate and prometheusQuery steps they are evaluated after the type's own outputs (`resourceQuery.outputs`, `mutate.outputs`, `prometheusQuery.outputs`). |
 | `matchConditions` | [][MatchCondition](#matchcondition) | No | Step runs only if ALL conditions evaluate to true. |
 | `retry` | [RetryPolicy](#retrypolicy) | No | Accepted but not applied. |
 | `timeout` | string | No | Accepted but not applied. Applied timeouts are set separately, such as `waitForCallback.timeout` and `externalAgentRef.timeout`. |
@@ -191,7 +191,7 @@ Prometheus (PromQL) query step. Runs a PromQL query with optional template varia
 | `prometheusQuery.timeRange` | string | Yes | Lookback for the instant query (e.g. `"7d"`, `"1h"`, `"5m"`). Supports `d` (days). |
 | `prometheusQuery.step` | string | No | Reserved for future range-query support. |
 | `prometheusQuery.variables` | map[string]string | No | Placeholder name → CEL expression. Evaluated in workflow context; results substituted into `query`. |
-| `prometheusQuery.outputs` | map[string]string | No | Output name → CEL expression. Expressions have `result` in scope (`result.type`, `result.samples`, `result.value`). If omitted, step writes full result as `result`. |
+| `prometheusQuery.outputs` | map[string]string | No | Output name → CEL expression. Expressions have `result` in scope (`result.type`, `result.samples`, `result.value`). If omitted, step writes full result as `result`. Step-level `outputs` are evaluated after these, with `result` in scope, and can reference them as `variables.<name>`. |
 
 **Example:**
 
@@ -216,7 +216,7 @@ Kyverno-style mutate step that patches a single Kubernetes resource. The step GE
 | `mutate.patchType` | string | Yes | `ApplyConfiguration` or `JSONPatch`. |
 | `mutate.applyConfiguration` | object | When patchType is ApplyConfiguration | `expression`: CEL that returns a **partial object** (map) to deep-merge onto the resource. Note: CEL `+` does not work on maps — build a map literal instead of adding to `object.metadata.labels`. |
 | `mutate.jsonPatch` | object | When patchType is JSONPatch | `expression`: CEL that returns a list of `{op, path, value?}` (RFC 6902), or `operations`: static list of ops. |
-| `mutate.outputs` | map[string]string | No | Output name to CEL; `object` refers to the patched resource. |
+| `mutate.outputs` | map[string]string | No | Output name to CEL; `object` refers to the patched resource. Step-level `outputs` are evaluated after these, with `object` in scope, and can reference them as `variables.<name>`. |
 
 **StepMutateTarget:** `apiVersion`, `resource` (kind), `namespace` (optional CEL; omit for workflow namespace), `name` (CEL).
 
