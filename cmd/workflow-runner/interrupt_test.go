@@ -664,8 +664,8 @@ func TestGuardedStatusWritesPreserveTerminalRun(t *testing.T) {
 	}
 }
 
-// A runner whose run moved on to a newer attempt must not overwrite it with its interrupted or
-// failure write; a write at the same attempt still lands.
+// A runner whose run moved on to a newer attempt must not overwrite it with its interrupted, failure
+// or post-signal success write; a write at the same attempt still lands.
 func TestGuardedStatusWritesFenceNewerAttempt(t *testing.T) {
 	writers := map[string]func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun){
 		"interrupted": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
@@ -676,6 +676,13 @@ func TestGuardedStatusWritesFenceNewerAttempt(t *testing.T) {
 		},
 		"failure": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
 			persistExecutionFailure(context.Background(), c, key, run, "job", "pod", "boom")
+		},
+		// After the signal the success write uses preserveTerminalStatus; no Job object, so the Job check fails open.
+		"success-after-signal": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+			persistExecutionSuccess(ctx, c, key, run, "job", "pod")
 		},
 	}
 	storedAt := func(phase ottoflowv1alpha1.WorkflowRunPhase, attempts int32) *ottoflowv1alpha1.WorkflowRun {
