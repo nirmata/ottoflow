@@ -81,7 +81,7 @@ readiness probe fetches the card, so it stays public). A caller must present
 
 Any other request gets a bare `401 Unauthorized`; the reason is logged by serve-a2a at verbosity 4.
 A token minted with the default audience is rejected. On a cluster that issues legacy
-Secret-based ServiceAccount tokens, those are rejected too.
+Secret-based ServiceAccount tokens, those are rejected too. The SubjectAccessReview asks the API server's whole authorizer chain, not only RBAC: on a cluster with an authorization webhook ahead of RBAC, a webhook that allows `invoke` on `callers.gate.ottoflow.nirmata.io` lets the caller in with no Role or binding, and one that denies it refuses the caller even when a binding exists.
 
 The chart (with `serveA2A.enabled` and `rbac.create`) creates two ClusterRoles but binds neither,
 because the ServiceAccounts live in your namespaces. `<fullname>` is the chart's `ottoflow.fullname`:
