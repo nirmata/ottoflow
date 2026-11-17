@@ -277,6 +277,78 @@ var _ = Describe("PrometheusQuery Step Execution", func() {
 		Expect(result["value"]).To(Equal(42.0))
 	})
 
+	It("step-level outputs: should see prometheusQuery.outputs as variables", func() {
+		mockClient := &mockPrometheusClient{
+			result: &mockPrometheusResult{
+				typ: "vector",
+				samples: []PrometheusSample{
+					&mockPrometheusSample{metric: map[string]string{"pod": "p"}, value: 0.5, ts: time.Now()},
+				},
+			},
+		}
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, mockClient, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		workflow := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "q",
+						PrometheusQuery: &ottoflowv1alpha1.StepPrometheusQuery{
+							Query:     "up",
+							TimeRange: "5m",
+							Outputs:   map[string]string{"count": "size(result.samples)"},
+						},
+						Outputs: []ottoflowv1alpha1.Output{{Name: "doubled", Expression: `variables.count * 2`}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+		Expect(workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)).To(Succeed())
+		contextData, err := workflowExecutor.GetContextManager().ReadContext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		variables := contextData["variables"].(map[string]interface{})
+		Expect(variables["count"]).To(BeEquivalentTo(1))
+		Expect(variables["doubled"]).To(BeEquivalentTo(2))
+	})
+
+	It("step-level outputs: should be written alongside the default result", func() {
+		mockClient := &mockPrometheusClient{result: &mockPrometheusResult{typ: "vector"}}
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, mockClient, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		workflow := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "q",
+						PrometheusQuery: &ottoflowv1alpha1.StepPrometheusQuery{
+							Query:     "up",
+							TimeRange: "5m",
+						},
+						Outputs: []ottoflowv1alpha1.Output{{Name: "kind", Expression: `result.type`}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+		Expect(workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)).To(Succeed())
+		contextData, err := workflowExecutor.GetContextManager().ReadContext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		variables := contextData["variables"].(map[string]interface{})
+		Expect(variables).To(HaveKey("result"))
+		Expect(variables["kind"]).To(Equal("vector"))
+	})
+
 	It("should fail on invalid timeRange", func() {
 		mockClient := &mockPrometheusClient{result: &mockPrometheusResult{typ: "vector", samples: nil}}
 		workflowExecutor, err := NewWorkflowExecutorWithAgentExecutor(

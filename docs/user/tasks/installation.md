@@ -52,7 +52,7 @@ See [`cli/README.md`](../../../cli/README.md) for CLI usage and flags.
 
 **Option A: Via Helm (recommended)**
 
-Use `helm upgrade --install` so installs and upgrades both work:
+Before every upgrade, apply the CRDs first (see [Upgrading](#upgrading)). Use `helm upgrade --install` to install or upgrade:
 
 From OCI registry (recommended, works for public and private repos):
 
@@ -89,6 +89,12 @@ kubectl apply -f config/generated/install.yaml
 See the [Helm Chart README](../../../charts/ottoflow/README.md) for chart options and the [Configuration Reference](../reference/configuration.md) for all flags and environment variables.
 
 ## Upgrading
+
+Helm never upgrades CRDs. Before every `helm upgrade`, apply the CRDs for the version you are upgrading to:
+
+```bash
+helm show crds oci://ghcr.io/nirmata/ottoflow --version <the version you are upgrading to> | kubectl apply --server-side --force-conflicts -f -
+```
 
 Read the [upgrade notes](../upgrades/) before you upgrade. Chart-specific steps are in the chart README's [Upgrading](../../../charts/ottoflow/README.md#upgrading) section, and A2A caller authentication is in [Securing A2A callers](workflows-as-a2a-agents.md#securing-a2a-callers).
 

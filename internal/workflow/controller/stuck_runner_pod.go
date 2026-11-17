@@ -121,6 +121,60 @@ func podCondition(pod *corev1.Pod, t corev1.PodConditionType) *corev1.PodConditi
 	return nil
 }
 
+// pendingCausePrefix marks an Execution.Message the controller wrote to explain a pod that has
+// not started. The runner replaces Execution at startup, so the marker cannot outlive a healthy run.
+const pendingCausePrefix = "runner pod never started: "
+
+// pendingPodCause returns why the first Pending runner pod has not started: PodScheduled=False, or a
+// container Waiting for a reason other than normal startup. ok is false when there is no such pod.
+func pendingPodCause(pods []corev1.Pod) (reason, detail string, ok bool) {
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+		if c := podCondition(pod, corev1.PodScheduled); c != nil && c.Status == corev1.ConditionFalse {
+			return c.Reason, c.Message, true
+		}
+		for _, cs := range pod.Status.ContainerStatuses {
+			if w := cs.State.Waiting; w != nil && w.Reason != "" &&
+				w.Reason != "ContainerCreating" && w.Reason != "PodInitializing" {
+				return w.Reason, w.Message, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// activeRunnerMessage is the Execution.Message for an active Job whose current message is cur.
+func activeRunnerMessage(cur string, pods []corev1.Pod) string {
+	reason, detail, ok := pendingPodCause(pods)
+	switch {
+	case ok && samePendingCause(cur, reason):
+		// The scheduler message carries node counts that change every attempt; rewrite only when the cause changes.
+		return cur
+	case ok:
+		return pendingCausePrefix + reason + ": " + detail
+	case len(pods) == 0 && strings.HasPrefix(cur, pendingCausePrefix):
+		// No pod listed (cache skew, or the pod List failed): keep the recorded cause for the deadline message.
+		return cur
+	}
+	return "Runner Job is running"
+}
+
+// samePendingCause reports whether cur already records reason. ErrImagePull and ImagePullBackOff count as
+// one cause: the kubelet alternates them on every pull retry, which would otherwise rewrite status twice per retry.
+func samePendingCause(cur, reason string) bool {
+	rest, ok := strings.CutPrefix(cur, pendingCausePrefix)
+	if !ok {
+		return false
+	}
+	recorded, _, _ := strings.Cut(rest, ": ")
+	return recorded == reason || isImagePullReason(recorded) && isImagePullReason(reason)
+}
+
+func isImagePullReason(r string) bool { return r == "ErrImagePull" || r == "ImagePullBackOff" }
+
 // unresolvedRefWaitingReasons are container Waiting.Reason values that indicate a pod will
 // never start on its own — most commonly, the kubelet could not resolve a Secret or ConfigMap
 // key referenced from the pod spec. Whether a referenced Secret/ConfigMap (or key) actually

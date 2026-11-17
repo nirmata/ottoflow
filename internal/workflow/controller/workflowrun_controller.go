@@ -361,7 +361,7 @@ func (r *WorkflowRunReconciler) reconcileJobExecution(ctx context.Context, req c
 		(workflowRun.Status.Execution.JobName != jobName ||
 			workflowRun.Status.Execution.Phase != string(ottoflowv1alpha1.WorkflowRunPhaseFailed)) {
 		newPhase := string(ottoflowv1alpha1.WorkflowRunPhaseRunning)
-		newMsg := "Runner Job is running"
+		newMsg := activeRunnerMessage(workflowRun.Status.Execution.Message, podList.Items)
 		if workflowRun.Status.Execution.Phase != newPhase || workflowRun.Status.Execution.Message != newMsg {
 			workflowRun.Status.Execution.Phase = newPhase
 			workflowRun.Status.Execution.Message = newMsg
@@ -611,65 +611,17 @@ func (r *WorkflowRunReconciler) ensureRunnerAccess(ctx context.Context, workflow
 
 	clusterRoleBindingName := workflowRunnerRoleBindingName(workflowRun.Namespace, serviceAccountName)
 	clusterRoleBindingKey := types.NamespacedName{Name: clusterRoleBindingName}
+	desiredClusterRoleBinding := buildRunnerClusterRoleBinding(clusterRoleBindingName, workflowRunnerClusterRoleName(r.RunnerConfig), serviceAccountName, workflowRun.Namespace)
 	clusterRoleBinding := &rbacv1.ClusterRoleBinding{}
 	if err := r.Get(ctx, clusterRoleBindingKey, clusterRoleBinding); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
 		}
-		clusterRoleBinding = buildRunnerClusterRoleBinding(clusterRoleBindingName, workflowRunnerClusterRoleName(r.RunnerConfig), serviceAccountName, workflowRun.Namespace)
-		if err := r.Create(ctx, clusterRoleBinding); err != nil && !apierrors.IsAlreadyExists(err) {
+		if err := r.Create(ctx, desiredClusterRoleBinding); err != nil && !apierrors.IsAlreadyExists(err) {
 			return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
 		}
-	} else {
-		// Only update bindings that we manage; avoid overwriting user-managed ClusterRoleBindings with the same name
-		const partOfLabel = "app.kubernetes.io/part-of"
-		if clusterRoleBinding.Labels == nil || clusterRoleBinding.Labels[partOfLabel] != ottoflowPartOf {
-			return fmt.Errorf("ClusterRoleBinding %s exists but is not managed by OttoFlow (missing label %s=ottoflow); refusing to update", clusterRoleBindingName, partOfLabel)
-		}
-
-		desiredRoleName := workflowRunnerClusterRoleName(r.RunnerConfig)
-		if clusterRoleBinding.RoleRef.Name != desiredRoleName {
-			// RoleRef is immutable on an existing ClusterRoleBinding, so migrating to a new
-			// (narrower) role requires delete-and-recreate rather than an in-place Update.
-			if err := r.Delete(ctx, clusterRoleBinding, client.Preconditions{UID: &clusterRoleBinding.UID}); client.IgnoreNotFound(err) != nil {
-				return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
-			}
-			fresh := buildRunnerClusterRoleBinding(clusterRoleBindingName, desiredRoleName, serviceAccountName, workflowRun.Namespace)
-			if err := r.Create(ctx, fresh); err != nil {
-				if apierrors.IsAlreadyExists(err) {
-					// Another reconcile (or a stale cache) recreated the binding concurrently.
-					// Check whether it already landed on the desired role before requeuing.
-					recreated := &rbacv1.ClusterRoleBinding{}
-					if getErr := r.Get(ctx, clusterRoleBindingKey, recreated); getErr != nil {
-						if apierrors.IsNotFound(getErr) {
-							return errRequeueRunnerAccess
-						}
-						return classifyRunnerAccessErr(getErr, "ClusterRoleBinding", clusterRoleBindingKey)
-					}
-					if recreated.RoleRef.Name != desiredRoleName {
-						return errRequeueRunnerAccess
-					}
-				} else if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) {
-					return fmt.Errorf("cannot bind ClusterRoleBinding %s to role %s (verify the controller holds 'bind' on that role and the role is valid): %w", clusterRoleBindingName, desiredRoleName, err)
-				} else {
-					return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
-				}
-			}
-		} else if len(clusterRoleBinding.Subjects) != 1 ||
-			clusterRoleBinding.Subjects[0].Kind != "ServiceAccount" ||
-			clusterRoleBinding.Subjects[0].Name != serviceAccountName ||
-			clusterRoleBinding.Subjects[0].Namespace != workflowRun.Namespace {
-			clusterRoleBinding.Subjects = []rbacv1.Subject{
-				{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: workflowRun.Namespace,
-				},
-			}
-			if err := r.Update(ctx, clusterRoleBinding); err != nil {
-				return classifyRunnerAccessErr(err, "ClusterRoleBinding", clusterRoleBindingKey)
-			}
-		}
+	} else if err := r.reconcileExistingClusterRoleBinding(ctx, "ClusterRoleBinding", clusterRoleBinding, desiredClusterRoleBinding); err != nil {
+		return err
 	}
 
 	// Ensure agent-executor-caller ClusterRoleBinding so this runner SA can call the agent executor (RBAC auth).
@@ -848,23 +800,37 @@ func (r *WorkflowRunReconciler) ensureAgentExecutorCallerBinding(ctx context.Con
 	if existing == nil {
 		return classifyRunnerAccessErr(client.IgnoreAlreadyExists(r.Create(ctx, desired)), "caller ClusterRoleBinding", key)
 	}
-	const partOfLabel = "app.kubernetes.io/part-of"
-	if existing.Labels == nil || existing.Labels[partOfLabel] != "ottoflow" {
-		return nil // not managed by us, skip update
+	return r.reconcileExistingClusterRoleBinding(ctx, "caller ClusterRoleBinding", existing, desired)
+}
+
+// reconcileExistingClusterRoleBinding brings an existing runner or caller ClusterRoleBinding to desired.
+// It refuses a binding OttoFlow does not manage, requeues one mid-deletion, recreates on a RoleRef change
+// (requeuing if the old binding is still terminating or another reconcile recreated it first), and
+// updates changed subjects in place.
+func (r *WorkflowRunReconciler) reconcileExistingClusterRoleBinding(ctx context.Context, kind string, existing, desired *rbacv1.ClusterRoleBinding) error {
+	key := types.NamespacedName{Name: existing.Name}
+	if existing.Labels[ownerLabel] != ottoflowPartOf {
+		return fmt.Errorf("%s %s exists but is not managed by OttoFlow (missing label %s=%s); refusing to update", kind, existing.Name, ownerLabel, ottoflowPartOf)
+	}
+	if existing.DeletionTimestamp != nil {
+		return errRequeueRunnerAccess
 	}
 	if existing.RoleRef != desired.RoleRef {
-		// RoleRef is immutable: delete and recreate.
+		// RoleRef is immutable: delete and recreate. The UID precondition keeps a stale read from deleting a newer replacement.
 		if err := r.Delete(ctx, existing, client.Preconditions{UID: &existing.UID}); client.IgnoreNotFound(err) != nil {
-			return classifyRunnerAccessErr(err, "caller ClusterRoleBinding", key)
+			return classifyRunnerAccessErr(err, kind, key)
 		}
-		return classifyRunnerAccessErr(r.Create(ctx, desired), "caller ClusterRoleBinding", key)
+		err := r.Create(ctx, desired)
+		if apierrors.IsForbidden(err) || apierrors.IsInvalid(err) {
+			return fmt.Errorf("cannot bind %s %s to role %s (verify the controller holds 'bind' on that role and the role is valid): %w", kind, desired.Name, desired.RoleRef.Name, err)
+		}
+		// AlreadyExists means the old binding is still terminating (a finalizer holds it) or another
+		// reconcile recreated it; requeue so the next pass re-reads it with every check.
+		return classifyRunnerAccessErr(err, kind, key)
 	}
-	if len(existing.Subjects) != 1 ||
-		existing.Subjects[0].Kind != "ServiceAccount" ||
-		existing.Subjects[0].Name != serviceAccountName ||
-		existing.Subjects[0].Namespace != namespace {
+	if !slices.Equal(existing.Subjects, desired.Subjects) {
 		existing.Subjects = desired.Subjects
-		return classifyRunnerAccessErr(r.Update(ctx, existing), "caller ClusterRoleBinding", key)
+		return classifyRunnerAccessErr(r.Update(ctx, existing), kind, key)
 	}
 	return nil
 }
@@ -1842,6 +1808,10 @@ func (r *WorkflowRunReconciler) markRunTerminallyFailed(ctx context.Context, wor
 	switch {
 	case isDeterministicTermination(terminationReason):
 		msg = fmt.Sprintf("Runner Job %s failed with non-retryable reason: %s", jobName, terminationReason)
+		if execution := workflowRun.Status.Execution; terminationReason == batchv1.JobReasonDeadlineExceeded &&
+			execution != nil && execution.JobName == jobName && strings.HasPrefix(execution.Message, pendingCausePrefix) {
+			msg += "; " + execution.Message
+		}
 	case terminationReason != "":
 		msg = fmt.Sprintf("Runner Job %s failed (reason: %s, attempts: %d)", jobName, terminationReason, attempts+1)
 	default:

@@ -752,60 +752,82 @@ func TestGuardedStatusWritesFenceNewerAttempt(t *testing.T) {
 	}
 }
 
-func TestSuccessPreservesDeadlineVerdict(t *testing.T) {
-	for _, conflict := range []bool{false, true} {
-		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
-			run := newRun()
-			completion := metav1.Now()
-			run.Status = ottoflowv1alpha1.WorkflowRunStatus{
-				Phase: ottoflowv1alpha1.WorkflowRunPhaseFailed, Message: "controller deadline verdict",
-				CompletionTime: &completion,
-				Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{
-					Phase: "Failed", LastTerminationReason: "DeadlineExceeded", Attempts: 2,
-				},
-			}
-			base, updates := ctxAwareClient(run)
-			key := client.ObjectKeyFromObject(run)
-			expected := mustLoadWorkflowRun(context.Background(), base, key)
-			if conflict {
-				active := expected.DeepCopy()
-				active.Status = ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning}
-				if err := base.Status().Update(context.Background(), active); err != nil {
-					t.Fatal(err)
-				}
-				*updates = 0
-			}
-			attempts := 0
-			racing := interceptor.NewClient(base, interceptor.Funcs{
-				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
-					opts ...client.SubResourceUpdateOption) error {
-					attempts++
-					if conflict && attempts == 1 {
-						latest := mustLoadWorkflowRun(ctx, c, key)
-						latest.Status = expected.Status
-						if err := c.Status().Update(ctx, latest); err != nil {
-							return err
-						}
-						return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, run.Name, context.Canceled)
+// The success write keeps the controller's terminal verdict: a deadline Failed, and a non-deadline
+// Failed it stored before deleting the Job (a stuck pod; no Job object, so the Job check reads
+// NotFound and fails open).
+func TestSuccessPreservesControllerVerdict(t *testing.T) {
+	completion := metav1.Now()
+	deadline := ottoflowv1alpha1.WorkflowRunStatus{
+		Phase: ottoflowv1alpha1.WorkflowRunPhaseFailed, Message: "controller deadline verdict",
+		CompletionTime: &completion,
+		Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{
+			Phase: "Failed", LastTerminationReason: "DeadlineExceeded", Attempts: 2,
+		},
+	}
+	for _, tc := range []struct {
+		name    string
+		verdict ottoflowv1alpha1.WorkflowRunStatus
+		// beforeSignal keeps ctx live, so the first success write runs under preserveDeadlineFailure.
+		beforeSignal bool
+	}{
+		{name: "deadline", verdict: deadline},
+		{name: "stuck-pod", verdict: ottoflowv1alpha1.WorkflowRunStatus{
+			Phase: ottoflowv1alpha1.WorkflowRunPhaseFailed, Message: "controller stuck-pod verdict",
+			FailureReason: ottoflowv1alpha1.WorkflowRunFailureReasonRunnerRefUnresolved, CompletionTime: &completion,
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{Phase: "Failed", CompletionTime: &completion},
+		}},
+		{name: "deadline-before-signal", verdict: deadline, beforeSignal: true},
+	} {
+		for _, conflict := range []bool{false, true} {
+			t.Run(tc.name+"/"+fmt.Sprint(conflict), func(t *testing.T) {
+				run := newRun()
+				run.Status = tc.verdict
+				base, updates := ctxAwareClient(run)
+				key := client.ObjectKeyFromObject(run)
+				expected := mustLoadWorkflowRun(context.Background(), base, key)
+				if conflict {
+					active := expected.DeepCopy()
+					active.Status = ottoflowv1alpha1.WorkflowRunStatus{Phase: ottoflowv1alpha1.WorkflowRunPhaseRunning}
+					if err := base.Status().Update(context.Background(), active); err != nil {
+						t.Fatal(err)
 					}
-					return c.SubResource(sub).Update(ctx, obj, opts...)
-				},
+					*updates = 0
+				}
+				attempts := 0
+				racing := interceptor.NewClient(base, interceptor.Funcs{
+					SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+						opts ...client.SubResourceUpdateOption) error {
+						attempts++
+						if conflict && attempts == 1 {
+							latest := mustLoadWorkflowRun(ctx, c, key)
+							latest.Status = expected.Status
+							if err := c.Status().Update(ctx, latest); err != nil {
+								return err
+							}
+							return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, run.Name, context.Canceled)
+						}
+						return c.SubResource(sub).Update(ctx, obj, opts...)
+					},
+				})
+				inMemory := newRun()
+				inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if !tc.beforeSignal {
+					cancel()
+				}
+				persistExecutionSuccess(ctx, racing, key, inMemory, "job", "pod")
+				stored := mustLoadWorkflowRun(context.Background(), base, key)
+				wantUpdates := 0
+				if conflict {
+					wantUpdates = 1
+				}
+				if attempts != wantUpdates || *updates != wantUpdates || !reflect.DeepEqual(stored.Status, expected.Status) {
+					t.Fatalf("controller verdict overwritten: attempts=%d updates=%d got=%+v want=%+v",
+						attempts, *updates, stored.Status, expected.Status)
+				}
 			})
-			inMemory := newRun()
-			inMemory.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			persistExecutionSuccess(ctx, racing, key, inMemory, "job", "pod")
-			stored := mustLoadWorkflowRun(context.Background(), base, key)
-			wantUpdates := 0
-			if conflict {
-				wantUpdates = 1
-			}
-			if attempts != wantUpdates || *updates != wantUpdates || !reflect.DeepEqual(stored.Status, expected.Status) {
-				t.Fatalf("deadline verdict overwritten: attempts=%d updates=%d got=%+v want=%+v",
-					attempts, *updates, stored.Status, expected.Status)
-			}
-		})
+		}
 	}
 }
 

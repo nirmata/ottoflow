@@ -10,4 +10,8 @@ OttoFlow has been installed. Create Workflows and WorkflowRuns to orchestrate ag
 3. Verify CRDs are installed:
   kubectl get crds | grep ottoflow.nirmata.io
 
+4. Before every `helm upgrade`, apply the CRDs, because Helm never upgrades them:
+  helm show crds oci://ghcr.io/nirmata/{{ .Chart.Name }} --version {{ .Chart.Version }} | kubectl apply --server-side --force-conflicts -f -
+  Set --version to the version you are upgrading to. This release is {{ .Chart.Version }}.
+
 For more information, visit: https://github.com/nirmata/ottoflow

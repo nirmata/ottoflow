@@ -96,6 +96,10 @@ func (e *WorkflowExecutor) executePrometheusQuery(ctx context.Context, _ *ottofl
 		outputs["result"] = resultMap
 	}
 
+	if err := e.evaluateStepLevelOutputs(ctx, step, outputVars, outputs); err != nil {
+		return nil, err
+	}
+
 	if err := e.contextManager.WriteStepOutputs(ctx, step.Name, outputs); err != nil {
 		return nil, fmt.Errorf("failed to write step outputs: %w", err)
 	}

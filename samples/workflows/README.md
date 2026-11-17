@@ -20,6 +20,8 @@ Samples are organized into three directories by purpose:
 
 Reusable `StepTemplate` resources live in the sibling [`../steptemplates/`](../steptemplates/) directory. Workflows that use `stepTemplateRef` (e.g. `stale-image-check`, `cost-optimization`, `steptemplate-example`, `top-pods-cpu-analysis`) need those templates applied too — in local mode, pass the parent directory: `--workflow-dir samples`.
 
+**Extra RBAC:** for in-cluster runs, `policy-recommendations` lists `ClusterRole` and `ClusterRoleBinding` and `policy-recommendations-assessment-only` lists `ClusterRole` (apiGroup `rbac.authorization.k8s.io`); when Kyverno is installed, both also list `kyverno.io` `ClusterPolicy` and `Policy`. The chart's runner role grants none of these. Add `list` rules for them under the Helm value `rbac.runnerClusterRole.extraResources` (see the chart's [RBAC Parameters](../../charts/ottoflow/README.md#rbac-parameters)). Local runs (`ottoflow run <name> --workflow-dir ...`) use your kubeconfig and are unaffected; plain `ottoflow run <name>` creates an in-cluster `WorkflowRun` and needs the rules.
+
 ### `production/` (18)
 
 `cloud-cost-daily` (+ `cloud-cost-agent`, `aws-pricing-mcp`, `cloud-cost-optimization-state`), `cost-analyzer`, `cost-optimization`, `cost-optimization-eks`, `cost-optimization-eks-optimized`, `cost-optimization-eks-prometheus`, `resource-cleanup`, `resource-hygiene`, `policy-recommendations`, `policy-recommendations-assessment-only`, `pod-triage`, `workload-troubleshooter`, `cluster-overview`, `stale-image-check`, `cve-vex-assessment`

@@ -6,14 +6,14 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 
 | License | Count |
 |---|---|
-| Apache-2.0 | 98 |
+| Apache-2.0 | 99 |
 | MIT | 57 |
 | BSD-3-Clause | 37 |
 | BSD-2-Clause | 2 |
 | MPL-2.0 | 1 |
 | ISC | 1 |
 
-**Total third-party dependencies:** 196
+**Total third-party dependencies:** 197
 
 **Copyleft license check (GPL/AGPL/LGPL):** None found.
 
@@ -51,20 +51,20 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/docker/cli/cli/config` | https://github.com/docker/cli/blob/v29.4.0/LICENSE |
 | `github.com/go-logr/logr` | https://github.com/go-logr/logr/blob/v1.4.4/LICENSE |
 | `github.com/go-logr/stdr` | https://github.com/go-logr/stdr/blob/v1.2.2/LICENSE |
-| `github.com/go-openapi/jsonpointer` | https://github.com/go-openapi/jsonpointer/blob/v0.22.5/LICENSE |
-| `github.com/go-openapi/jsonreference` | https://github.com/go-openapi/jsonreference/blob/v0.21.5/LICENSE |
-| `github.com/go-openapi/swag` | https://github.com/go-openapi/swag/blob/v0.25.5/LICENSE |
-| `github.com/go-openapi/swag/cmdutils` | https://github.com/go-openapi/swag/blob/cmdutils/v0.25.5/cmdutils/LICENSE |
-| `github.com/go-openapi/swag/conv` | https://github.com/go-openapi/swag/blob/conv/v0.25.5/conv/LICENSE |
-| `github.com/go-openapi/swag/fileutils` | https://github.com/go-openapi/swag/blob/fileutils/v0.25.5/fileutils/LICENSE |
-| `github.com/go-openapi/swag/jsonname` | https://github.com/go-openapi/swag/blob/jsonname/v0.25.5/jsonname/LICENSE |
-| `github.com/go-openapi/swag/jsonutils` | https://github.com/go-openapi/swag/blob/jsonutils/v0.25.5/jsonutils/LICENSE |
-| `github.com/go-openapi/swag/loading` | https://github.com/go-openapi/swag/blob/loading/v0.25.5/loading/LICENSE |
-| `github.com/go-openapi/swag/mangling` | https://github.com/go-openapi/swag/blob/mangling/v0.25.5/mangling/LICENSE |
-| `github.com/go-openapi/swag/netutils` | https://github.com/go-openapi/swag/blob/netutils/v0.25.5/netutils/LICENSE |
-| `github.com/go-openapi/swag/stringutils` | https://github.com/go-openapi/swag/blob/stringutils/v0.25.5/stringutils/LICENSE |
-| `github.com/go-openapi/swag/typeutils` | https://github.com/go-openapi/swag/blob/typeutils/v0.25.5/typeutils/LICENSE |
-| `github.com/go-openapi/swag/yamlutils` | https://github.com/go-openapi/swag/blob/yamlutils/v0.25.5/yamlutils/LICENSE |
+| `github.com/go-openapi/jsonpointer` | https://github.com/go-openapi/jsonpointer/blob/v1.0.0/LICENSE |
+| `github.com/go-openapi/jsonreference` | https://github.com/go-openapi/jsonreference/blob/v1.0.0/LICENSE |
+| `github.com/go-openapi/swag` | https://github.com/go-openapi/swag/blob/v0.27.1/LICENSE |
+| `github.com/go-openapi/swag/cmdutils` | https://github.com/go-openapi/swag/blob/cmdutils/v0.27.1/cmdutils/LICENSE |
+| `github.com/go-openapi/swag/conv` | https://github.com/go-openapi/swag/blob/conv/v0.27.1/conv/LICENSE |
+| `github.com/go-openapi/swag/fileutils` | https://github.com/go-openapi/swag/blob/fileutils/v0.27.1/fileutils/LICENSE |
+| `github.com/go-openapi/swag/jsonutils` | https://github.com/go-openapi/swag/blob/jsonutils/v0.27.1/jsonutils/LICENSE |
+| `github.com/go-openapi/swag/loading` | https://github.com/go-openapi/swag/blob/loading/v0.27.1/loading/LICENSE |
+| `github.com/go-openapi/swag/mangling` | https://github.com/go-openapi/swag/blob/mangling/v0.27.1/mangling/LICENSE |
+| `github.com/go-openapi/swag/netutils` | https://github.com/go-openapi/swag/blob/netutils/v0.27.1/netutils/LICENSE |
+| `github.com/go-openapi/swag/pools` | https://github.com/go-openapi/swag/blob/pools/v0.27.1/pools/LICENSE |
+| `github.com/go-openapi/swag/stringutils` | https://github.com/go-openapi/swag/blob/stringutils/v0.27.1/stringutils/LICENSE |
+| `github.com/go-openapi/swag/typeutils` | https://github.com/go-openapi/swag/blob/typeutils/v0.27.1/typeutils/LICENSE |
+| `github.com/go-openapi/swag/yamlutils` | https://github.com/go-openapi/swag/blob/yamlutils/v0.27.1/yamlutils/LICENSE |
 | `github.com/google/cel-go` | https://github.com/google/cel-go/blob/v0.30.0/LICENSE |
 | `github.com/google/gnostic-models` | https://github.com/google/gnostic-models/blob/v0.7.1/LICENSE |
 | `github.com/google/go-containerregistry` | https://github.com/google/go-containerregistry/blob/v0.21.5/LICENSE |
@@ -86,10 +86,11 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/prometheus/client_model/go` | https://github.com/prometheus/client_model/blob/v0.6.2/LICENSE |
 | `github.com/prometheus/common` | https://github.com/prometheus/common/blob/v0.70.1/LICENSE |
 | `github.com/prometheus/procfs` | https://github.com/prometheus/procfs/blob/v0.21.1/LICENSE |
+| `github.com/santhosh-tekuri/jsonschema/v6` | https://github.com/santhosh-tekuri/jsonschema/blob/v6.0.2/LICENSE |
 | `github.com/spf13/cobra` | https://github.com/spf13/cobra/blob/v1.10.2/LICENSE.txt |
 | `github.com/zach-klippenstein/goregen` | https://github.com/zach-klippenstein/goregen/blob/795b5e3961ea/LICENSE.txt |
 | `go.opentelemetry.io/auto/sdk` | https://github.com/open-telemetry/opentelemetry-go-instrumentation/blob/sdk/v1.2.1/sdk/LICENSE |
-| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.68.0/instrumentation/net/http/otelhttp/LICENSE |
+| `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp` | https://github.com/open-telemetry/opentelemetry-go-contrib/blob/instrumentation/net/http/otelhttp/v0.69.0/instrumentation/net/http/otelhttp/LICENSE |
 | `go.opentelemetry.io/otel` | https://github.com/open-telemetry/opentelemetry-go/blob/v1.44.0/LICENSE |
 | `go.opentelemetry.io/otel/exporters/otlp/otlptrace` | https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/v1.44.0/exporters/otlp/otlptrace/LICENSE |
 | `go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc` | https://github.com/open-telemetry/opentelemetry-go/blob/exporters/otlp/otlptrace/otlptracegrpc/v1.44.0/exporters/otlp/otlptrace/otlptracegrpc/LICENSE |
@@ -103,25 +104,25 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `google.golang.org/genproto/googleapis/api` | https://github.com/googleapis/go-genproto/blob/3dc84a4a5aaa/googleapis/api/LICENSE |
 | `google.golang.org/genproto/googleapis/rpc` | https://github.com/googleapis/go-genproto/blob/3dc84a4a5aaa/googleapis/rpc/LICENSE |
 | `google.golang.org/grpc` | https://github.com/grpc/grpc-go/blob/v1.82.1/LICENSE |
-| `k8s.io/api` | https://github.com/kubernetes/api/blob/v0.36.3/LICENSE |
-| `k8s.io/apiextensions-apiserver/pkg/apis/apiextensions` | https://github.com/kubernetes/apiextensions-apiserver/blob/v0.36.3/LICENSE |
-| `k8s.io/apimachinery/pkg` | https://github.com/kubernetes/apimachinery/blob/v0.36.3/LICENSE |
-| `k8s.io/apiserver/pkg` | https://github.com/kubernetes/apiserver/blob/v0.36.3/LICENSE |
-| `k8s.io/client-go` | https://github.com/kubernetes/client-go/blob/v0.36.3/LICENSE |
-| `k8s.io/component-base` | https://github.com/kubernetes/component-base/blob/v0.36.3/LICENSE |
+| `k8s.io/api` | https://github.com/kubernetes/api/blob/v0.37.2/LICENSE |
+| `k8s.io/apiextensions-apiserver/pkg/apis/apiextensions` | https://github.com/kubernetes/apiextensions-apiserver/blob/v0.37.2/LICENSE |
+| `k8s.io/apimachinery/pkg` | https://github.com/kubernetes/apimachinery/blob/v0.37.2/LICENSE |
+| `k8s.io/apiserver/pkg` | https://github.com/kubernetes/apiserver/blob/v0.37.2/LICENSE |
+| `k8s.io/client-go` | https://github.com/kubernetes/client-go/blob/v0.37.2/LICENSE |
+| `k8s.io/component-base` | https://github.com/kubernetes/component-base/blob/v0.37.2/LICENSE |
 | `k8s.io/klog/v2` | https://github.com/kubernetes/klog/blob/v2.140.0/LICENSE |
-| `k8s.io/kube-openapi/pkg` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/LICENSE |
-| `k8s.io/kube-openapi/pkg/validation/errors` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/pkg/validation/errors/LICENSE |
-| `k8s.io/kube-openapi/pkg/validation/spec` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/pkg/validation/spec/LICENSE |
-| `k8s.io/kube-openapi/pkg/validation/strfmt` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/pkg/validation/strfmt/LICENSE |
-| `k8s.io/metrics/pkg` | https://github.com/kubernetes/metrics/blob/v0.36.3/LICENSE |
-| `k8s.io/streaming/pkg` | https://github.com/kubernetes/streaming/blob/v0.36.3/LICENSE |
-| `k8s.io/utils` | https://github.com/kubernetes/utils/blob/b8788abfbbc2/LICENSE |
-| `k8s.io/utils/third_party/forked/golang/btree` | https://github.com/kubernetes/utils/blob/b8788abfbbc2/third_party/forked/golang/btree/LICENSE |
-| `sigs.k8s.io/controller-runtime` | https://github.com/kubernetes-sigs/controller-runtime/blob/v0.24.1/LICENSE |
+| `k8s.io/kube-openapi/pkg` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/LICENSE |
+| `k8s.io/kube-openapi/pkg/validation/errors` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/pkg/validation/errors/LICENSE |
+| `k8s.io/kube-openapi/pkg/validation/spec` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/pkg/validation/spec/LICENSE |
+| `k8s.io/kube-openapi/pkg/validation/strfmt` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/pkg/validation/strfmt/LICENSE |
+| `k8s.io/metrics/pkg` | https://github.com/kubernetes/metrics/blob/v0.37.2/LICENSE |
+| `k8s.io/streaming/pkg` | https://github.com/kubernetes/streaming/blob/v0.37.2/LICENSE |
+| `k8s.io/utils` | https://github.com/kubernetes/utils/blob/be93311217bd/LICENSE |
+| `k8s.io/utils/third_party/forked/golang/btree` | https://github.com/kubernetes/utils/blob/be93311217bd/third_party/forked/golang/btree/LICENSE |
+| `sigs.k8s.io/controller-runtime` | https://github.com/kubernetes-sigs/controller-runtime/blob/v0.25.2/LICENSE |
 | `sigs.k8s.io/json` | https://github.com/kubernetes-sigs/json/blob/2d320260d730/LICENSE |
 | `sigs.k8s.io/randfill` | https://github.com/kubernetes-sigs/randfill/blob/v1.0.0/LICENSE |
-| `sigs.k8s.io/structured-merge-diff/v6` | https://github.com/kubernetes-sigs/structured-merge-diff/blob/v6.3.3/LICENSE |
+| `sigs.k8s.io/structured-merge-diff/v6` | https://github.com/kubernetes-sigs/structured-merge-diff/blob/v6.4.2/LICENSE |
 | `sigs.k8s.io/yaml` | https://github.com/kubernetes-sigs/yaml/blob/v1.6.0/LICENSE |
 
 ## MIT
@@ -157,13 +158,13 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/docker/docker-credential-helpers` | https://github.com/docker/docker-credential-helpers/blob/v0.9.5/LICENSE |
 | `github.com/emicklei/go-restful/v3` | https://github.com/emicklei/go-restful/blob/v3.13.0/LICENSE |
 | `github.com/felixge/httpsnoop` | https://github.com/felixge/httpsnoop/blob/v1.0.4/LICENSE.txt |
-| `github.com/fxamacker/cbor/v2` | https://github.com/fxamacker/cbor/blob/v2.9.0/LICENSE |
+| `github.com/fxamacker/cbor/v2` | https://github.com/fxamacker/cbor/blob/v2.9.1/LICENSE |
 | `github.com/golang-jwt/jwt/v5` | https://github.com/golang-jwt/jwt/blob/v5.3.1/LICENSE |
 | `github.com/google/jsonschema-go/jsonschema` | https://github.com/google/jsonschema-go/blob/v0.4.2/LICENSE |
 | `github.com/json-iterator/go` | https://github.com/json-iterator/go/blob/v1.1.12/LICENSE |
 | `github.com/klauspost/compress/zstd/internal/xxhash` | https://github.com/klauspost/compress/blob/v1.19.1/zstd/internal/xxhash/LICENSE.txt |
 | `github.com/lucasb-eyer/go-colorful` | https://github.com/lucasb-eyer/go-colorful/blob/v1.3.0/LICENSE |
-| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/v0.46.0/LICENSE |
+| `github.com/mark3labs/mcp-go` | https://github.com/mark3labs/mcp-go/blob/v1.4.0/LICENSE |
 | `github.com/mattn/go-isatty` | https://github.com/mattn/go-isatty/blob/v0.0.20/LICENSE |
 | `github.com/mattn/go-runewidth` | https://github.com/mattn/go-runewidth/blob/v0.0.19/LICENSE |
 | `github.com/mitchellh/go-homedir` | https://github.com/mitchellh/go-homedir/blob/v1.1.0/LICENSE |
@@ -184,7 +185,7 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/yuin/goldmark` | https://github.com/yuin/goldmark/blob/v1.7.13/LICENSE |
 | `github.com/yuin/goldmark-emoji` | https://github.com/yuin/goldmark-emoji/blob/v1.0.6/LICENSE |
 | `go.yaml.in/yaml/v3` | https://github.com/yaml/go-yaml/blob/v3.0.4/LICENSE |
-| `k8s.io/kube-openapi/pkg/internal/third_party/govalidator` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/pkg/internal/third_party/govalidator/LICENSE |
+| `k8s.io/kube-openapi/pkg/internal/third_party/govalidator` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/pkg/internal/third_party/govalidator/LICENSE |
 
 ## BSD-3-Clause
 
@@ -210,7 +211,7 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `github.com/vbatts/tar-split/archive/tar` | https://github.com/vbatts/tar-split/blob/v0.12.2/LICENSE |
 | `github.com/yosida95/uritemplate/v3` | https://github.com/yosida95/uritemplate/blob/v3.0.2/LICENSE |
 | `golang.org/x/crypto` | https://cs.opensource.google/go/x/crypto/+/v0.54.0:LICENSE |
-| `golang.org/x/exp/slices` | https://cs.opensource.google/go/x/exp/+/3dfff04d:LICENSE |
+| `golang.org/x/exp/slices` | https://cs.opensource.google/go/x/exp/+/746e56fc:LICENSE |
 | `golang.org/x/mod/semver` | https://cs.opensource.google/go/x/mod/+/v0.37.0:LICENSE |
 | `golang.org/x/net` | https://cs.opensource.google/go/x/net/+/v0.57.0:LICENSE |
 | `golang.org/x/oauth2` | https://cs.opensource.google/go/x/oauth2/+/v0.36.0:LICENSE |
@@ -223,9 +224,9 @@ This project (OttoFlow) uses the following third-party Go packages (as resolved 
 | `google.golang.org/protobuf` | https://github.com/protocolbuffers/protobuf-go/blob/f2248ac996af/LICENSE |
 | `gopkg.in/evanphx/json-patch.v4` | https://github.com/evanphx/json-patch/blob/v4.13.0/LICENSE |
 | `gopkg.in/inf.v0` | https://github.com/go-inf/inf/blob/v0.9.1/LICENSE |
-| `k8s.io/apimachinery/third_party/forked/golang` | https://github.com/kubernetes/apimachinery/blob/v0.36.3/third_party/forked/golang/LICENSE |
-| `k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json` | https://github.com/kubernetes/kube-openapi/blob/43fb72c5454a/pkg/internal/third_party/go-json-experiment/json/LICENSE |
-| `k8s.io/utils/internal/third_party/forked/golang` | https://github.com/kubernetes/utils/blob/b8788abfbbc2/internal/third_party/forked/golang/LICENSE |
+| `k8s.io/apimachinery/third_party/forked/golang` | https://github.com/kubernetes/apimachinery/blob/v0.37.2/third_party/forked/golang/LICENSE |
+| `k8s.io/kube-openapi/pkg/internal/third_party/go-json-experiment/json` | https://github.com/kubernetes/kube-openapi/blob/d427ff9ee9ad/pkg/internal/third_party/go-json-experiment/json/LICENSE |
+| `k8s.io/utils/internal/third_party/forked/golang` | https://github.com/kubernetes/utils/blob/be93311217bd/internal/third_party/forked/golang/LICENSE |
 | `mvdan.cc/sh/v3` | https://github.com/mvdan/sh/blob/v3.11.0/LICENSE |
 
 ## BSD-2-Clause
