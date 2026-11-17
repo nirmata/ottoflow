@@ -27,4 +27,5 @@ kubectl get crd workflows.ottoflow.nirmata.io -o jsonpath='{.spec.versions[0].sc
 For example:
 
 - `kagent`, `mcpTool` and `contextBudgetMode` are dropped without any error.
+- An Agent's `thinking` is dropped without any error, so the model's default thinking applies.
 - `allowInsecureHTTP` is dropped too, so a step with an `http://` `externalAgentRef` URL then fails, and the error says the Workflow or StepTemplate CRD may predate the field.

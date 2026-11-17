@@ -29,6 +29,7 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 		name         string
 		provider     string
 		config       map[string]string
+		thinking     *ottoflowv1alpha1.AgentThinking
 		wantCount    int
 		wantContains []string
 	}{
@@ -44,6 +45,19 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 			config:       map[string]string{"skipVerifySSL": "false"},
 			wantCount:    1,
 			wantContains: []string{"azure-openai is not supported"},
+		},
+		{
+			name:         "thinking on a provider other than anthropic is reported",
+			provider:     "openai",
+			thinking:     &ottoflowv1alpha1.AgentThinking{Type: "disabled"},
+			wantCount:    1,
+			wantContains: []string{"spec.thinking", "only for modelProvider anthropic", "FAIL", `"openai"`},
+		},
+		{
+			name:      "thinking on anthropic produces no warnings",
+			provider:  "anthropic",
+			thinking:  &ottoflowv1alpha1.AgentThinking{Type: "disabled", Effort: "low"},
+			wantCount: 0,
 		},
 		{
 			name:      "openai produces no warnings",
@@ -99,6 +113,7 @@ func TestAgentValidatorConfigWarnings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := agentWithConfig(tc.config)
 			a.Spec.ModelProvider = tc.provider
+			a.Spec.Thinking = tc.thinking
 			warnings, err := v.ValidateCreate(context.Background(), a)
 			if err != nil {
 				t.Fatalf("ValidateCreate returned an error, want warnings only: %v", err)

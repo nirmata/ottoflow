@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 
 	ottoflowv1alpha1 "github.com/nirmata/ottoflow/api/v1alpha1"
 )
@@ -53,6 +54,12 @@ func NewRoutingAgentExecutorFromExecutors(nirmataExec, defaultExec AgentExecutor
 // provider.
 func (e *RoutingAgentExecutor) ExecuteAgent(ctx context.Context, agentCRD *ottoflowv1alpha1.Agent, prompt string, workflowContext map[string]interface{}, namespace string) (string, AgentTokenUsage, error) {
 	provider := agentCRD.Spec.ModelProvider
+	// Only the anthropic client sends spec.thinking; refuse it here, where every Agent
+	// run passes, so no delegate can drop it silently.
+	if agentCRD.Spec.Thinking != nil && provider != providerAnthropic {
+		return "", AgentTokenUsage{}, fmt.Errorf("agent config rejected: spec.thinking is supported only for "+
+			"modelProvider %s, not %q; remove it from this Agent", providerAnthropic, provider)
+	}
 	if provider == "" || provider == providerNirmata {
 		return e.nirmata.ExecuteAgent(ctx, agentCRD, prompt, workflowContext, namespace)
 	}

@@ -71,6 +71,41 @@ var _ = Describe("RoutingAgentExecutor", func() {
 		Entry("unknown", "some-unrecognized-provider"),
 	)
 
+	DescribeTable("refuses spec.thinking on every provider but anthropic, before any delegate runs",
+		func(provider string) {
+			agentCRD := &ottoflowv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+				Spec: ottoflowv1alpha1.AgentSpec{
+					ModelProvider: provider,
+					Thinking:      &ottoflowv1alpha1.AgentThinking{Type: "disabled"},
+				},
+			}
+			_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
+			Expect(err).To(MatchError(ContainSubstring("spec.thinking is supported only for modelProvider anthropic")))
+			Expect(nirmataMock.GetCallCount() + defaultMock.GetCallCount()).To(Equal(0))
+		},
+		Entry("nirmata", "nirmata"),
+		Entry("empty", ""),
+		Entry("openai", "openai"),
+		Entry("azure-openai", "azure-openai"),
+		Entry("google", "google"),
+		Entry("gemini", "gemini"),
+		Entry("local", "local"),
+	)
+
+	It("passes spec.thinking on anthropic to the default delegate", func() {
+		agentCRD := &ottoflowv1alpha1.Agent{
+			ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+			Spec: ottoflowv1alpha1.AgentSpec{
+				ModelProvider: "anthropic",
+				Thinking:      &ottoflowv1alpha1.AgentThinking{Effort: "low"},
+			},
+		}
+		_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(defaultMock.GetCallCount()).To(Equal(1))
+	})
+
 	It("constructs real delegates that both satisfy AgentExecutor", func() {
 		real := NewRoutingAgentExecutor(nil)
 		var _ AgentExecutor = real

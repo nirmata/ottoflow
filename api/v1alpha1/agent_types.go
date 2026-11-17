@@ -64,6 +64,11 @@ type AgentSpec struct {
 	// +optional
 	OutputExtraction *OutputExtraction `json:"outputExtraction,omitempty"`
 
+	// Thinking sets the thinking type and effort sent with each LLM request.
+	// Supported only for modelProvider anthropic; on any other provider the agent run fails.
+	// +optional
+	Thinking *AgentThinking `json:"thinking,omitempty"`
+
 	// ServiceAccount is the Kubernetes service account to use for agent execution
 	// Used for RBAC and authentication
 	// +optional
@@ -139,6 +144,23 @@ type OutputExtraction struct {
 	// Stored as raw JSON bytes
 	// +optional
 	Schema []byte `json:"schema,omitempty"`
+}
+
+// AgentThinking holds the Anthropic thinking settings. Each field is sent as set and
+// left off the request when unset, so the model's default applies. The Anthropic API
+// decides which values a model accepts; a rejected value fails the agent run.
+type AgentThinking struct {
+	// Type is sent as the request's thinking.type. A model that thinks by default can
+	// spend its whole max_tokens budget on thinking and return no text; on models that
+	// accept it, disabled or between_tools turns up-front thinking off.
+	// +kubebuilder:validation:Enum=adaptive;disabled;between_tools
+	// +optional
+	Type string `json:"type,omitempty"`
+
+	// Effort is sent as the request's output_config.effort.
+	// +kubebuilder:validation:Enum=low;medium;high;xhigh;max
+	// +optional
+	Effort string `json:"effort,omitempty"`
 }
 
 // AgentStatus defines the observed state of Agent

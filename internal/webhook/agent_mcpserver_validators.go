@@ -42,8 +42,9 @@ func (v *AgentValidator) ValidateUpdate(ctx context.Context, oldA, a *ottoflowv1
 	return validateAgentConfig(a), nil
 }
 
-// validateAgentConfig warns about an unsupported modelProvider, spec.config keys no executor in this
-// build reads, and about malformed values for keys that are read.
+// validateAgentConfig warns about an unsupported modelProvider, spec.thinking on a provider other
+// than anthropic, spec.config keys no executor in this build reads, and about malformed values for
+// keys that are read.
 func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 	if a == nil {
 		return nil
@@ -54,6 +55,10 @@ func validateAgentConfig(a *ottoflowv1alpha1.Agent) admission.Warnings {
 	if a.Spec.ModelProvider == "azure-openai" {
 		warnings = append(warnings, "spec.modelProvider azure-openai is not supported: "+
 			"the Azure OpenAI client in this build does not keep the model's tool calls and replies in the conversation history (single-turn prompts may still work)")
+	}
+	if a.Spec.Thinking != nil && a.Spec.ModelProvider != "anthropic" {
+		warnings = append(warnings, fmt.Sprintf("spec.thinking is supported only for modelProvider anthropic: "+
+			"the agent run will FAIL for modelProvider %q", a.Spec.ModelProvider))
 	}
 
 	for k, val := range a.Spec.Config {

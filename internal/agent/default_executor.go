@@ -223,6 +223,10 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 			"process-wide setting not scoped to this Agent. In CLI local mode, set the same variable in "+
 			"your shell", provider)
 	}
+	if t := agentCRD.Spec.Thinking; t != nil {
+		// gollm leaves an empty value off the request.
+		opts = append(opts, gollm.WithAnthropicThinkingType(t.Type), gollm.WithAnthropicEffort(t.Effort))
+	}
 
 	// Read after the endpoint checks: a refused endpoint never touches the key file.
 	apiKey, err := e.readLLMKeyFile(providerID)
