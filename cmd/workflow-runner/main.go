@@ -819,7 +819,9 @@ func persistExecutionSuccess(
 				append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, runKey.Namespace, runKey.Name), "job", jobName)...)
 			return
 		}
-		err = persistWorkflowRunStatus(writeCtx, controlClient, runKey, workflowRun.Status, preserveDeadlineFailure)
+		// After the signal, keep any terminal verdict already stored: the controller may have failed
+		// the run and deleted this Job (a stuck pod), so the Job check above read NotFound.
+		err = persistWorkflowRunStatus(writeCtx, controlClient, runKey, workflowRun.Status, preserveTerminalStatus)
 	}
 	if err != nil {
 		keys := append(logging.KeysForRun(workflowRun.Spec.WorkflowRef.Name, workflowRun.Namespace, workflowRun.Name),
