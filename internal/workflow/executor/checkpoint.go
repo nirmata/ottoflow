@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utiljson "k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,7 +43,8 @@ type CheckpointSnapshot struct {
 	WorkflowRunUID    string                                 `json:"workflowRunUID"`
 	LastCompletedStep string                                 `json:"lastCompletedStep"`
 	StepStatuses      map[string]ottoflowv1alpha1.StepStatus `json:"stepStatuses"`
-	Context           map[string]interface{}                 `json:"context"`
+	// Context holds JSON-shaped values only: map[string]interface{}, []interface{} and scalars.
+	Context map[string]interface{} `json:"context"`
 	// CompletionOrder is the exact step-completion order recorded during live execution
 	// (ContextManager.CompletionOrder), persisted so ContextBudgetMode=lastN restores the same
 	// lastN window after a restart. CompletionTime has only second granularity, so
@@ -164,7 +168,7 @@ func (cm *CheckpointManager) SaveAsync(ctx context.Context, snapshot CheckpointS
 	}
 	klog.V(4).InfoS("checkpoint: queuing async save", "lastCompletedStep", snapshot.LastCompletedStep, "steps", len(snapshot.StepStatuses))
 
-	raw, err := json.Marshal(snapshot)
+	raw, err := marshalCheckpoint(snapshot)
 	if err != nil {
 		klog.ErrorS(err, "checkpoint: failed to marshal snapshot", "workflowRunUID", cm.runUID)
 		return
@@ -409,7 +413,9 @@ func (cm *CheckpointManager) Load(ctx context.Context) (*CheckpointSnapshot, err
 	}
 
 	var snapshot CheckpointSnapshot
-	if err := json.Unmarshal([]byte(data), &snapshot); err != nil {
+	// utiljson restores integers as int64 and other numbers as float64, matching what
+	// marshalCheckpoint wrote.
+	if err := utiljson.Unmarshal([]byte(data), &snapshot); err != nil {
 		return nil, fmt.Errorf("checkpoint: failed to unmarshal checkpoint data: %w", err)
 	}
 
@@ -418,6 +424,55 @@ func (cm *CheckpointManager) Load(ctx context.Context) (*CheckpointSnapshot, err
 	}
 
 	return &snapshot, nil
+}
+
+// marshalCheckpoint encodes snapshot so that every whole float64 in its Context keeps a
+// decimal point (2.0, not 2), which lets Load tell a whole float from an integer. It
+// encodes a copy: snapshot.Context is the executor's live context map and must not change.
+// ponytail: copies every map and slice on each save; copy only changed branches if saves get slow.
+func marshalCheckpoint(snapshot CheckpointSnapshot) ([]byte, error) {
+	snapshot.Context, _ = withDecimalFloats(snapshot.Context).(map[string]interface{})
+	return json.Marshal(snapshot)
+}
+
+// withDecimalFloats returns a copy of v in which each whole float64 inside maps and
+// slices is a wholeFloat. It builds new maps and slices and never modifies v.
+func withDecimalFloats(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		if val == nil {
+			return val
+		}
+		out := make(map[string]interface{}, len(val))
+		for k, nv := range val {
+			out[k] = withDecimalFloats(nv)
+		}
+		return out
+	case []interface{}:
+		if val == nil {
+			return val
+		}
+		out := make([]interface{}, len(val))
+		for i, nv := range val {
+			out[i] = withDecimalFloats(nv)
+		}
+		return out
+	case float64:
+		// encoding/json writes only these floats without a "." or an exponent.
+		if val == math.Trunc(val) && math.Abs(val) < 1e21 {
+			return wholeFloat(val)
+		}
+		return val
+	default:
+		return v
+	}
+}
+
+// wholeFloat is a whole float64 that encodes with a trailing ".0".
+type wholeFloat float64
+
+func (f wholeFloat) MarshalJSON() ([]byte, error) {
+	return append(strconv.AppendFloat(make([]byte, 0, 24), float64(f), 'f', -1, 64), ".0"...), nil
 }
 
 func (cm *CheckpointManager) Delete(ctx context.Context) error {

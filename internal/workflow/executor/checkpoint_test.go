@@ -14,6 +14,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/common/model"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -239,6 +240,84 @@ var _ = Describe("CheckpointManager", func() {
 			snap, err := mgr.Load(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(snap).To(BeNil())
+		})
+
+		// CEL types int64 as int and float64 as double, and has no int + double overload,
+		// so a restored context must keep the Go number types it was saved with.
+		Context("number types across SaveAsync and Load", func() {
+			// numberContext holds an int, a whole float and a float written with an exponent,
+			// at the top level, inside a nested map and inside a slice.
+			numberContext := func() map[string]interface{} {
+				return map[string]interface{}{
+					"count": int64(2), "ratio": float64(2), "big": float64(1e21),
+					"nested": map[string]interface{}{
+						"count": int64(2), "ratio": float64(2), "big": float64(1e21),
+					},
+					"list": []interface{}{int64(2), float64(2), float64(1e21)},
+				}
+			}
+
+			save := func(live map[string]interface{}) *CheckpointManager {
+				k8sClient = newFakeClient()
+				mgr := NewCheckpointManager(k8sClient, workflowRun)
+				mgr.SaveAsync(ctx, CheckpointSnapshot{
+					Version:        1,
+					WorkflowRunUID: string(workflowRun.UID),
+					StepStatuses:   map[string]ottoflowv1alpha1.StepStatus{},
+					Context:        live,
+				})
+				Expect(mgr.Flush(ctx)).To(Succeed())
+				return mgr
+			}
+
+			load := func(mgr *CheckpointManager) map[string]interface{} {
+				snap, err := mgr.Load(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(snap).NotTo(BeNil())
+				return snap.Context
+			}
+
+			It("restores integers as int64 and floats as float64", func() {
+				Expect(load(save(numberContext()))).To(Equal(numberContext()))
+			})
+
+			It("restores a prometheusQuery result unchanged", func() {
+				result := prometheusResultToMap(&vectorResult{vector: model.Vector{
+					{Metric: model.Metric{"job": "a"}, Value: 42, Timestamp: model.Time(1000)},
+				}})
+				Expect(load(save(map[string]interface{}{"result": result}))).To(Equal(map[string]interface{}{"result": result}))
+			})
+
+			It("leaves the caller's context map unchanged", func() {
+				live := numberContext()
+				save(live)
+				Expect(live).To(Equal(numberContext()))
+			})
+		})
+
+		It("returns an error when data follows the snapshot", func() {
+			raw, err := json.Marshal(CheckpointSnapshot{
+				Version:        1,
+				WorkflowRunUID: string(workflowRun.UID),
+				Context:        map[string]interface{}{"key": "value"},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, trailing := range []string{"}x", " null"} {
+				existingCM := &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      checkpointConfigMapName(workflowRun.Name),
+						Namespace: workflowRun.Namespace,
+					},
+					Data: map[string]string{"checkpoint": string(raw) + trailing},
+				}
+				k8sClient = newFakeClient(existingCM)
+				mgr := NewCheckpointManager(k8sClient, workflowRun)
+
+				snap, err := mgr.Load(ctx)
+				Expect(err).To(MatchError(ContainSubstring("failed to unmarshal checkpoint data")), "trailing %q", trailing)
+				Expect(snap).To(BeNil(), "trailing %q", trailing)
+			}
 		})
 	})
 
