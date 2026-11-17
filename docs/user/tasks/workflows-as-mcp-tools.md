@@ -63,9 +63,9 @@ A proxy or sidecar that forwards to the server over `127.0.0.1` must rewrite Hos
 
 A caller presents a ServiceAccount token as `Authorization: Bearer <token>`. The server
 runs a **TokenReview** to establish who that is, then a **SubjectAccessReview** asking
-whether that identity may `invoke` `callers.gate.ottoflow.nirmata.io/mcp-caller`. If it may, the call proceeds. A hand-written Role on `configmaps/mcp-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
+whether that identity may `invoke` `callers.gate.ottoflow.nirmata.io/mcp-caller`. If it may, the call proceeds. The SubjectAccessReview asks the API server's whole authorizer chain, not only RBAC: on a cluster with an authorization webhook ahead of RBAC, a webhook that allows `invoke` on `callers.gate.ottoflow.nirmata.io` lets the caller in with no Role or binding, and one that denies it refuses the caller even when a binding exists. A hand-written Role on `configmaps/mcp-caller` no longer works; re-grant it with verb `invoke` on `callers.gate.ottoflow.nirmata.io`.
 
-So "who may invoke workflows" is a RoleBinding:
+So, with RBAC, "who may invoke workflows" is a ClusterRoleBinding, or a RoleBinding in the namespace OttoFlow is installed in:
 
 ```bash
 kubectl create clusterrolebinding kagent-ottoflow-mcp-caller \
@@ -73,7 +73,7 @@ kubectl create clusterrolebinding kagent-ottoflow-mcp-caller \
   --serviceaccount=kagent:kagent
 ```
 
-There is no shared secret and nothing to rotate; revoking access is deleting the
+There is no shared secret and nothing to rotate; with RBAC, revoking access is deleting the
 binding. This is the same model the agent-executor uses, with a separate ClusterRole:
 calling the agent executor and running any workflow in the cluster are different grants,
 and one role for both would make the narrower one impossible to give out.
