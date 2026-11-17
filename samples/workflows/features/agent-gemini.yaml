@@ -26,6 +26,11 @@
 #   helm upgrade --install ottoflow charts/ottoflow \
 #     --namespace ottoflow \
 #     --set-json 'agentExecutor.env=[{"name":"GEMINI_API_KEY","valueFrom":{"secretKeyRef":{"name":"llm-credentials","key":"gemini-api-key"}}}]'
+#
+# Rotating the key without a restart: instead of agentExecutor.env, set
+# `agentExecutor.llmCredentialsSecret=llm-credentials` and name the Secret key
+# `GEMINI_API_KEY`. The Secret is mounted as files and read on every agent call, so a
+# patched Secret takes effect after the kubelet refreshes the mount (not instantly).
 apiVersion: ottoflow.nirmata.io/v1alpha1
 kind: Workflow
 metadata:

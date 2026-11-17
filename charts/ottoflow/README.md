@@ -145,7 +145,7 @@ Runner Jobs run under a least-privilege `ottoflow-runner-role` ClusterRole, sepa
 | `agentExecutor.callerNamespace` | Namespace for RBAC auth (SubjectAccessReview checks invoke callers.gate.ottoflow.nirmata.io/agent-executor-caller in this namespace). Defaults to release namespace. | `""` (defaults to release namespace) |
 | `agentExecutor.tls.internal.enabled` | Use internal cert controller (kyverno/pkg) to provision self-signed TLS | `true` |
 | `agentExecutor.tls.secretName` | Use existing TLS Secret instead of internal cert generation | `""` |
-| `agentExecutor.llmCredentialsSecret` | Secret injected into the agent-executor pod via `envFrom` (LLM provider keys) for steps using `agentRef` | `""` (no injection) |
+| `agentExecutor.llmCredentialsSecret` | Secret injected into the agent-executor pod via `envFrom` (LLM provider keys) for steps using `agentRef`, and also mounted at `/etc/ottoflow/llm-credentials`: a provider's key file (e.g. `ANTHROPIC_API_KEY`) is re-read on every call and wins over the same variable in the environment. See the [upgrade note](../../docs/user/upgrades/agent-executor-key-file.md) | `""` (no injection) |
 | `agentExecutor.resources` | Resource limits and requests | `{}` (defaults provided) |
 
 **Note**: The agent-executor serves HTTPS and requires TLS certs. By default, the internal certificate controller (kyverno/pkg) provisions self-signed CA and TLS certs—no cert-manager required.

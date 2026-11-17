@@ -98,6 +98,16 @@ helm show crds oci://ghcr.io/nirmata/ottoflow --version <the version you are upg
 
 Read the [upgrade notes](../upgrades/) before you upgrade. Chart-specific steps are in the chart README's [Upgrading](../../../charts/ottoflow/README.md#upgrading) section, and A2A caller authentication is in [Securing A2A callers](workflows-as-a2a-agents.md#securing-a2a-callers).
 
+## Rotating LLM provider keys (optional)
+
+Set `agentExecutor.llmCredentialsSecret` to a Secret whose keys are named after the provider variables (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). The agent-executor reads the key file on every agent call, so patching the Secret rotates the key without a restart or redeploy:
+
+```bash
+kubectl patch secret llm-credentials -n ottoflow -p '{"stringData":{"ANTHROPIC_API_KEY":"<new-key>"}}'
+```
+
+Rotation is eventually consistent: it lands after the kubelet refreshes the mounted Secret (up to the kubelet sync period plus cache propagation), not instantly. See [the upgrade note](../upgrades/agent-executor-key-file.md).
+
 ## Nirmata LLM credentials (optional)
 
 > **Note (provider required):** `Agent.spec.modelProvider` is a required field with no default — every Agent must set it explicitly. Valid values are `nirmata`, `openai`, `anthropic`, `azure-openai`, `google`, `gemini`, and `local`. `nirmata` is served by the **OttoFlow enterprise plugin** and is **not available in the open-source build**; selecting it there returns a clear error asking you to pick a supported provider. The open-source build supports `openai`, `anthropic`, `google`/`gemini`, and `local`. `azure-openai` is accepted but is not supported (see the [Agent API reference](../reference/api/agent.md)); the admission webhook warns when it is set. The Nirmata LLM credentials below apply only when running with the enterprise plugin.

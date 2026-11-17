@@ -9,8 +9,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/GoogleCloudPlatform/kubectl-ai/gollm"
 	"github.com/GoogleCloudPlatform/kubectl-ai/pkg/tools"
@@ -33,6 +38,42 @@ import (
 type DefaultAgentExecutor struct {
 	mcpProvider MCPClientProvider
 	llmFactory  LLMClientFactory // optional; when set, used instead of gollm.NewClient (for tests)
+
+	keyFilePermWarn sync.Once
+}
+
+// llmCredentialsDir is where the chart mounts agentExecutor.llmCredentialsSecret. Each key is a
+// file named after the provider's API-key environment variable, re-read for every client, so a
+// rotated Secret takes effect without a restart. llmCredentialsDir and warnLLMKeyFile are
+// variables so tests can point at a temp dir and count warnings.
+var (
+	llmCredentialsDir = "/etc/ottoflow/llm-credentials"
+	warnLLMKeyFile    = func(path string, err error) {
+		klog.ErrorS(err, "LLM API key file is not readable; falling back to the environment", "path", path)
+	}
+)
+
+// readLLMKeyFile returns the key mounted for providerID, or "" to leave the key to the
+// provider's environment variable (no file, blank file, or a file this process may not read).
+// Any other read error is returned, so a broken mount is not mistaken for a missing key.
+func (e *DefaultAgentExecutor) readLLMKeyFile(providerID string) (string, error) {
+	name := gollm.APIKeyEnvVar(providerID)
+	if name == "" {
+		return "", nil
+	}
+	path := filepath.Join(llmCredentialsDir, name)
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		return strings.TrimSpace(string(b)), nil
+	case errors.Is(err, fs.ErrNotExist):
+		return "", nil
+	case errors.Is(err, fs.ErrPermission):
+		e.keyFilePermWarn.Do(func() { warnLLMKeyFile(path, err) })
+		return "", nil
+	default:
+		return "", fmt.Errorf("reading LLM API key file %s: %w", path, err)
+	}
 }
 
 // NewDefaultAgentExecutor creates a new DefaultAgentExecutor.
@@ -133,9 +174,9 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 	klog.V(4).InfoS("Creating LLM client", "provider", provider, "providerID", providerID)
 
 	// spec.config is tenant-authored, while the provider credentials the client attaches come
-	// from this process's environment and are shared by every Agent it serves. So a tenant may
-	// name an endpoint only on an origin the operator allowlisted, and may not turn off TLS
-	// verification. Both checks run before any client exists.
+	// from this process's mounted key file or environment and are shared by every Agent it
+	// serves. So a tenant may name an endpoint only on an origin the operator allowlisted, and
+	// may not turn off TLS verification. Both checks run before any client exists.
 	var opts []gollm.Option
 	if endpoint := agentCRD.Spec.Config["endpoint"]; endpoint != "" {
 		// gollm's gemini client never reads ClientOptions.URL.
@@ -183,8 +224,16 @@ func (e *DefaultAgentExecutor) createLLMClient(ctx context.Context, agentCRD *ot
 			"your shell", provider)
 	}
 
+	// Read after the endpoint checks: a refused endpoint never touches the key file.
+	apiKey, err := e.readLLMKeyFile(providerID)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		opts = append(opts, gollm.WithAPIKey(apiKey))
+	}
+
 	var client gollm.Client
-	var err error
 	if e.llmFactory != nil {
 		client, err = e.llmFactory.NewClient(ctx, providerID, opts...)
 	} else {

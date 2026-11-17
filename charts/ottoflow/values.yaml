@@ -303,6 +303,10 @@ agentExecutor:
 
   # Secret name to inject LLM provider credentials (ANTHROPIC_API_KEY, OPENAI_*, etc.) into the
   # agent-executor pod via envFrom, for Workflow steps using agentRef. Empty by default (no injection).
+  # The Secret is also mounted as files at /etc/ottoflow/llm-credentials, and a provider's API key is
+  # read from the file named after its variable (e.g. ANTHROPIC_API_KEY) on every call, so a rotated
+  # key takes effect without a restart once the kubelet refreshes the mount. The file wins over the
+  # same variable set in the environment. See docs/user/upgrades/agent-executor-key-file.md.
   llmCredentialsSecret: ""
 
   # Command (optional, defaults to /ko-app/agent-executor for ko-built images)
