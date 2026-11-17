@@ -251,7 +251,7 @@ func TestPersistAfterSignalReachesServer(t *testing.T) {
 		t.Fatalf("cancelled ctx reached the server: updates=%d", stub.updates)
 	}
 
-	if err := persistBounded(ctx, c, key, status); err != nil {
+	if err := persistBounded(ctx, c, key, status, preserveTerminalStatus); err != nil {
 		t.Fatalf("persistBounded after cancel: %v", err)
 	}
 	stub.mu.Lock()
@@ -661,6 +661,101 @@ func TestGuardedStatusWritesPreserveTerminalRun(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A runner whose run moved on to a newer attempt must not overwrite it with its interrupted, failure
+// or post-signal success write; a write at the same attempt still lands.
+func TestGuardedStatusWritesFenceNewerAttempt(t *testing.T) {
+	writers := map[string]func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun){
+		"interrupted": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
+			wf := &ottoflowv1alpha1.Workflow{ObjectMeta: metav1.ObjectMeta{Name: "wf"}}
+			cfg := runnerConfig{runName: key.Name, runNamespace: key.Namespace, runKey: key}
+			persistInterrupted(context.Background(), workflowexecutor.NewCheckpointManager(c, run), c, cfg, wf, run,
+				context.Canceled)
+		},
+		"failure": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
+			persistExecutionFailure(context.Background(), c, key, run, "job", "pod", "boom")
+		},
+		// After the signal the success write uses preserveTerminalStatus; no Job object, so the Job check fails open.
+		"success-after-signal": func(c client.Client, key client.ObjectKey, run *ottoflowv1alpha1.WorkflowRun) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseSucceeded
+			persistExecutionSuccess(ctx, c, key, run, "job", "pod")
+		},
+	}
+	storedAt := func(phase ottoflowv1alpha1.WorkflowRunPhase, attempts int32) *ottoflowv1alpha1.WorkflowRun {
+		stored := newRun()
+		stored.Status = ottoflowv1alpha1.WorkflowRunStatus{
+			Phase: phase, Message: "newer attempt",
+			Execution: &ottoflowv1alpha1.WorkflowRunExecutionStatus{Attempts: attempts},
+		}
+		return stored
+	}
+	runnerAt := func(attempts int32) *ottoflowv1alpha1.WorkflowRun {
+		run := newRun()
+		run.Status.Phase = ottoflowv1alpha1.WorkflowRunPhaseRunning
+		run.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{Attempts: attempts}
+		return run
+	}
+	for name, write := range writers {
+		for sub, phase := range map[string]ottoflowv1alpha1.WorkflowRunPhase{
+			"succeeded-newer": ottoflowv1alpha1.WorkflowRunPhaseSucceeded,
+			"running-newer":   ottoflowv1alpha1.WorkflowRunPhaseRunning,
+		} {
+			t.Run(name+"/"+sub, func(t *testing.T) {
+				stored := storedAt(phase, 1)
+				c, updates := ctxAwareClient(stored)
+				key := client.ObjectKeyFromObject(stored)
+				before := mustLoadWorkflowRun(context.Background(), c, key)
+				write(c, key, runnerAt(0))
+				after := mustLoadWorkflowRun(context.Background(), c, key)
+				if *updates != 0 || !reflect.DeepEqual(after.Status, before.Status) {
+					t.Fatalf("newer attempt overwritten: updates=%d before=%+v after=%+v",
+						*updates, before.Status, after.Status)
+				}
+			})
+		}
+		t.Run(name+"/newer-after-conflict", func(t *testing.T) {
+			stored := storedAt(ottoflowv1alpha1.WorkflowRunPhaseRunning, 0)
+			c, updates := ctxAwareClient(stored)
+			key := client.ObjectKeyFromObject(stored)
+			calls := 0
+			racing := interceptor.NewClient(c, interceptor.Funcs{
+				SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object,
+					opts ...client.SubResourceUpdateOption) error {
+					calls++
+					if calls == 1 {
+						latest := mustLoadWorkflowRun(ctx, c, key)
+						latest.Status.Phase = ottoflowv1alpha1.WorkflowRunPhasePending
+						latest.Status.Execution = &ottoflowv1alpha1.WorkflowRunExecutionStatus{Attempts: 1}
+						if err := c.Status().Update(ctx, latest); err != nil {
+							return err
+						}
+						return apierrors.NewConflict(schema.GroupResource{Resource: "workflowruns"}, key.Name, context.Canceled)
+					}
+					return c.SubResource(sub).Update(ctx, obj, opts...)
+				},
+			})
+			write(racing, key, runnerAt(0))
+			after := mustLoadWorkflowRun(context.Background(), c, key)
+			if calls != 1 || *updates != 1 || after.Status.Phase != ottoflowv1alpha1.WorkflowRunPhasePending ||
+				after.Status.Execution.Attempts != 1 {
+				t.Fatalf("newer attempt overwritten after conflict: calls=%d updates=%d status=%+v",
+					calls, *updates, after.Status)
+			}
+		})
+		t.Run(name+"/same-attempt-lands", func(t *testing.T) {
+			stored := storedAt(ottoflowv1alpha1.WorkflowRunPhaseRunning, 1)
+			c, updates := ctxAwareClient(stored)
+			key := client.ObjectKeyFromObject(stored)
+			write(c, key, runnerAt(1))
+			after := mustLoadWorkflowRun(context.Background(), c, key)
+			if *updates != 1 || after.Status.Message == "newer attempt" {
+				t.Fatalf("same-attempt write dropped: updates=%d status=%+v", *updates, after.Status)
+			}
+		})
 	}
 }
 
