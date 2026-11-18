@@ -73,6 +73,7 @@ _Appears in:_
 | `modelName` _string_ | ModelName is the specific model to use (e.g., "gpt-4", "claude-3-opus")<br />Default depends on provider |  | Optional: \{\} <br /> |
 | `mcpTools` _string array_ | MCPTools is a list of MCP tools the agent can use<br />Each tool is specified as "server:tool" (e.g., "kubernetes-mcp:get-resource") |  | Optional: \{\} <br /> |
 | `outputExtraction` _[OutputExtraction](#outputextraction)_ | OutputExtraction defines how to extract outputs from agent responses |  | Optional: \{\} <br /> |
+| `thinking` _[AgentThinking](#agentthinking)_ | Thinking sets the thinking type and effort sent with each LLM request.<br />Supported only for modelProvider anthropic; on another provider a non-empty one fails the run. |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the Kubernetes service account to use for agent execution<br />Used for RBAC and authentication |  | Optional: \{\} <br /> |
 | `executorImage` _string_ | ExecutorImage is a custom container image for agent execution<br />If not specified, uses the default executor image (ghcr.io/nirmata/ottoflow/agent-executor:latest) |  | Optional: \{\} <br /> |
 | `serviceName` _string_ | ServiceName is the name of the AgentExecutor Service<br />If not specified, uses default: ottoflow-agent-executor |  | Optional: \{\} <br /> |
@@ -97,6 +98,25 @@ _Appears in:_
 | `phase` _[AgentPhase](#agentphase)_ | Phase represents the current phase of the Agent |  | Enum: [Ready NotReady] <br />Optional: \{\} <br /> |
 | `message` _string_ | Message provides additional information about the agent status |  | Optional: \{\} <br /> |
 | `lastChecked` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.29/#time-v1-meta)_ | LastChecked is when the agent configuration was last validated |  | Optional: \{\} <br /> |
+
+
+#### AgentThinking
+
+
+
+AgentThinking holds the Anthropic thinking settings. Each field is sent as set and
+left off the request when unset, so the model's default applies. The Anthropic API
+decides which values a model accepts; a rejected value fails the agent run.
+
+
+
+_Appears in:_
+- [AgentSpec](#agentspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `type` _string_ | Type is sent as the request's thinking.type. A model that thinks by default can<br />spend its whole max_tokens budget on thinking and return no text; on models that<br />accept it, disabled or between_tools turns up-front thinking off. |  | Enum: [adaptive disabled between_tools] <br />Optional: \{\} <br /> |
+| `effort` _string_ | Effort is sent as the request's output_config.effort. |  | Enum: [low medium high xhigh max] <br />Optional: \{\} <br /> |
 
 
 #### AuthConfig

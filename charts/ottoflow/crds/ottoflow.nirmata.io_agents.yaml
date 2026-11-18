@@ -215,6 +215,31 @@ spec:
                   ServiceNamespace is the namespace of the AgentExecutor Service
                   Defaults to ottoflow
                 type: string
+              thinking:
+                description: |-
+                  Thinking sets the thinking type and effort sent with each LLM request.
+                  Supported only for modelProvider anthropic; on another provider a non-empty one fails the run.
+                properties:
+                  effort:
+                    description: Effort is sent as the request's output_config.effort.
+                    enum:
+                    - low
+                    - medium
+                    - high
+                    - xhigh
+                    - max
+                    type: string
+                  type:
+                    description: |-
+                      Type is sent as the request's thinking.type. A model that thinks by default can
+                      spend its whole max_tokens budget on thinking and return no text; on models that
+                      accept it, disabled or between_tools turns up-front thinking off.
+                    enum:
+                    - adaptive
+                    - disabled
+                    - between_tools
+                    type: string
+                type: object
             required:
             - modelProvider
             - prompt

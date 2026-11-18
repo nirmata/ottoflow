@@ -241,6 +241,33 @@ var _ = Describe("DefaultAgentExecutor createLLMClient", func() {
 			Expect(factory.opts).To(BeEmpty())
 		})
 	})
+
+	Describe("spec.thinking", func() {
+		newAgent := func(provider string, thinking *ottoflowv1alpha1.AgentThinking) *ottoflowv1alpha1.Agent {
+			return &ottoflowv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "tenant"},
+				Spec:       ottoflowv1alpha1.AgentSpec{ModelProvider: provider, Thinking: thinking},
+			}
+		}
+
+		It("passes type and effort to the anthropic client, leaving an unset one empty", func() {
+			for _, want := range []ottoflowv1alpha1.AgentThinking{
+				{Type: "disabled", Effort: "low"},
+				{Effort: "max"},
+			} {
+				factory := &mockLLMClientFactory{client: &mockGollmClient{}}
+				e := NewDefaultAgentExecutorWithLLMFactory(nil, factory)
+				_, err := e.createLLMClient(ctx, newAgent("anthropic", &want))
+				Expect(err).NotTo(HaveOccurred())
+				co := &gollm.ClientOptions{}
+				for _, opt := range factory.opts {
+					opt(co)
+				}
+				Expect(co.AnthropicThinkingType).To(Equal(want.Type), "%+v", want)
+				Expect(co.AnthropicEffort).To(Equal(want.Effort), "%+v", want)
+			}
+		})
+	})
 })
 
 var _ = Describe("DefaultAgentExecutor ExecuteAgent", func() {

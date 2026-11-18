@@ -71,6 +71,44 @@ var _ = Describe("RoutingAgentExecutor", func() {
 		Entry("unknown", "some-unrecognized-provider"),
 	)
 
+	typeOnly := &ottoflowv1alpha1.AgentThinking{Type: "disabled"}
+	DescribeTable("refuses a non-empty spec.thinking on every provider but anthropic, before any delegate runs",
+		func(provider string, thinking *ottoflowv1alpha1.AgentThinking) {
+			agentCRD := &ottoflowv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+				Spec: ottoflowv1alpha1.AgentSpec{
+					ModelProvider: provider,
+					Thinking:      thinking,
+				},
+			}
+			_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
+			Expect(err).To(MatchError(ContainSubstring("spec.thinking is supported only for modelProvider anthropic")))
+			Expect(nirmataMock.GetCallCount() + defaultMock.GetCallCount()).To(Equal(0))
+		},
+		Entry("nirmata", "nirmata", typeOnly),
+		Entry("empty", "", typeOnly),
+		Entry("openai", "openai", typeOnly),
+		Entry("azure-openai", "azure-openai", typeOnly),
+		Entry("google", "google", typeOnly),
+		Entry("gemini", "gemini", typeOnly),
+		Entry("local", "local", typeOnly),
+		Entry("effort only on openai", "openai", &ottoflowv1alpha1.AgentThinking{Effort: "low"}),
+	)
+
+	DescribeTable("passes spec.thinking to the default delegate",
+		func(provider string, thinking *ottoflowv1alpha1.AgentThinking) {
+			agentCRD := &ottoflowv1alpha1.Agent{
+				ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "default"},
+				Spec:       ottoflowv1alpha1.AgentSpec{ModelProvider: provider, Thinking: thinking},
+			}
+			_, _, err := router.ExecuteAgent(ctx, agentCRD, "prompt", nil, "default")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(defaultMock.GetCallCount()).To(Equal(1))
+		},
+		Entry("anthropic with effort", "anthropic", &ottoflowv1alpha1.AgentThinking{Effort: "low"}),
+		Entry("an empty block on openai, which sends nothing", "openai", &ottoflowv1alpha1.AgentThinking{}),
+	)
+
 	It("constructs real delegates that both satisfy AgentExecutor", func() {
 		real := NewRoutingAgentExecutor(nil)
 		var _ AgentExecutor = real

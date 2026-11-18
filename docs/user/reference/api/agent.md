@@ -19,6 +19,7 @@
 | `modelName` | string | No | Model identifier (e.g. `gpt-4`, `claude-3-opus`). Default depends on provider. |
 | `mcpTools` | []string | No | List of MCP tools the agent can use. Format: `"server:tool"` (e.g. `kubernetes-mcp:get-resource`). |
 | `outputExtraction` | [OutputExtraction](#outputextraction) | No | How to extract outputs from agent responses (json, regex, text). |
+| `thinking` | [AgentThinking](#agentthinking) | No | Thinking type and effort sent with each LLM request. `modelProvider: anthropic` only: on any other provider, setting `type` or `effort` fails the agent run (admission warns); an empty `thinking: {}` sends nothing and is allowed. |
 | `config` | map[string]string | No | Provider client options. Only `endpoint` and `skipVerifySSL` are read. `endpoint` is accepted **only** if the agent-executor operator has allowlisted its origin via `AGENT_LLM_ENDPOINT_ALLOWLIST` (Helm: `agentExecutor.llmEndpointAllowlist`), and only as an origin (`scheme://host[:port]`; a path, query, fragment or userinfo is rejected). With the allowlist empty (the default), any non-empty `endpoint` fails the agent run, for every provider, because the agent-executor's LLM API keys are shared by every Agent. Once accepted, `endpoint` is effective for `azure-openai` (where it must be `https://`); `anthropic` also honors it unless `ANTHROPIC_BASE_URL` is set; `openai` uses `OPENAI_ENDPOINT`/`OPENAI_API_BASE` from the agent-executor environment, and `local` uses `LLAMACPP_HOST`. `google`/`gemini` reject any `endpoint`, allowlisted or not, because their client ignores it; set `GOOGLE_GEMINI_BASE_URL` on the agent-executor instead. `skipVerifySSL: "true"` is **rejected** for every provider and fails the agent run; to reach an endpoint with a private CA, set `SSL_CERT_FILE` or `SSL_CERT_DIR` on the agent-executor process (as a last resort, `LLM_SKIP_VERIFY_SSL=true` there, a process-wide setting not scoped to one Agent). List only origins you control that do not redirect to another origin. API keys are never read from `config` — they come from the agent-executor: the key file mounted from `agentExecutor.llmCredentialsSecret` when present, otherwise its process environment. See [Upgrading: Agent LLM endpoint allowlist](../../upgrades/llm-endpoint-allowlist.md). |
 | `serviceAccount` | string | No | Kubernetes service account for agent execution (RBAC). |
 | `serviceName` | string | No | Name of the AgentExecutor Service. Default: `ottoflow-agent-executor`. |
@@ -42,6 +43,27 @@ Extracted values are available in the step's outputs as `agentOutputs.<key>`; th
 > result (and a non-object match lands under `result`, so an `agentOutputs.<otherKey>`
 > reference that used to resolve may stop resolving), and a pattern that matches nothing now
 > fails the step instead of succeeding silently.
+
+### AgentThinking
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | string | No | Sent as the request's `thinking.type`. One of: `adaptive`, `disabled`, `between_tools`. |
+| `effort` | string | No | Sent as the request's `output_config.effort`. One of: `low`, `medium`, `high`, `xhigh`, `max`. |
+
+A model that thinks by default can spend its whole `max_tokens` budget on thinking and return no text, which fails the step. Set `type: disabled`, or `between_tools` on a model that rejects `disabled`, to turn up-front thinking off; on a model that accepts neither, lower `effort`. An unset field is left off the request, so the model's default applies. The Anthropic API decides which values a model accepts, and a rejected value fails the agent run with the API's error.
+
+```yaml
+spec:
+  modelProvider: anthropic
+  thinking:
+    type: disabled
+    effort: high
+```
+
+Apply the release's CRDs before upgrading ([CRDs before every upgrade](../../upgrades/crds-before-every-upgrade.md)): an Agent CRD from before this field drops `thinking` without any error.
+
+`max_tokens` is not set per Agent: `ANTHROPIC_MAX_TOKENS` on the agent-executor process (or your shell in CLI local mode) sets it for every Agent, default 16384, and thinking tokens count against it.
 
 ### Local provider (`modelProvider: local`)
 
