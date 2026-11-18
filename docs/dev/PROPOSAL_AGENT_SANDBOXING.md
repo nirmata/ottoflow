@@ -62,7 +62,7 @@ Three complementary moves:
 
 - **Tighten the agent-executor identity** to least-privilege. Its Secret access is already opt-in (named, get-only); beside the TokenReview and SubjectAccessReview create it uses to authenticate and authorize callers (`charts/ottoflow/templates/agent-executor-clusterrole.yaml:27-40`), what remains is its cluster-wide read of Agent and MCPServer objects (`charts/ottoflow/templates/agent-executor-clusterrole.yaml:9-26`) and the SA token mount, which should stop where it is not needed.
 - **Secret denylist (new code)** — refuse core Secret objects in CEL `resource.*`, `resourceQuery` and `mutate` whatever the RBAC allows, so a runner identity that can read Secrets does not expose them through these steps.
-- **Per-execution isolation** via `kubernetes-sigs/agent-sandbox` (`executionMode: sandbox`, already noted in `docs/dev/DESIGN.md`): run untrusted tool execution in its own short-lived pod so it is not co-resident with long-lived shared credentials. Optionally pair with short-lived per-step identities (a separate, not-yet-implemented proposal).
+- **Per-execution isolation** via `kubernetes-sigs/agent-sandbox` (`executionMode: sandbox`, already noted in `docs/dev/DESIGN.md`): run untrusted tool execution in its own short-lived pod so it is not co-resident with long-lived shared credentials. Optionally pair with short-lived per-step identities (a separate, not-yet-implemented proposal). [PROPOSAL_AGENT_SUBSTRATE.md](PROPOSAL_AGENT_SUBSTRATE.md) proposes Agent Substrate (`executionMode: substrate`) as a second backend behind an agent-executor gateway (see that proposal).
 
 **Pros**: Directly shrinks what a hostile tool can read and reuse — the highest-value structural change.  
 **Cons**: Per-execution pods are a larger change (new lifecycle, controller work); agent-sandbox is still maturing.  
@@ -128,4 +128,4 @@ No single layer is sufficient; the value is in combining them.
 
 - Per-step, short-lived minimal ServiceAccounts (not yet implemented).
 - Egress filtering for MCP stdio subprocesses: the proposed address guard covers only in-process Go clients, so these subprocesses stay covered only by NetworkPolicy and per-execution pods.
-- Agent Substrate: revisit when its API stabilizes; the `ExternalAgentRef`→A2A path is a low-risk interop experiment in the meantime.
+- Agent Substrate: see [PROPOSAL_AGENT_SUBSTRATE.md](PROPOSAL_AGENT_SUBSTRATE.md).
