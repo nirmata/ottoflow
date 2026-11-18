@@ -199,6 +199,54 @@ var _ = Describe("ResourceQuery Step Execution", func() {
 		Expect(variables["count"]).To(Equal(int64(3)))
 	})
 
+	It("should apply Limit before outputs, so a filter over items misses matches past the limit", func() {
+		// The fake client ignores the page-size hint, but the executor stops appending at
+		// Limit itself. The CEL reference and the Limit API comment document this behaviour.
+		pods := make([]client.Object, 0, 3)
+		for _, name := range []string{"pod-a", "pod-b", "pod-c"} {
+			pods = append(pods, &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+				Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+			})
+		}
+		k8sClient = fake.NewClientBuilder().WithScheme(scheme).WithObjects(pods...).Build()
+
+		var err error
+		workflowExecutor, err = NewWorkflowExecutorWithAgentExecutor(
+			k8sClient, nil, nil, nil, workflowRun, agent.NewMockAgentExecutor(), false, 0, 5, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		workflow := &ottoflowv1alpha1.Workflow{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-wf", Namespace: "default"},
+			Spec: ottoflowv1alpha1.WorkflowSpec{
+				Steps: []ottoflowv1alpha1.Step{
+					{
+						Name: "listPods",
+						ResourceQuery: &ottoflowv1alpha1.StepResourceQuery{
+							APIVersion: "v1",
+							Resource:   "Pod",
+							Namespace:  `"default"`,
+							Limit:      2,
+							Outputs: map[string]string{
+								"running": `size(items.filter(i, i.status.phase == "Running"))`,
+							},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, workflow)).To(Succeed())
+
+		err = workflowExecutor.ExecuteWorkflow(ctx, workflow, workflowRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(workflowRun.Status.Phase).To(Equal(ottoflowv1alpha1.WorkflowRunPhaseSucceeded))
+
+		contextData, err := workflowExecutor.GetContextManager().ReadContext(ctx)
+		Expect(err).NotTo(HaveOccurred())
+		variables := contextData["variables"].(map[string]interface{})
+		Expect(variables["running"]).To(Equal(int64(2)), "all three pods are Running, but outputs see only the first 2")
+	})
+
 	It("should fail when resource does not exist", func() {
 		k8sClient = fake.NewClientBuilder().WithScheme(scheme).Build()
 
