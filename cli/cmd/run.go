@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -327,10 +328,14 @@ func runWorkflowFromStream(cmd *cobra.Command, ctx context.Context, args []strin
 func runLoadedWorkflow(ctx context.Context, exec *cliexec.LocalWorkflowExecutor, name, ns string) error {
 	// Print one line per step when its phase or message changes; full table and outputs at the end.
 	lastStepState := make(map[string]string) // stepName -> "phase\tmessage" for dedup
+	// Child executors of parallel forEach workflowRef items share this callback.
+	var mu sync.Mutex
 	exec.SetProgressCallback(func(run *ottoflowv1alpha1.WorkflowRun, wf *ottoflowv1alpha1.Workflow) {
 		if run == nil || wf == nil || outputFormat != "table" {
 			return
 		}
+		mu.Lock()
+		defer mu.Unlock()
 		for _, step := range wf.Spec.Steps {
 			status, ok := run.Status.StepStatuses[step.Name]
 			if !ok {
