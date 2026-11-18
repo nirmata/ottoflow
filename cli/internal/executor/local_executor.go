@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
@@ -492,6 +493,9 @@ func (e *LocalWorkflowExecutor) ExecuteWorkflow(ctx context.Context, workflowNam
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      runName,
 			Namespace: namespace,
+			// The run is never created in an API server, so nothing assigns a UID; set one so
+			// CEL `run.uid` identifies a local run as it does an in-cluster one.
+			UID: uuid.NewUUID(),
 		},
 		Spec: ottoflowv1alpha1.WorkflowRunSpec{
 			WorkflowRef: ottoflowv1alpha1.WorkflowRef{Name: workflowName, Namespace: namespace},
