@@ -284,8 +284,8 @@ github.com/nirmata/kubectl-ai v0.0.0-20261116211951-886f82eaeffb h1:+8IlghjfKrQ4
 github.com/nirmata/kubectl-ai v0.0.0-20261116211951-886f82eaeffb/go.mod h1:s7oNExLGZZTuTziGLgnYfNquAZoNHDfpIWI8qkkM7LU=
 github.com/nirmata/kubectl-ai/gollm v0.0.0-20261116211951-886f82eaeffb h1:HkdGu4B7cDqJhFT4OqpbY5aG+vXFV6BDgsOOlN4Lptc=
 github.com/nirmata/kubectl-ai/gollm v0.0.0-20261116211951-886f82eaeffb/go.mod h1:J3tmtV6XxAOk0nESRjbU7o+muKfMk3HIBrIxyQb+eXk=
-github.com/onsi/ginkgo/v2 v2.32.1 h1:6tlvcDm/3sE8lGJbZ4+d4mO3RLy24/tQWOFzVSQNIfw=
-github.com/onsi/ginkgo/v2 v2.32.1/go.mod h1:+aXOY+vzZ5mu2iI2HpTZUPmM//oQfsNFX6gU9kNcA44=
+github.com/onsi/ginkgo/v2 v2.34.0 h1:aN3Us823mHHTSWMIi8WIQTdYuSPhl2lWY46E/w3SiAk=
+github.com/onsi/ginkgo/v2 v2.34.0/go.mod h1:+aXOY+vzZ5mu2iI2HpTZUPmM//oQfsNFX6gU9kNcA44=
 github.com/onsi/gomega v1.44.0 h1:eAiGl3Pw5jz5GQdDff0BcxYpAX1JxW8xD7mFUuwNfZQ=
 github.com/onsi/gomega v1.44.0/go.mod h1:e/C2HwaZ1DhvjzXXuFhcR7hY7Sh9pl7MmoWKEjzwcdA=
 github.com/openai/openai-go v1.12.0 h1:NBQCnXzqOTv5wsgNC36PrFEiskGfO5wccfCWDo9S1U0=

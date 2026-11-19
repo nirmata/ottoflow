@@ -15,7 +15,7 @@ require (
 	github.com/kyverno/pkg/tls v0.0.9
 	github.com/kyverno/sdk v0.0.0-20260728145918-7ad4d9dcec7e
 	github.com/mark3labs/mcp-go v1.5.1-0.20261109144041-2f5b9637ea84
-	github.com/onsi/ginkgo/v2 v2.32.1
+	github.com/onsi/ginkgo/v2 v2.34.0
 	github.com/onsi/gomega v1.44.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
