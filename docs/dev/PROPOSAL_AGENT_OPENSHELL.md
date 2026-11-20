@@ -108,7 +108,7 @@ For a `sandbox` Agent, the agent-executor's exec handler:
    - For an OAuth2 MCPServer, a provider that the OpenShell gateway refreshes with the client-credentials strategy, so the client secret never reaches the sandbox.
 
    The gateway names these after the sandbox, so they live and die with it.
-4. Calls `CreateSandbox` in the workspace with the operator's executor image, the providers above, and a sandbox policy that allows the hosts with no credential: package registries that `uvx` and `npx` stdio servers reach, and the extra hosts the operator configures for the namespace. It waits for the sandbox to be ready. Sandbox names use a fixed `of-` prefix and fit OpenShell's 19-character limit.
+4. Calls `CreateSandbox` in the workspace with the operator's executor image, the providers above, and a sandbox policy that allows the hosts with no credential: remote MCPServers with no `spec.auth` or `none` auth, package registries that `uvx` and `npx` stdio servers reach, and the extra hosts the operator configures for the namespace. It waits for the sandbox to be ready. Sandbox names use a fixed `of-` prefix and fit OpenShell's 19-character limit.
 5. Starts the standalone executor with `ExecSandbox`, and POSTs the resolved request to it through `ForwardTcp`.
 6. Deletes the sandbox and its providers and profiles when the call finishes, fails, or is cancelled.
 7. Returns the executor's `ExecResponse` to the runner unchanged.
