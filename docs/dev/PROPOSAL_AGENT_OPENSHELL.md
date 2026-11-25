@@ -115,7 +115,7 @@ For a `sandbox` Agent, the agent-executor's exec handler:
 
 **Timeouts and retries.** The gateway is bounded by the runner's request context, which times out after 30 minutes (`internal/workflow/executor/exec_client.go`). The gateway may retry the setup calls in steps 3 and 4, but once it has sent the request to the sandbox it never re-sends it or creates a second sandbox for the same call, since the exec endpoint isn't idempotent.
 
-**Orphaned sandboxes.** If the gateway restarts during a step, its cleanup never runs. On startup and then periodically, the gateway lists sandboxes and providers with the `of-` prefix in its mapped workspaces and deletes those older than the runner's 30-minute exec timeout.
+**Orphaned sandboxes.** If the gateway restarts during a step, its cleanup never runs. On startup and then periodically, the gateway lists sandboxes, providers, and profiles with the `of-` prefix, including ones left by a setup that failed before `CreateSandbox`, in its mapped workspaces and deletes those older than the runner's 30-minute exec timeout.
 
 **Observability.** The gateway reports each failure as an `ExecErrorResponse` whose message names the stage and the sandbox. The runner adds headers with the WorkflowRun namespace and name and the step name, and the gateway logs them with the sandbox name.
 
